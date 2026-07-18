@@ -85,6 +85,12 @@ git commit -s -m "Description of your change"
 - Add or update tests where applicable.
 - Make sure existing tests pass.
 
+## README Language Policy
+
+- Keep the root `README.md` in English and `README.zh-CN.md` in Simplified Chinese.
+- Any directory-level `README.md` added in this fork should have a matching `README.zh-CN.md` in the same directory.
+- When README content changes, update both language versions in the same pull request. Commands, paths, validation status, attribution, and performance figures must remain consistent.
+
 ## Code Style
 
 - **Python**: Follow [PEP 8](https://peps.python.org/pep-0008/) conventions.

@@ -28,6 +28,7 @@ import openai
 from loguru import logger
 
 from .base import LLMBudgetExceeded, LLMConfigurationError, LLMProvider, LLMResponse
+from ..observability import prompt_metadata, record_event
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,7 @@ class OpenAICompatibleSettings:
     max_requests: int = 0
     max_total_tokens: int = 0
     stream: bool = False
+    log_content: bool = False
 
     def validate(self) -> None:
         if not self.api_key:
@@ -137,6 +139,7 @@ class OpenAICompatibleProvider(LLMProvider):
             "stream": self.settings.stream,
             "fanout_mode": "client",
             "api_key_configured": bool(self.settings.api_key),
+            "log_content": self.settings.log_content,
         }
 
     async def generate(
@@ -188,16 +191,40 @@ class OpenAICompatibleProvider(LLMProvider):
     ) -> _CandidateResult:
         started = time.monotonic()
         last_error: Exception | None = None
+        prompt = prompt_metadata(messages, include_content=self.settings.log_content)
 
         for attempt in range(self.settings.max_retries + 1):
-            await self._reserve_request()
+            attempt_started = time.monotonic()
             try:
+                await self._reserve_request()
+                record_event(
+                    "llm_request_started",
+                    attempt=attempt + 1,
+                    data={
+                        "provider": self.name,
+                        "model": model,
+                        "prompt": prompt,
+                    },
+                )
                 async with self._semaphore:
                     response = await self._create_completion(messages, model)
                 content, usage, request_id, usage_source = self._normalize_response(
                     response, messages
                 )
                 await self._record_tokens(int(usage.get("total_tokens", 0) or 0))
+                latency = time.monotonic() - attempt_started
+                record_event(
+                    "llm_request_completed",
+                    attempt=attempt + 1,
+                    data={
+                        "provider": self.name,
+                        "model": model,
+                        "request_id": request_id,
+                        "usage": usage,
+                        "usage_source": usage_source,
+                        "latency_seconds": latency,
+                    },
+                )
                 return _CandidateResult(
                     content=content,
                     usage=usage,
@@ -209,8 +236,29 @@ class OpenAICompatibleProvider(LLMProvider):
             except Exception as error:
                 last_error = error
                 if attempt >= self.settings.max_retries or not self._is_retryable(error):
+                    record_event(
+                        "llm_request_failed",
+                        status="error",
+                        attempt=attempt + 1,
+                        data={
+                            "provider": self.name,
+                            "model": model,
+                            **self._error_metadata(error),
+                        },
+                    )
                     raise
                 delay = min(2**attempt, 30) + random.uniform(0, 1)
+                record_event(
+                    "llm_retry_scheduled",
+                    status="retry",
+                    attempt=attempt + 1,
+                    data={
+                        "provider": self.name,
+                        "model": model,
+                        "delay_seconds": delay,
+                        **self._error_metadata(error),
+                    },
+                )
                 logger.warning(
                     "OpenAI-compatible request failed on attempt {}/{}; retrying in {:.2f}s ({})",
                     attempt + 1,
@@ -345,3 +393,11 @@ class OpenAICompatibleProvider(LLMProvider):
         if isinstance(error, openai.APIStatusError):
             return error.status_code in (408, 409, 429) or error.status_code >= 500
         return False
+
+    @staticmethod
+    def _error_metadata(error: Exception) -> dict[str, Any]:
+        status_code = getattr(error, "status_code", None)
+        return {
+            "error_type": type(error).__name__,
+            "status_code": status_code,
+        }

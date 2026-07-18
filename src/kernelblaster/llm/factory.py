@@ -47,6 +47,7 @@ def get_llm_provider(config: type[SystemConfig]) -> LLMProvider:
             max_requests=config.LLM_MAX_REQUESTS,
             max_total_tokens=config.LLM_MAX_TOTAL_TOKENS,
             stream=config.STREAM.lower() in ("true", "1", "yes", "y", "on"),
+            log_content=config.LLM_LOG_CONTENT,
         )
     )
     return _provider

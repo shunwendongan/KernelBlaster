@@ -27,6 +27,7 @@ _SM_MAP = {
     # Please modify test_gpu_config.py if you modify this map
     "a100": "sm_80",
     "a6000": "sm_86",
+    "rtx3080": "sm_86",
     "l40": "sm_89",
     "l40s": "sm_89",
     "l40g": "sm_89",
@@ -42,6 +43,7 @@ _SM_MAP = {
 class GPUType(StrEnum):
     A100 = "a100"
     A6000 = "a6000"
+    RTX3080 = "rtx3080"
     L40 = "l40"
     L40S = "l40s"
     L40G = "l40g"

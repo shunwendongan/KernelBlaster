@@ -1,5 +1,7 @@
 # KernelBlaster
 
+**English** | [简体中文](README.zh-CN.md)
+
 ## Portfolio Fork Status
 
 This fork is being extended as a **Profile-Guided CUDA Kernel Optimization Agent** portfolio project. The current branch adds a pluggable OpenAI-compatible provider, structured experiment artifacts, and reproducible portfolio suite definitions.

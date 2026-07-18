@@ -1,5 +1,26 @@
 # KernelBlaster
 
+## Portfolio Fork Status
+
+This fork is being extended as a **Profile-Guided CUDA Kernel Optimization Agent** portfolio project. The current branch adds a pluggable OpenAI-compatible provider, structured experiment artifacts, and reproducible portfolio suite definitions.
+
+| Validation item | Current fork status |
+| --- | --- |
+| CUDA compilation and correctness | **NOT RUN** |
+| External LLM smoke test | **NOT RUN** |
+| Nsight Compute profiling | **NOT RUN** |
+| Performance results | **pending** |
+
+Development currently takes place on a Mac without an NVIDIA GPU. No generated kernel or speedup is claimed by this fork. Performance figures in the upstream project introduction below belong to the original KernelBlaster authors and have not yet been reproduced here.
+
+Portfolio documentation:
+
+- [Architecture and external API configuration](docs/portfolio/architecture.md)
+- [Deferred validation and benchmark protocol](docs/portfolio/validation.md)
+- [RMSNorm case-study template](docs/portfolio/rmsnorm-case-study.md)
+
+The optimization loop performs rollout-based search and memory updates; it does not fine-tune or train the underlying language-model weights.
+
 ## Project Intro
 
 <p><strong><span style="color:#0f766e;">Introducing KernelBlaster, a Memory-Augmented In-context Reinforcement Learning (MAIC-RL) framework</span></strong></p>

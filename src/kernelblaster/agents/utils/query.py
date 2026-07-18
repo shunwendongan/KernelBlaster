@@ -22,9 +22,9 @@ import asyncio
 import json
 import random
 from loguru import logger
-from dataclasses import dataclass, asdict
 
 from ...config import config
+from ...llm import LLMResponse, get_llm_provider
 
 __all__ = [
     "generate_code_openai",
@@ -43,15 +43,6 @@ _local_llm_module = None
 TIMEOUT = 1800
 # Rough estimation of the maximum tokens as tokenization is expensive
 MAX_CHARACTERS_TOTAL = 340_000
-
-# Single OpenAI-compatible client configured via OPENAI_API_KEY.
-oai_client = None
-if os.getenv("OPENAI_API_KEY"):
-    oai_client = openai.AsyncOpenAI(
-        base_url="https://api.openai.com/v1",
-        api_key=os.getenv("OPENAI_API_KEY"),
-        timeout=TIMEOUT,
-    )
 
 # Perflab client configured via PERFLAB_KEY (fallback option).
 perflab_client = None
@@ -123,26 +114,6 @@ def extract_code_from_response(response_text, tag="cpp") -> str | None:
     if not code_blocks:
         return None
     return code_blocks[0]
-
-
-@dataclass
-class LLMResponse:
-    input_messages: list[dict]
-    generations: list[str]
-    usage: dict
-    model: str
-    num_tasks: int
-    elapsed_time: int
-
-    def __str__(self):
-        return str(asdict(self))
-
-    @property
-    def response(self) -> str:
-        """Return the first generation for backward-compatibility with legacy
-        code that accessed *response* instead of *generations[0]*.
-        """
-        return self.generations[0] if self.generations else ""
 
 
 def process_messages(messages: List[dict], model: str) -> List[dict]:
@@ -323,20 +294,23 @@ async def generate_code(messages, n_tasks=1, model=None) -> LLMResponse:
                 use_4bit=True,
             )
     
-    # Fall back to OpenAI-compatible client
-    # Prefer OpenAI if configured (this is the most common local dev path).
-    client = oai_client
+    # Prefer the configurable provider. Candidate fan-out, retry, concurrency,
+    # and budget enforcement happen inside this provider boundary.
+    if config.API_KEY:
+        provider = get_llm_provider(type(config))
+        return await provider.generate(messages, model=model, n=n_tasks)
 
-    # Fall back to Perflab proxy only if configured.
-    if client is None and perflab_client is not None:
-        client = perflab_client
-
-    if client is None:
-        raise RuntimeError(
-            "No LLM client configured. Set OPENAI_API_KEY or PERFLAB_KEY, or use a local model."
+    # Preserve the NVIDIA Perflab development fallback when configured.
+    if perflab_client is not None:
+        return await generate_code_openai(
+            perflab_client, messages, n_tasks=n_tasks, model=model
         )
 
-    return await generate_code_openai(client, messages, n_tasks, model)
+    if not config.API_KEY:
+        raise RuntimeError(
+            "No LLM client configured. Set KERNELBLASTER_LLM_API_KEY "
+            "(or OPENAI_API_KEY/PERFLAB_KEY), or use a local model."
+        )
 
 
 async def generate_code_retry(
@@ -406,6 +380,12 @@ async def generate_code_retry(
     if system_prompt:
         # Avoid mutating caller-provided list in-place
         messages = [{"role": "system", "content": system_prompt}] + list(messages)
+
+    # Remote providers own per-candidate retry semantics so a partial fan-out is
+    # never repeated wholesale by this legacy wrapper. Local and Perflab paths
+    # retain the historical outer retry loop below.
+    if config.API_KEY:
+        return await generate_code(messages, n_tasks=n_tasks, model=model)
 
     response = None
     tries = 0

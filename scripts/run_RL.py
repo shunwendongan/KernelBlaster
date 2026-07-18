@@ -28,6 +28,8 @@ ROOT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(ROOT_DIR))
 
 from src.kernelblaster.config import config, GPUType
+from src.kernelblaster.llm import get_llm_provider
+from src.kernelblaster.observability import RunRecorder, record_event, set_run_recorder
 from src.kernelblaster.resources import *
 from src.kernelblaster.workflow import run_workflow
 
@@ -39,6 +41,7 @@ GPU_SERVER = None
 CLEANUP_IN_PROGRESS = False
 SIGNAL_COUNT = 0
 COMPREHENSIVE_ANALYSIS_CACHE = None
+RUN_RECORDER = None
 
 
 def load_comprehensive_analysis_results():
@@ -377,8 +380,56 @@ async def async_main():
         default=None,
         help="URL of existing GPU server to use (e.g., http://localhost:2002)",
     )
+    parser.add_argument(
+        "--run-record-dir",
+        type=Path,
+        default=None,
+        help="Write run_manifest.json, events.jsonl, and summary.json here.",
+    )
+    parser.add_argument(
+        "--portfolio-suite",
+        type=Path,
+        default=None,
+        help="Resolved portfolio suite JSON to embed in the run manifest.",
+    )
     args = parser.parse_args()
     validate_common_arguments(parser, args)
+
+    if args.run_record_dir is not None:
+        global RUN_RECORDER
+        config.MODEL = args.model
+        suite_config = {}
+        if args.portfolio_suite is not None:
+            suite_config = json.loads(args.portfolio_suite.read_text(encoding="utf-8"))
+            try:
+                suite_source = str(args.portfolio_suite.resolve().relative_to(ROOT_DIR))
+            except ValueError:
+                suite_source = str(args.portfolio_suite.resolve())
+            suite_config["source"] = suite_source
+            suite_config["resolved"] = {
+                "rollouts": args.rl_iterations,
+                "steps": args.rl_rollout_steps,
+            }
+        provider = get_llm_provider(type(config))
+        RUN_RECORDER = RunRecorder(
+            args.run_record_dir,
+            model=args.model,
+            provider_config=provider.public_config(),
+            suite=suite_config,
+            gpu_target=args.gpu,
+            repo_root=ROOT_DIR,
+        )
+        set_run_recorder(RUN_RECORDER)
+        record_event(
+            "portfolio_run_started",
+            data={
+                "dataset": args.dataset,
+                "subset": args.subset,
+                "problem_numbers": args.problem_numbers,
+                "rollouts": args.rl_iterations,
+                "steps": args.rl_rollout_steps,
+            },
+        )
 
     dataset_str = args.dataset
 
@@ -458,6 +509,11 @@ async def async_main():
             config.set_compile_server_url(COMPILE_SERVER.url)
     except Exception as e:
         logger.error(f"Failed to initialize resources: {e}")
+        record_event(
+            "runtime_initialization_failed",
+            status="error",
+            data={"error_type": type(e).__name__},
+        )
         return
 
     config.print_config(logger)
@@ -526,6 +582,8 @@ def main():
         raise e
     finally:
         cleanup_servers()
+        if RUN_RECORDER is not None:
+            RUN_RECORDER.close()
 
 
 if __name__ == "__main__":

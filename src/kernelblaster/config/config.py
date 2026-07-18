@@ -17,11 +17,20 @@ from dotenv import load_dotenv
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from loguru import logger
+from urllib.parse import urlsplit, urlunsplit
 
 from .gpu_config import GPUType
 from typing import Any
 
 load_dotenv()
+
+
+def _public_url(value: str) -> str:
+    parsed = urlsplit(value)
+    hostname = parsed.hostname or ""
+    if parsed.port:
+        hostname = f"{hostname}:{parsed.port}"
+    return urlunsplit((parsed.scheme, hostname, parsed.path.rstrip("/"), "", ""))
 
 
 class ExperimentalFeatures:
@@ -38,9 +47,32 @@ class ExperimentalFeatures:
 
 
 class SystemConfig:
-    API_KEY = os.getenv("OPENAI_API_KEY", "")
+    # Pluggable remote LLM provider. Secrets are intentionally environment-only.
+    LLM_PROVIDER = os.getenv(
+        "KERNELBLASTER_LLM_PROVIDER", "openai_compatible"
+    ).strip().lower()
+    LLM_BASE_URL = os.getenv(
+        "KERNELBLASTER_LLM_BASE_URL", "https://api.openai.com/v1"
+    ).strip()
+    LLM_BASE_URL_PUBLIC = _public_url(LLM_BASE_URL)
+    API_KEY = os.getenv("KERNELBLASTER_LLM_API_KEY") or os.getenv(
+        "OPENAI_API_KEY", ""
+    )
     MODEL = os.getenv("MODEL", "gpt-4.1-20250414")
     STREAM = os.getenv("STREAM", "False")
+    LLM_MAX_CONCURRENCY = int(os.getenv("LLM_MAX_CONCURRENCY", "4"))
+    LLM_REQUEST_TIMEOUT_SECONDS = float(
+        os.getenv("LLM_REQUEST_TIMEOUT_SECONDS", "1800")
+    )
+    LLM_MAX_REQUESTS = int(os.getenv("LLM_MAX_REQUESTS", "0"))
+    LLM_MAX_TOTAL_TOKENS = int(os.getenv("LLM_MAX_TOTAL_TOKENS", "0"))
+    LLM_LOG_CONTENT = os.getenv("LLM_LOG_CONTENT", "false").lower() in (
+        "true",
+        "1",
+        "yes",
+        "y",
+        "on",
+    )
     MAX_ATTEMPTS = int(os.getenv("MAX_ATTEMPTS", 300))
     NUM_PARALLEL_GENERATIONS_PER_ATTEMPT = int(
         os.getenv("NUM_PARALLEL_GENERATIONS_PER_ATTEMPT", 4)
@@ -70,11 +102,7 @@ class SystemConfig:
 
     NVCF_FUNCTION_ID = os.getenv("NVCF_FUNCTION_ID", None)
     LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-    LLM_MAX_RETRIES = (
-        int(os.getenv("LLM_MAX_RETRIES"))
-        if os.getenv("LLM_MAX_RETRIES") and os.getenv("LLM_MAX_RETRIES").isdigit()
-        else None
-    )
+    LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 
     TEMP_DIRECTORY = "/tmp/kernelblaster"
     EOS_BASE_URL = os.getenv("EOS_BASE_URL", None)
@@ -150,6 +178,13 @@ class SystemConfig:
         """Print the various hyperparameters to the logger."""
         config_str = f"""
 - Using {cls.MODEL} for generation
+- LLM provider: {cls.LLM_PROVIDER}
+- LLM endpoint: {cls.LLM_BASE_URL_PUBLIC}
+- LLM API key configured: {bool(cls.API_KEY)}
+- LLM max concurrency: {cls.LLM_MAX_CONCURRENCY}
+- LLM max retries: {cls.LLM_MAX_RETRIES}
+- LLM request budget: {cls.LLM_MAX_REQUESTS or 'unlimited'}
+- LLM token budget: {cls.LLM_MAX_TOTAL_TOKENS or 'unlimited'}
 - Parallel generations per attempt: {cls.NUM_PARALLEL_GENERATIONS_PER_ATTEMPT}
 - Maximum attempts: {cls.MAX_ATTEMPTS}
 - Compiler server: {cls.COMPILE_SERVER_URL}

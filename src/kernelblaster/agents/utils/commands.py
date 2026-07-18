@@ -18,10 +18,12 @@ from typing import Optional
 from pathlib import Path
 import os
 import json
+import time
 
 from loguru import logger
 from .error import FeedbackError
 from ...config import config, GPUType
+from ...observability import record_event
 from ...resources import TCPClient
 
 __all__ = ["run_gpu_executable", "compile_cu", "compile_and_run_cu_file"]
@@ -177,14 +179,44 @@ async def run_gpu_executable(
     n_runs: int = 1,
 ) -> tuple[list[str], list[str]]:
     url = config.get_gpu_server_url(gpu)
-    return await _run_gpu_binary(
-        executable_path,
-        url,
-        timeout,
-        job_name,
-        prefix_command=prefix_command,
-        n_runs=n_runs,
-    )
+    started = time.monotonic()
+    is_ncu = bool(prefix_command and "ncu" in prefix_command.lower())
+    try:
+        result = await _run_gpu_binary(
+            executable_path,
+            url,
+            timeout,
+            job_name,
+            prefix_command=prefix_command,
+            n_runs=n_runs,
+        )
+    except Exception as error:
+        if is_ncu:
+            record_event(
+                "cuda_profile_failed",
+                status="error",
+                data={
+                    "job_name": Path(job_name).name,
+                    "gpu": gpu.value,
+                    "profiler": "ncu",
+                    "latency_seconds": time.monotonic() - started,
+                    "error_type": type(error).__name__,
+                },
+            )
+        raise
+
+    if is_ncu:
+        record_event(
+            "cuda_profile_completed",
+            data={
+                "job_name": Path(job_name).name,
+                "gpu": gpu.value,
+                "profiler": "ncu",
+                "runs": n_runs,
+                "latency_seconds": time.monotonic() - started,
+            },
+        )
+    return result
 
 
 async def _compile_cu(
@@ -314,12 +346,36 @@ async def compile_and_run_cu_file(
     """
     job_name = str(main_filepath) if cuda_filepath is None else str(cuda_filepath)
     timer.start("compilation")
+    try:
+        compiled_path = await compile_cu(
+            main_filepath, cuda_filepath, gpu, timeout, job_name, persistent_artifacts
+        )
+        duration = timer.stop("compilation")
+        record_event(
+            "cuda_compile_completed",
+            data={
+                "job_name": Path(job_name).name,
+                "gpu": gpu.value,
+                "sm": gpu.sm,
+                "latency_seconds": duration,
+                "persistent_artifacts": persistent_artifacts,
+            },
+        )
+    except Exception as error:
+        duration = timer.stop("compilation")
+        record_event(
+            "cuda_compile_failed",
+            status="error",
+            data={
+                "job_name": Path(job_name).name,
+                "gpu": gpu.value,
+                "sm": gpu.sm,
+                "latency_seconds": duration,
+                "error_type": type(error).__name__,
+            },
+        )
+        raise
 
-    compiled_path = await compile_cu(
-        main_filepath, cuda_filepath, gpu, timeout, job_name, persistent_artifacts
-    )
-
-    duration = timer.stop("compilation")
     logger.info(f"File compilation completed in {duration:0.2f} seconds")
 
     success = True
@@ -365,5 +421,19 @@ async def compile_and_run_cu_file(
     logger.info(
         f"{len(stdout_list)} kernel executions completed in {duration:0.2f} seconds. Success: {success}"
     )
+
+    if passed_keyword is not None:
+        record_event(
+            "cuda_correctness_completed",
+            status="ok" if success else "error",
+            data={
+                "job_name": Path(job_name).name,
+                "gpu": gpu.value,
+                "runs": len(stdout_list),
+                "passed_keyword": passed_keyword,
+                "success": success,
+                "latency_seconds": duration,
+            },
+        )
 
     return stdout_list, stderr_list, compiled_path, success

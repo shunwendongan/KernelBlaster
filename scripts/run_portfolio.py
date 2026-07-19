@@ -62,6 +62,8 @@ def _public_provider_config() -> dict:
         "max_retries": config.LLM_MAX_RETRIES,
         "max_requests": config.LLM_MAX_REQUESTS,
         "max_total_tokens": config.LLM_MAX_TOTAL_TOKENS,
+        "max_completion_tokens": config.LLM_MAX_COMPLETION_TOKENS,
+        "reasoning_effort": config.LLM_REASONING_EFFORT or None,
         "stream": config.STREAM.lower() in ("true", "1", "yes", "y", "on"),
         "fanout_mode": "client",
         "api_key_configured": bool(config.API_KEY),

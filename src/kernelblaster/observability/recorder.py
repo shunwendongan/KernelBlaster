@@ -22,6 +22,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import re
 import subprocess
 import threading
 from typing import Any
@@ -38,6 +39,27 @@ _SENSITIVE_KEY_PARTS = (
     "secret",
     "token",
 )
+_SAFE_USAGE_KEYS = {
+    "api_key_configured",
+    "cached_tokens",
+    "cache_write_tokens",
+    "completion_tokens",
+    "input_tokens",
+    "max_completion_tokens",
+    "max_total_tokens",
+    "output_tokens",
+    "prompt_tokens",
+    "reasoning_tokens",
+    "total_tokens",
+}
+_BEARER_PATTERN = re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]+")
+_AUTH_PATTERN = re.compile(
+    r"(?i)(\bauthorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;}]+"
+)
+_QUERY_SECRET_PATTERN = re.compile(
+    r"(?i)([?&](?:api[_-]?key|access[_-]?token|token|secret|password)=)[^&#\s]+"
+)
+_URL_USERINFO_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
 
 
 def utc_now() -> str:
@@ -48,19 +70,18 @@ def redact_secrets(value: Any, key: str = "") -> Any:
     """Recursively redact values whose field names conventionally hold secrets."""
     normalized_key = key.lower()
     if any(part in normalized_key for part in _SENSITIVE_KEY_PARTS):
-        if normalized_key in {
-            "api_key_configured",
-            "prompt_tokens",
-            "completion_tokens",
-            "total_tokens",
-            "max_total_tokens",
-        }:
+        if normalized_key in _SAFE_USAGE_KEYS:
             return value
         return "[REDACTED]"
     if isinstance(value, dict):
         return {str(k): redact_secrets(v, str(k)) for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact_secrets(item, key) for item in value]
+    if isinstance(value, str):
+        redacted = _BEARER_PATTERN.sub(r"\1[REDACTED]", value)
+        redacted = _AUTH_PATTERN.sub(r"\1[REDACTED]", redacted)
+        redacted = _QUERY_SECRET_PATTERN.sub(r"\1[REDACTED]", redacted)
+        return _URL_USERINFO_PATTERN.sub(r"\1[REDACTED]@", redacted)
     return value
 
 
@@ -192,6 +213,8 @@ class RunRecorder:
         status: str = "ok",
         task_id: str | int | None = None,
         rollout_id: str | int | None = None,
+        stage: str | None = None,
+        candidate_id: str | None = None,
         attempt: int | None = None,
         data: dict[str, Any] | None = None,
     ) -> None:
@@ -208,6 +231,8 @@ class RunRecorder:
                 "status": status,
                 "task_id": task_id,
                 "rollout_id": rollout_id,
+                "stage": stage,
+                "candidate_id": candidate_id,
                 "attempt": attempt,
                 "data": redact_secrets(data or {}),
             }

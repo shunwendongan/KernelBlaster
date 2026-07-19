@@ -66,6 +66,10 @@ class SystemConfig:
     )
     LLM_MAX_REQUESTS = int(os.getenv("LLM_MAX_REQUESTS", "0"))
     LLM_MAX_TOTAL_TOKENS = int(os.getenv("LLM_MAX_TOTAL_TOKENS", "0"))
+    LLM_MAX_COMPLETION_TOKENS = int(
+        os.getenv("LLM_MAX_COMPLETION_TOKENS", "12288")
+    )
+    LLM_REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "").strip().lower()
     LLM_LOG_CONTENT = os.getenv("LLM_LOG_CONTENT", "false").lower() in (
         "true",
         "1",
@@ -185,6 +189,8 @@ class SystemConfig:
 - LLM max retries: {cls.LLM_MAX_RETRIES}
 - LLM request budget: {cls.LLM_MAX_REQUESTS or 'unlimited'}
 - LLM token budget: {cls.LLM_MAX_TOTAL_TOKENS or 'unlimited'}
+- LLM max completion tokens: {cls.LLM_MAX_COMPLETION_TOKENS}
+- LLM reasoning effort: {cls.LLM_REASONING_EFFORT or 'provider default'}
 - Parallel generations per attempt: {cls.NUM_PARALLEL_GENERATIONS_PER_ATTEMPT}
 - Maximum attempts: {cls.MAX_ATTEMPTS}
 - Compiler server: {cls.COMPILE_SERVER_URL}

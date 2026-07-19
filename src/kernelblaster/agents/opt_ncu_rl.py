@@ -27,6 +27,7 @@ import json
 import asyncio
 import sys
 from ..config import config
+from ..observability import event_context
 from .feedback import FeedbackAgent, Feedback, FeedbackConfig
 from .database import OptimizationDatabase, OptimizationEntry, CompositeOptimization
 from .rl_agents import (
@@ -1071,13 +1072,18 @@ class RLNCUAgent(FeedbackAgent):
             
             try:
                 # Apply optimization
-                optimized_code, new_cycles, new_state, new_ncu_log = await self.apply_optimization(
-                    current_code,
-                    optimization_entry,
-                    step,
-                    trajectory_dir,
-                    strategy_description if 'strategy_description' in locals() else "",
-                )
+                with event_context(
+                    rollout_id=trajectory_index,
+                    stage=f"rollout_step_{step}",
+                    candidate_id=f"trajectory_{trajectory_index}_step_{step}",
+                ):
+                    optimized_code, new_cycles, new_state, new_ncu_log = await self.apply_optimization(
+                        current_code,
+                        optimization_entry,
+                        step,
+                        trajectory_dir,
+                        strategy_description if 'strategy_description' in locals() else "",
+                    )
                 
                 # Calculate actual improvement
                 if current_cycles is not None and current_cycles > 0:
@@ -1669,4 +1675,4 @@ The optimization process is learning and adapting. Continue with further optimiz
             'overall_improvement': ((self.initial_cycles - self.best_cycles) / self.initial_cycles * 100) if self.initial_cycles else 0,
             'buffer_stats': self.replay_buffer.get_statistics(),
             'database_stats': self.database.get_database_stats()
-        } 
+        }

@@ -29,7 +29,12 @@ sys.path.insert(0, str(ROOT_DIR))
 
 from src.kernelblaster.config import config, GPUType
 from src.kernelblaster.llm import get_llm_provider
-from src.kernelblaster.observability import RunRecorder, record_event, set_run_recorder
+from src.kernelblaster.observability import (
+    RunRecorder,
+    event_context,
+    record_event,
+    set_run_recorder,
+)
 from src.kernelblaster.resources import *
 from src.kernelblaster.workflow import run_workflow
 
@@ -327,15 +332,16 @@ async def process_problem(
             format=config.CUSTOM_LOGGER_FORMAT,
             filter=lambda record: record["extra"].get("problem_id") == problem_id,
         )
-        result = await run_workflow(
-            problem_id,
-            user_message,
-            reference_code,
-            folder,
-            workflow_config,
-            job_logger=job_logger,
-            timeout_seconds=timeout_minutes * 60,
-        )
+        with event_context(task_id=task_id or problem_id, stage="workflow"):
+            result = await run_workflow(
+                problem_id,
+                user_message,
+                reference_code,
+                folder,
+                workflow_config,
+                job_logger=job_logger,
+                timeout_seconds=timeout_minutes * 60,
+            )
         if result.success:
             logger.info(
                 f"Successfully generated codes for {problem_id}:\n{json.dumps(result.generated_codes, indent=2)}"

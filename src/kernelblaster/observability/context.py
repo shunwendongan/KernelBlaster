@@ -14,13 +14,18 @@
 # limitations under the License.
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import Any, Iterator
 
 from .recorder import RunRecorder
 
 
 _active_recorder: ContextVar[RunRecorder | None] = ContextVar(
     "kernelblaster_run_recorder", default=None
+)
+_event_context: ContextVar[dict[str, Any]] = ContextVar(
+    "kernelblaster_event_context", default={}
 )
 
 
@@ -32,7 +37,21 @@ def set_run_recorder(recorder: RunRecorder | None) -> None:
     _active_recorder.set(recorder)
 
 
+@contextmanager
+def event_context(**values: Any) -> Iterator[None]:
+    merged = {**_event_context.get(), **{k: v for k, v in values.items() if v is not None}}
+    token = _event_context.set(merged)
+    try:
+        yield
+    finally:
+        _event_context.reset(token)
+
+
 def record_event(event_type: str, **kwargs) -> None:
     recorder = get_run_recorder()
     if recorder is not None:
+        context = _event_context.get()
+        for key in ("task_id", "rollout_id", "stage", "candidate_id"):
+            if key not in kwargs and key in context:
+                kwargs[key] = context[key]
         recorder.record_event(event_type, **kwargs)

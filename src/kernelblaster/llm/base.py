@@ -33,6 +33,7 @@ class LLMResponse:
     request_ids: list[str] = field(default_factory=list)
     attempts: int = 0
     usage_source: str = "provider"
+    response_models: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
         return str(asdict(self))

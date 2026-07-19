@@ -12,7 +12,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from .context import get_run_recorder, record_event, set_run_recorder
+from .context import event_context, get_run_recorder, record_event, set_run_recorder
 from .recorder import (
     RunRecorder,
     SCHEMA_VERSION,
@@ -24,6 +24,7 @@ from .recorder import (
 __all__ = [
     "RunRecorder",
     "SCHEMA_VERSION",
+    "event_context",
     "get_run_recorder",
     "prompt_metadata",
     "record_event",

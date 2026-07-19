@@ -109,14 +109,23 @@ def load_suite(value: str, repo_root: Path) -> PortfolioSuite:
         raise ValueError("Suite must contain at least one task.")
     if len({task.number for task in tasks}) != len(tasks):
         raise ValueError("Suite task numbers must be unique.")
+    if len({task.task_id for task in tasks}) != len(tasks):
+        raise ValueError("Suite task IDs must be unique.")
 
     for task in tasks:
         task_dir = (repo_root / task.path).resolve()
         if not task_dir.is_relative_to(repo_root.resolve()):
             raise ValueError(f"Task path escapes the repository: {task.path}")
         for artifact in ("init.cu", "driver.cpp"):
-            if not (task_dir / artifact).is_file():
+            artifact_path = task_dir / artifact
+            if not artifact_path.is_file():
                 raise ValueError(f"Task {task.task_id} is missing {artifact}.")
+            resolved_artifact = artifact_path.resolve()
+            if not resolved_artifact.is_relative_to(repo_root.resolve()):
+                raise ValueError(
+                    f"Task {task.task_id} artifact escapes the repository via "
+                    f"a symbolic link: {artifact}."
+                )
 
     return PortfolioSuite(
         source_path=source_path,

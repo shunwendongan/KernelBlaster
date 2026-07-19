@@ -40,6 +40,8 @@ class OpenAICompatibleSettings:
     max_retries: int = 3
     max_requests: int = 0
     max_total_tokens: int = 0
+    max_completion_tokens: int = 12288
+    reasoning_effort: str = ""
     stream: bool = False
     log_content: bool = False
 
@@ -58,6 +60,23 @@ class OpenAICompatibleSettings:
             raise LLMConfigurationError("LLM_MAX_RETRIES cannot be negative.")
         if self.max_requests < 0 or self.max_total_tokens < 0:
             raise LLMConfigurationError("LLM budgets cannot be negative.")
+        if self.max_completion_tokens < 1:
+            raise LLMConfigurationError(
+                "LLM_MAX_COMPLETION_TOKENS must be at least 1."
+            )
+        if self.reasoning_effort not in {
+            "",
+            "none",
+            "minimal",
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        }:
+            raise LLMConfigurationError(
+                "LLM_REASONING_EFFORT must be empty or a supported effort."
+            )
 
 
 @dataclass
@@ -68,6 +87,7 @@ class _CandidateResult:
     attempts: int
     elapsed_time: float
     usage_source: str
+    response_model: str
 
 
 def _to_plain_dict(value: Any) -> dict[str, Any]:
@@ -86,6 +106,19 @@ def _to_plain_dict(value: Any) -> dict[str, Any]:
 def _estimate_tokens(text: str) -> int:
     """Use a deterministic tokenizer-free estimate for gateway responses."""
     return max(1, math.ceil(len(text) / 4)) if text else 0
+
+
+def _estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
+    """Return a conservative tokenizer-free prompt reservation.
+
+    UTF-8 bytes upper-bound the number of byte-pair tokens for ordinary text,
+    while a small per-message allowance covers role and framing tokens.
+    """
+    serialized = "".join(
+        f"{message.get('role', '')}:{message.get('content', '')}\n"
+        for message in messages
+    )
+    return len(serialized.encode("utf-8")) + (8 * len(messages))
 
 
 def _sanitize_base_url(base_url: str) -> str:
@@ -126,6 +159,7 @@ class OpenAICompatibleProvider(LLMProvider):
         self._budget_lock = asyncio.Lock()
         self._request_count = 0
         self._total_tokens = 0
+        self._reserved_tokens = 0
 
     def public_config(self) -> dict[str, Any]:
         return {
@@ -136,6 +170,8 @@ class OpenAICompatibleProvider(LLMProvider):
             "max_retries": self.settings.max_retries,
             "max_requests": self.settings.max_requests,
             "max_total_tokens": self.settings.max_total_tokens,
+            "max_completion_tokens": self.settings.max_completion_tokens,
+            "reasoning_effort": self.settings.reasoning_effort or None,
             "stream": self.settings.stream,
             "fanout_mode": "client",
             "api_key_configured": bool(self.settings.api_key),
@@ -158,13 +194,23 @@ class OpenAICompatibleProvider(LLMProvider):
             asyncio.create_task(self._generate_candidate(messages, model))
             for _ in range(n)
         ]
-        try:
-            candidates = await asyncio.gather(*tasks)
-        except Exception:
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            raise
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        errors = [item for item in results if isinstance(item, BaseException)]
+        if errors:
+            record_event(
+                "llm_fanout_failed",
+                status="error",
+                data={
+                    "requested": n,
+                    "completed": sum(
+                        not isinstance(item, BaseException) for item in results
+                    ),
+                    "failed": len(errors),
+                    "error_types": sorted({type(error).__name__ for error in errors}),
+                },
+            )
+            raise errors[0]
+        candidates = [item for item in results if isinstance(item, _CandidateResult)]
 
         usage_sources = {candidate.usage_source for candidate in candidates}
         return LLMResponse(
@@ -182,6 +228,7 @@ class OpenAICompatibleProvider(LLMProvider):
             ],
             attempts=sum(candidate.attempts for candidate in candidates),
             usage_source=(usage_sources.pop() if len(usage_sources) == 1 else "mixed"),
+            response_models=[candidate.response_model for candidate in candidates],
         )
 
     async def _generate_candidate(
@@ -195,8 +242,13 @@ class OpenAICompatibleProvider(LLMProvider):
 
         for attempt in range(self.settings.max_retries + 1):
             attempt_started = time.monotonic()
+            reservation = 0
             try:
-                await self._reserve_request()
+                reservation = (
+                    _estimate_message_tokens(messages)
+                    + self.settings.max_completion_tokens
+                )
+                await self._reserve_request(reservation)
                 record_event(
                     "llm_request_started",
                     attempt=attempt + 1,
@@ -208,10 +260,18 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
                 async with self._semaphore:
                     response = await self._create_completion(messages, model)
-                content, usage, request_id, usage_source = self._normalize_response(
-                    response, messages
+                (
+                    content,
+                    usage,
+                    request_id,
+                    usage_source,
+                    response_model,
+                ) = self._normalize_response(response, messages)
+                await self._settle_tokens(
+                    reservation,
+                    int(usage.get("total_tokens", 0) or 0),
                 )
-                await self._record_tokens(int(usage.get("total_tokens", 0) or 0))
+                reservation = 0
                 latency = time.monotonic() - attempt_started
                 record_event(
                     "llm_request_completed",
@@ -232,8 +292,11 @@ class OpenAICompatibleProvider(LLMProvider):
                     attempts=attempt + 1,
                     elapsed_time=time.monotonic() - started,
                     usage_source=usage_source,
+                    response_model=response_model,
                 )
             except Exception as error:
+                if reservation:
+                    await self._release_reservation(reservation)
                 last_error = error
                 if attempt >= self.settings.max_retries or not self._is_retryable(error):
                     record_event(
@@ -299,6 +362,11 @@ class OpenAICompatibleProvider(LLMProvider):
         elif re.search(r".*-nemotron-.*-thinking", model.lower()):
             request_model = model.replace("-thinking", "")
             args["max_tokens"] = 12288
+        else:
+            args["max_completion_tokens"] = self.settings.max_completion_tokens
+
+        if self.settings.reasoning_effort:
+            args["reasoning_effort"] = self.settings.reasoning_effort
 
         args["model"] = request_model
         if not self.settings.stream:
@@ -314,13 +382,17 @@ class OpenAICompatibleProvider(LLMProvider):
         self,
         response: Any,
         messages: list[dict[str, Any]],
-    ) -> tuple[str, dict[str, Any], str, str]:
+    ) -> tuple[str, dict[str, Any], str, str, str]:
         if isinstance(response, list):
             content_parts: list[str] = []
             usage: dict[str, Any] = {}
             request_id = ""
+            response_model = ""
             for chunk in response:
                 request_id = request_id or str(getattr(chunk, "id", "") or "")
+                response_model = response_model or str(
+                    getattr(chunk, "model", "") or ""
+                )
                 chunk_usage = _to_plain_dict(getattr(chunk, "usage", None))
                 if chunk_usage:
                     usage = chunk_usage
@@ -337,6 +409,7 @@ class OpenAICompatibleProvider(LLMProvider):
             content = getattr(choices[0].message, "content", None) or ""
             usage = _to_plain_dict(getattr(response, "usage", None))
             request_id = str(getattr(response, "id", "") or "")
+            response_model = str(getattr(response, "model", "") or "")
 
         if usage:
             usage_source = "provider"
@@ -353,9 +426,9 @@ class OpenAICompatibleProvider(LLMProvider):
             }
             usage_source = "estimated"
 
-        return content, usage, request_id, usage_source
+        return content, usage, request_id, usage_source, response_model
 
-    async def _reserve_request(self) -> None:
+    async def _reserve_request(self, token_reservation: int) -> None:
         async with self._budget_lock:
             if (
                 self.settings.max_requests
@@ -366,17 +439,26 @@ class OpenAICompatibleProvider(LLMProvider):
                 )
             if (
                 self.settings.max_total_tokens
-                and self._total_tokens >= self.settings.max_total_tokens
+                and self._total_tokens
+                + self._reserved_tokens
+                + token_reservation
+                > self.settings.max_total_tokens
             ):
                 raise LLMBudgetExceeded(
                     "LLM token budget exhausted "
                     f"({self.settings.max_total_tokens})."
                 )
             self._request_count += 1
+            self._reserved_tokens += token_reservation
 
-    async def _record_tokens(self, total_tokens: int) -> None:
+    async def _settle_tokens(self, reservation: int, total_tokens: int) -> None:
         async with self._budget_lock:
+            self._reserved_tokens = max(0, self._reserved_tokens - reservation)
             self._total_tokens += max(0, total_tokens)
+
+    async def _release_reservation(self, reservation: int) -> None:
+        async with self._budget_lock:
+            self._reserved_tokens = max(0, self._reserved_tokens - reservation)
 
     @staticmethod
     def _is_retryable(error: Exception) -> bool:

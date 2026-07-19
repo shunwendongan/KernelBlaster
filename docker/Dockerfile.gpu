@@ -32,14 +32,15 @@ COPY docker/requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -U pip && \
     python -m pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Create user after all system installations
-RUN useradd -G sudo kernelblaster
+# Create an unprivileged runtime user with a real home directory.
+RUN useradd --create-home --shell /bin/bash --groups sudo kernelblaster
 
 # Copy the entire source code (filtered by .dockerignore)
-COPY . /kernelblaster/
+COPY --chown=kernelblaster:kernelblaster . /kernelblaster/
 
 # Create output directory
-RUN mkdir -p /tmp/kernelblaster
+RUN mkdir -p /tmp/kernelblaster && \
+    chown -R kernelblaster:kernelblaster /tmp/kernelblaster
 
 # Switch to non-root user only at the end
 USER kernelblaster

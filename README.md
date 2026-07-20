@@ -4,26 +4,54 @@
 
 ## Portfolio Fork Status
 
-This fork is being extended as a **Profile-Guided CUDA Kernel Optimization Agent** portfolio project. The current branch adds a pluggable OpenAI-compatible provider, structured experiment artifacts, and reproducible portfolio suite definitions.
+<!-- PORTFOLIO_STATUS:START -->
+This fork has completed the Day 1–10 infrastructure, the RMSNorm deep case, manual Core 10 candidates, and a same-GPU PyTorch comparison on **NVIDIA GeForce RTX 3080 (sm_86)**. The measured environment is WSL2, CUDA 12.8.61, and driver 591.86.
 
-| Validation item | Current fork status |
+| Validation item | Current status |
 | --- | --- |
-| CUDA compilation and correctness | **NOT RUN** |
-| External LLM smoke test | **NOT RUN** |
-| Nsight Compute profiling | **NOT RUN** |
-| Performance results | **pending** |
+| CPU tests | **52 passed** for the published experiment bundle |
+| CUDA build and official correctness | **passed; 10/10 candidates passed** |
+| CUDA Events and same-GPU PyTorch | **completed; 20 warmups / 100 samples / 3 Sessions** |
+| External LLM smoke | **blocked: HTTP 401 invalid_api_key; no retry** |
+| Nsight Compute counters | **blocked: ERR_NVGPUCTRPERM** |
+| Cross-GPU rerun | **NOT RUN (Day 11-14 out of scope)** |
 
-Development currently takes place on a Mac without an NVIDIA GPU. No generated kernel or speedup is claimed by this fork. Performance figures in the upstream project introduction below belong to the original KernelBlaster authors and have not yet been reproduced here.
+| Measured scope | Versus upstream (diagnostic / strict) | Versus fastest PyTorch method (diagnostic / strict) |
+| --- | ---: | ---: |
+| Nine new candidates | 5.020× / 3.302× | 1.415× / 0.931× |
+| Full Core 10, including RMSNorm | 6.351× / 4.356× | 1.447× / 0.992× |
 
-Portfolio documentation:
+The strict view requires correctness, cross-session stability, no slower Session, and at least 1.01× speedup; every rejected task remains in the denominator as upstream 1.0. 3/9 new candidates and 4/10 Core 10 tasks pass that gate. Agent-driven search remains unexecuted because the live API smoke returned 401; these are audited manual candidates and are not mixed with the upstream paper claims.
 
-- [Architecture and external API configuration](docs/portfolio/architecture.md)
-- [Deferred validation and benchmark protocol](docs/portfolio/validation.md)
-- [RMSNorm case-study template](docs/portfolio/rmsnorm-case-study.md)
+[Full Chinese report](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [English summary](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [Per-task JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [Comparison figure](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [Raw-file hashes](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [Candidate manifest](portfolio/case_studies/core10/candidates.json) · [Draft PR #5](https://github.com/shunwendongan/KernelBlaster/pull/5)
+<!-- PORTFOLIO_STATUS:END -->
+
+### Reproduce the validated RTX 3080 comparison
+
+Run these commands inside the pinned NGC 25.01 container on an `sm_86` GPU. Raw outputs remain below ignored `out/portfolio/` paths; reviewed artifacts are checked in separately.
+
+```bash
+python scripts/benchmark_candidates.py \
+  --warmup 20 --repetitions 100 --sessions 3 \
+  --cooldown-seconds 60 \
+  --output-dir out/portfolio/candidates/<run-id>
+
+python scripts/benchmark_pytorch.py \
+  --warmup 20 --repetitions 100 --sessions 3 \
+  --output-dir out/portfolio/pytorch/<run-id>
+
+python scripts/analyze_core10_comparison.py \
+  --candidate-summary out/portfolio/candidates/<run-id>/suite_summary.json \
+  --pytorch-summary out/portfolio/pytorch/<run-id>/pytorch_summary.json \
+  --output-dir out/portfolio/analysis/<run-id>
+
+python -m pytest -q
+python scripts/sync_portfolio_docs.py --check
+```
 
 The optimization loop performs rollout-based search and memory updates; it does not fine-tune or train the underlying language-model weights.
 
-## Project Intro
+## Upstream Project Intro
 
 <p><strong><span style="color:#0f766e;">Introducing KernelBlaster, a Memory-Augmented In-context Reinforcement Learning (MAIC-RL) framework</span></strong></p>
 
@@ -35,7 +63,7 @@ KernelBlaster is built to make that search smarter. Instead of treating each ker
 
 The result is a reusable open-source framework for CUDA optimization with verification, profiling, replay, and reproducible evaluation built in.
 
-Compared to the PyTorch baseline, KernelBlaster achieves geometric mean speedups of <strong><span style="color:#ef4444;">1.43x</span></strong> on KernelBench Level 1, <strong><span style="color:#2563eb;">2.50x</span></strong> on Level 2, and <strong><span style="color:#16a34a;">1.50x</span></strong> on Level 3.
+The upstream authors report geometric mean speedups over PyTorch of <strong><span style="color:#ef4444;">1.43x</span></strong> on KernelBench Level 1, <strong><span style="color:#2563eb;">2.50x</span></strong> on Level 2, and <strong><span style="color:#16a34a;">1.50x</span></strong> on Level 3. These paper-wide figures are background context and are separate from this fork's RTX 3080 Core 10 measurements above.
 
 ## Paper Link
 **arXiv:** [**arXiv:2602.14293**](https://arxiv.org/abs/2602.14293) | **PDF:** [**KernelBlaster.pdf**](docs/figures/KernelBlaster.pdf)
@@ -168,7 +196,20 @@ KernelBlaster/
 |       `-- optimization_database_footer.md
 |-- docker/
 |   `-- Dockerfile
+|-- portfolio/
+|   |-- status.json
+|   |-- suites/
+|   `-- case_studies/
+|       |-- core10/
+|       `-- rmsnorm/
+|-- artifacts/
+|   `-- portfolio-v1.0/
 |-- scripts/
+|   |-- benchmark_cuda.py
+|   |-- benchmark_candidates.py
+|   |-- benchmark_pytorch.py
+|   |-- analyze_core10_comparison.py
+|   |-- sync_portfolio_docs.py
 |   |-- run_single_kernelblaster.sh
 |   |-- run_RL.py
 |   |-- run_baselines.py
@@ -189,7 +230,10 @@ KernelBlaster/
 
 - `data/kernelbench-cuda/`: curated KernelBench-CUDA tasks, each with `init.cu` and `driver.cpp`.
 - `data/kernelblaster/`: optimization database assets and curated optimization knowledge.
-- `scripts/`: runnable entrypoints for single experiments, baselines, reprofiling, and server startup.
+- `portfolio/`: the living status manifest, reproducible suites, committed candidates, and deep case studies.
+- `artifacts/portfolio-v1.0/`: redacted environment, result, report, figure, and SHA256 publication bundle.
+- `scripts/`: Agent entrypoints plus correctness-first CUDA, PyTorch, analysis, and documentation-sync runners.
+- `docs/portfolio/`: architecture, validation status, deep-case evidence, and bilingual progress navigation.
 - `src/kernelblaster/agents/`: the optimization agents, replay components, database logic, and profiling utilities.
 - `src/kernelblaster/graph/`: workflow graph nodes and shared state definitions.
 - `src/kernelblaster/servers/`: compiler and GPU server infrastructure used during optimization.

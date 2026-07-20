@@ -1,5 +1,11 @@
 # KernelBlaster Days 1-10 validation summary
 
+> **Historical snapshot:** this file records the 2026-07-19 API-blocked Agent
+> workflow and first RMSNorm publication. The later nine-candidate, unified
+> Core 10, and same-GPU PyTorch results are in
+> [`core10-rtx3080-summary.en.md`](core10-rtx3080-summary.en.md). The API 401
+> and NCU permission outcomes remain valid.
+
 - Environment: RTX 3080 10 GiB, `sm_86`, NGC PyTorch 25.01, CUDA 12.8.
 - CPU tests: offline Provider, Recorder, Suite, dry-run, benchmark, and analysis coverage passed before publication.
 - API: the single bounded smoke request failed with HTTP 401 and was not retried. Pilot and Core 10 Agent search therefore remain blocked; Agent-only portfolio score is 1.0.

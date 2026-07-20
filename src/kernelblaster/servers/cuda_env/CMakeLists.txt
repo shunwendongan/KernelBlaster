@@ -57,7 +57,12 @@ function(add_cuda_executable TARGET_NAME)
         "${Python3_INCLUDE_DIRS}"
     )
     # Link base libraries
-    target_link_libraries(${TARGET_NAME} "${TORCH_LIBRARIES}" ${Python3_LIBRARIES})
+    target_link_libraries(
+        ${TARGET_NAME}
+        "${TORCH_LIBRARIES}"
+        ${Python3_LIBRARIES}
+        CUDA::cublas
+    )
 endfunction()
 
 # Use the function for the executables

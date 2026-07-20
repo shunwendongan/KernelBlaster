@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "updated_at": "2026-07-20",
+  "development_stage": "days_1_10_validated_core10_followup_published",
+  "publication": {
+    "branch": "codex/validation-gpt56-gpu",
+    "pull_request": 4,
+    "pull_request_url": "https://github.com/shunwendongan/KernelBlaster/pull/4",
+    "draft": true
+  },
+  "sources": {
+    "environment": "artifacts/portfolio-v1.0/environment/environment.json",
+    "comparison": "artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json",
+    "candidate_manifest": "portfolio/case_studies/core10/candidates.json",
+    "deep_case_results": "artifacts/portfolio-v1.0/results/deep_case_results.csv",
+    "validation_report_zh": "artifacts/portfolio-v1.0/reports/validation-report.zh-CN.md",
+    "comparison_report_zh": "artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md",
+    "comparison_summary_en": "artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md",
+    "comparison_csv": "artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.csv",
+    "comparison_figure": "artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg",
+    "raw_sha256": "artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv",
+    "artifact_sha256": "artifacts/portfolio-v1.0/SHA256SUMS.json"
+  },
+  "validation": {
+    "published_cpu_pytest": "52 passed",
+    "gpu_container": "passed",
+    "cuda_compile": "passed",
+    "official_correctness": "10/10 candidates passed",
+    "rmsnorm_edge_correctness": "passed",
+    "cuda_events": "completed",
+    "pytorch_same_gpu": "completed",
+    "live_api_smoke": "blocked: HTTP 401 invalid_api_key; no retry",
+    "ncu_counters": "blocked: ERR_NVGPUCTRPERM",
+    "cross_gpu": "NOT RUN (Day 11-14 out of scope)"
+  },
+  "remaining_work": [
+    "Provide a valid external API credential before Agent-driven Pilot/Core 10 search.",
+    "Reload the Windows NVIDIA driver and rerun NCU counter collection.",
+    "Run matching L40S/A100 comparisons only in the deferred Day 11-14 scope.",
+    "Generalize fixed-shape candidates across shapes, dtypes, layouts, streams, and backward paths."
+  ]
+}

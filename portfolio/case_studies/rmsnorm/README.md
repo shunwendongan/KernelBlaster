@@ -59,6 +59,13 @@ V3a, and V3b are retained as correct negative experiments relative to the best
 candidate. A V3c-vs-V3c runner self-check measured exactly 1.0000x and passed
 the required 0.95-1.05 interval.
 
+The later unified Core 10 run independently measured V0 at 31234.048 μs and
+V3c at 591.872 μs, or 52.772x. The original 49.348x deep-case result remains
+the primary ablation record; the unified rerun is reported alongside it rather
+than averaged, because independent process Sessions and GPU state changed.
+Both runs bind the measured source with SHA256 and pass the same official and
+edge correctness gates.
+
 The official shape moves roughly 384 MiB for two input reads and one output
 write and performs about 0.5 FLOP/byte. V0 launches 1,048,576 blocks of 256
 threads, while V1/V3c launch 4,096 blocks and give each thread an independent

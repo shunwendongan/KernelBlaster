@@ -4,6 +4,13 @@ This directory contains the curated, redacted outputs for Days 1-10. Raw logs,
 build trees, benchmark samples, and any `.ncu-rep` files remain under ignored
 `out/portfolio/` directories.
 
+The original Days 1–10 validation report is an immutable historical snapshot
+of the API-blocked Agent run and the first RMSNorm publication. The later
+manual Core 10/PyTorch follow-up supersedes its per-task performance coverage,
+but does not change the historical API 401 or NCU permission outcomes. Start
+with `reports/core10-rtx3080-summary.en.md` or the full Chinese follow-up report
+for the latest measured state.
+
 - `environment/`: sanitized WSL, Docker, CUDA, GPU, Server, API, and NCU status.
 - `results/`: machine-readable Core 10, deep-case, failure, usage, and aggregate data.
 - `figures/`: SVG generated from the result CSV/JSON files.
@@ -29,8 +36,9 @@ Important interpretation boundaries:
 
 - The single live API request failed with HTTP 401 and was not retried. No Core
   10 Agent search result is claimed.
-- All ten Core tasks have a baseline attempt and final state; seven passed the
-  session-stability gate and three remain explicitly unstable.
+- In the original Days 1–10 baseline snapshot, all ten Core tasks were attempted;
+  seven passed the session-stability gate and three remained unstable. The
+  follow-up reran candidates and PyTorch with a separate strict gate.
 - RMSNorm is a manual Day 8-10 case study. Its CUDA Events result is separate
   from the Agent-only portfolio score.
 - Nsight Compute hardware-counter attribution is blocked by

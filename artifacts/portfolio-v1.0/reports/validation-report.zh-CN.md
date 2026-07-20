@@ -1,5 +1,7 @@
 # KernelBlaster Day 1–10 RTX 3080 验证报告
 
+> **历史快照：** 本报告记录 2026-07-19 的 API 受阻 Agent 流程与首个 RMSNorm 深度案例，不应再被解读为当前 Core 10 覆盖状态。九个后续候选、统一十题复测和同卡 PyTorch 对比见 [`core10-rtx3080-comparison.zh-CN.md`](core10-rtx3080-comparison.zh-CN.md)。API 401 与 NCU 权限结论仍保持有效。
+
 生成时间：2026-07-19T07:53:02.260926+00:00
 
 ## 结论

@@ -4,8 +4,8 @@
   "development_stage": "days_1_10_validated_core10_followup_published",
   "publication": {
     "branch": "codex/validation-gpt56-gpu",
-    "pull_request": 4,
-    "pull_request_url": "https://github.com/shunwendongan/KernelBlaster/pull/4",
+    "pull_request": 5,
+    "pull_request_url": "https://github.com/shunwendongan/KernelBlaster/pull/5",
     "draft": true
   },
   "sources": {

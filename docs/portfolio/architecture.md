@@ -1,10 +1,17 @@
 # Portfolio Architecture and API Configuration
 
-Status at this commit:
+<!-- ARCHITECTURE_STATUS:START -->
+Current measured state (2026-07-20):
 
-- CUDA validation: **NOT RUN**
-- LLM smoke test: **NOT RUN**
-- Performance results: **pending**
+- RTX 3080 / `sm_86` CUDA build, correctness, and CUDA Events: **completed**
+- Same-GPU PyTorch eager/out/fused comparison: **completed**
+- Manual Core 10 strict verified improvements: **4/10**
+- LLM live smoke: **blocked by HTTP 401**; no Agent Core 10 search claim
+- NCU counter attribution: **blocked by `ERR_NVGPUCTRPERM`**
+- Cross-GPU comparison: **not run; deferred Day 11–14**
+
+Canonical status lives in `portfolio/status.json`; measured values are derived from the checked-in comparison JSON. `scripts/sync_portfolio_docs.py --check` rejects stale generated blocks and broken evidence links.
+<!-- ARCHITECTURE_STATUS:END -->
 
 The portfolio extension keeps the upstream optimization workflow intact and adds narrow boundaries around model access, run metadata, and suite execution.
 
@@ -31,7 +38,7 @@ The initial provider targets OpenAI-compatible **Chat Completions** endpoints. T
 
 Candidate fan-out is client-side. A request for `n=4` creates four independent `n=1` Chat Completions calls, bounded by `LLM_MAX_CONCURRENCY`. This avoids relying on third-party gateways to support the native `n` parameter.
 
-Retryable failures include connection errors, timeouts, rate limits, HTTP 408/409, and 5xx responses. Authentication, permission, and ordinary bad-request failures are not retried. `LLM_MAX_REQUESTS` counts real API attempts, including retries. `LLM_MAX_TOTAL_TOKENS` stops new calls after reported or estimated usage reaches the limit; concurrent in-flight calls can make the final observed total slightly exceed that threshold.
+Retryable failures include connection errors, timeouts, rate limits, HTTP 408/409, and 5xx responses. Authentication, permission, and ordinary bad-request failures are not retried. `LLM_MAX_REQUESTS` counts real API attempts, including retries. Before every request, the provider atomically reserves the conservative prompt estimate plus `LLM_MAX_COMPLETION_TOKENS` under a shared budget lock. A response settles that reservation against reported or estimated usage; failed calls release it. Concurrent requests therefore cannot collectively start after exceeding `LLM_MAX_TOTAL_TOKENS`. Optional `LLM_REASONING_EFFORT` is passed only to compatible model families.
 
 ## Environment configuration
 
@@ -63,7 +70,7 @@ python scripts/run_portfolio.py \
   --dry-run
 ```
 
-`--dry-run` only validates suite paths and writes the three structured artifacts. It does not connect to an API, launch the CUDA servers, or execute a kernel. Omitting `--dry-run` is reserved for the later NVIDIA validation environment and requires an API key.
+`--dry-run` only validates suite paths and writes the three structured artifacts. It does not connect to an API, launch CUDA servers, query `nvidia-smi`, or execute a kernel. Omitting `--dry-run` requires a valid API key and a configured CUDA environment; the published Agent run remains blocked because the bounded live credential smoke returned 401.
 
 ## Artifact contracts
 
@@ -71,4 +78,36 @@ python scripts/run_portfolio.py \
 - `events.jsonl`: append-only request, retry, compilation, correctness, profiling, and failure events. Every line includes a timestamp, run ID, sequence number, status, and optional task/rollout/attempt fields.
 - `summary.json`: aggregate LLM requests, retries, usage, latency, CUDA activity, errors, and final run state.
 
-Artifacts are stored below `out/` and intentionally ignored by Git. Selected, reviewed evidence will be published only after the deferred validation phase.
+Artifacts are stored below `out/` and intentionally ignored by Git. Selected, reviewed evidence is published below `artifacts/portfolio-v1.0/`, with source and raw-file SHA256 manifests linking it back to append-only local runs.
+
+## Correctness-first benchmark and analysis pipeline
+
+```mermaid
+flowchart LR
+    SUITE["Core 10 suite + candidate manifest"] --> CUDA["benchmark_candidates.py"]
+    CUDA --> EVENTS["Correctness + CUDA Events 20/100/3"]
+    PY["benchmark_pytorch.py"] --> PT["Eager / out / fused methods"]
+    EVENTS --> JOIN["analyze_core10_comparison.py"]
+    PT --> JOIN
+    JOIN --> RAW["ignored out/portfolio raw artifacts"]
+    JOIN --> PUB["redacted JSON / CSV / SVG / reports"]
+    PUB --> SHA["artifact + raw SHA256 manifests"]
+```
+
+`benchmark_cuda.py` compiles and runs original and launcher-normalized sources for correctness before timing. It removes only explicit host synchronization from the launcher, records both source hashes, calibrates inner loops, alternates AB/BA order, captures telemetry, and performs one cooldown/retest when Session spread exceeds 5%.
+
+`benchmark_candidates.py` resolves `portfolio/case_studies/core10/candidates.json`, serializes all GPU work, retains failed or unstable candidates, and writes an incremental suite summary. `benchmark_pytorch.py` uses fresh processes per Session and exposes normal eager calls plus preallocated or fused alternatives where they materially change the comparison. `analyze_core10_comparison.py` keeps diagnostic medians separate from the strict fallback score.
+
+## Living documentation pipeline
+
+```mermaid
+flowchart LR
+    STATUS["portfolio/status.json"] --> SYNC["sync_portfolio_docs.py"]
+    RESULT["canonical result JSON"] --> SYNC
+    ENV["environment + SHA256 manifests"] --> SYNC
+    SYNC --> READMES["root and docs status blocks"]
+    READMES --> CHECK["GitHub docs-sync check"]
+    DIFF["PR changed files"] --> CHECK
+```
+
+The status manifest stores narrative state and repository-relative evidence paths; it does not duplicate performance values. `--write` renders marker-delimited English and Chinese summaries from canonical artifacts. `--check` verifies exact generated content, links, schemas, artifact hashes, and the absence of machine-specific absolute paths. With `--base-ref`, benchmark, candidate, or artifact changes must include README/docs or status changes in the same PR.

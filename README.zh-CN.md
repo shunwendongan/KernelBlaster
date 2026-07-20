@@ -4,26 +4,54 @@
 
 ## Portfolio Fork 状态
 
-本 Fork 正在扩展为一个 **Profile-Guided CUDA Kernel Optimization Agent（基于性能分析引导的 CUDA Kernel 优化智能体）** 简历项目。当前分支增加了可插拔的 OpenAI-compatible Provider、结构化实验产物，以及可复现的 Portfolio 任务集定义。
+<!-- PORTFOLIO_STATUS:START -->
+当前 Fork 已在 **NVIDIA GeForce RTX 3080（sm_86）** 上完成 Day 1–10 基础设施、RMSNorm 深度案例、Core 10 手工候选和同卡 PyTorch 对比。环境为 WSL2、CUDA 12.8.61、驱动 591.86。
 
-| 验证项目 | 当前 Fork 状态 |
+| 验证项目 | 当前状态 |
 | --- | --- |
-| CUDA 编译与正确性 | **NOT RUN（未运行）** |
-| 外部 LLM 冒烟测试 | **NOT RUN（未运行）** |
-| Nsight Compute 性能分析 | **NOT RUN（未运行）** |
-| 性能结果 | **pending（待验证）** |
+| CPU 测试 | **52 项通过**（已发布实验批次） |
+| CUDA 编译与官方正确性 | **通过；10/10 个候选通过** |
+| CUDA Events 与同卡 PyTorch | **已完成；20 次预热 / 100 个样本 / 3 个独立进程 Session** |
+| 外部 LLM 冒烟测试 | **阻塞：HTTP 401 invalid_api_key；不重试** |
+| Nsight Compute 硬件计数器 | **阻塞：ERR_NVGPUCTRPERM** |
+| 跨 GPU 复测 | **未运行（Day 11–14 不在本阶段范围）** |
 
-当前开发环境是没有 NVIDIA GPU 的 Mac。本 Fork 尚未提交生成的优化 Kernel，也不声称取得了任何加速效果。下方上游项目介绍中的性能数据属于 KernelBlaster 原作者，本 Fork 尚未复现这些结果。
+| 实测范围 | 相对仓库原版（诊断 / 严格） | 相对 PyTorch 最快方法（诊断 / 严格） |
+| --- | ---: | ---: |
+| 本轮新增九题 | 5.020× / 3.302× | 1.415× / 0.931× |
+| 完整 Core 10（含 RMSNorm） | 6.351× / 4.356× | 1.447× / 0.992× |
 
-Portfolio 项目文档：
+严格口径要求正确、跨 Session 稳定、每个 Session 不退化且提升至少 1.01×；未通过的任务按仓库原版 1.0 计入分母。九题有 3/9 个正式提升，完整 Core 10 有 4/10 个正式提升。LLM Agent 搜索仍因 401 未运行，这些结果来自可审计的手工候选，不与上游论文数据混用。
 
-- [架构与外部 API 配置](docs/portfolio/architecture.md)
-- [后续验证与 Benchmark 协议](docs/portfolio/validation.md)
-- [RMSNorm 深度案例模板](docs/portfolio/rmsnorm-case-study.md)
+[中文完整报告](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [英文摘要](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [逐题 JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [对比图](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [原始文件哈希](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [候选清单](portfolio/case_studies/core10/candidates.json) · [Draft PR #5](https://github.com/shunwendongan/KernelBlaster/pull/5)
+<!-- PORTFOLIO_STATUS:END -->
+
+### 复现 RTX 3080 正式对比
+
+以下命令应在固定的 NGC 25.01 容器和 `sm_86` GPU 中执行。原始输出保存在被忽略的 `out/portfolio/`，审核后的结果单独提交。
+
+```bash
+python scripts/benchmark_candidates.py \
+  --warmup 20 --repetitions 100 --sessions 3 \
+  --cooldown-seconds 60 \
+  --output-dir out/portfolio/candidates/<run-id>
+
+python scripts/benchmark_pytorch.py \
+  --warmup 20 --repetitions 100 --sessions 3 \
+  --output-dir out/portfolio/pytorch/<run-id>
+
+python scripts/analyze_core10_comparison.py \
+  --candidate-summary out/portfolio/candidates/<run-id>/suite_summary.json \
+  --pytorch-summary out/portfolio/pytorch/<run-id>/pytorch_summary.json \
+  --output-dir out/portfolio/analysis/<run-id>
+
+python -m pytest -q
+python scripts/sync_portfolio_docs.py --check
+```
 
 这里的优化循环执行的是基于 rollout 的搜索和经验库更新，不会微调或训练底层大语言模型的权重。
 
-## 项目介绍
+## 上游项目介绍
 
 <p><strong><span style="color:#0f766e;">KernelBlaster 是一个基于记忆增强上下文强化学习（Memory-Augmented In-context Reinforcement Learning，MAIC-RL）的框架</span></strong></p>
 
@@ -35,7 +63,7 @@ KernelBlaster 旨在让这一搜索过程更加智能。它不会把每个 Kerne
 
 最终得到的是一个可复用的开源 CUDA 优化框架，内置正确性验证、性能分析、经验回放和可复现实验评估能力。
 
-根据上游作者报告，与 PyTorch 基线相比，KernelBlaster 在 KernelBench Level 1、Level 2 和 Level 3 上分别取得了 <strong><span style="color:#ef4444;">1.43x</span></strong>、<strong><span style="color:#2563eb;">2.50x</span></strong> 和 <strong><span style="color:#16a34a;">1.50x</span></strong> 的几何平均加速。上述数据尚未由本 Fork 复现。
+根据上游作者报告，与 PyTorch 基线相比，KernelBlaster 在 KernelBench Level 1、Level 2 和 Level 3 上分别取得了 <strong><span style="color:#ef4444;">1.43x</span></strong>、<strong><span style="color:#2563eb;">2.50x</span></strong> 和 <strong><span style="color:#16a34a;">1.50x</span></strong> 的几何平均加速。这些论文全量数据仅作为背景，与上方本 Fork 的 RTX 3080 Core 10 实测严格分开。
 
 ## 论文链接
 
@@ -169,7 +197,20 @@ KernelBlaster/
 |       `-- optimization_database_footer.md
 |-- docker/
 |   `-- Dockerfile
+|-- portfolio/
+|   |-- status.json
+|   |-- suites/
+|   `-- case_studies/
+|       |-- core10/
+|       `-- rmsnorm/
+|-- artifacts/
+|   `-- portfolio-v1.0/
 |-- scripts/
+|   |-- benchmark_cuda.py
+|   |-- benchmark_candidates.py
+|   |-- benchmark_pytorch.py
+|   |-- analyze_core10_comparison.py
+|   |-- sync_portfolio_docs.py
 |   |-- run_single_kernelblaster.sh
 |   |-- run_RL.py
 |   |-- run_baselines.py
@@ -190,7 +231,10 @@ KernelBlaster/
 
 - `data/kernelbench-cuda/`：整理后的 KernelBench-CUDA 任务，每个任务包含 `init.cu` 和 `driver.cpp`。
 - `data/kernelblaster/`：优化数据库和整理后的优化知识。
-- `scripts/`：单次实验、基线、重新分析和 Server 启动入口。
+- `portfolio/`：实时状态清单、可复现 Suite、已提交候选和深度案例。
+- `artifacts/portfolio-v1.0/`：脱敏环境、结果、报告、图表与 SHA256 发布包。
+- `scripts/`：Agent 入口，以及正确性优先的 CUDA、PyTorch、分析和文档同步 Runner。
+- `docs/portfolio/`：架构、验证状态、深度案例证据和双语进度导航。
 - `src/kernelblaster/agents/`：优化 Agent、经验回放组件、数据库逻辑和性能分析工具。
 - `src/kernelblaster/graph/`：工作流 Graph Node 和共享状态定义。
 - `src/kernelblaster/servers/`：优化过程中使用的编译和 GPU Server 基础设施。

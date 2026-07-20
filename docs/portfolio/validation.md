@@ -1,38 +1,83 @@
-# Deferred Validation and Benchmark Protocol
+# Validation status and benchmark protocol
 
-This document is a protocol, not a result report. No Python entrypoint, LLM API, CUDA compiler, GPU server, Docker container, Nsight Compute command, or benchmark has been executed for the current Mac-only implementation commit.
+This document is the living validation record for the portfolio fork. Historical raw runs remain append-only below ignored `out/portfolio/` directories; reviewed evidence is published under `artifacts/portfolio-v1.0/`.
 
-## Current status
-
-| Gate | Status | Evidence required to close it |
+<!-- VALIDATION_STATUS:START -->
+| Gate | Current status | Canonical evidence |
 | --- | --- | --- |
-| Provider mock tests | NOT RUN | fan-out, retries, budget, missing-usage, redaction tests |
-| Real gateway smoke test | NOT RUN | one successful request using the configured model alias |
-| RTX 3080 compilation | NOT RUN | compile log and environment manifest |
-| CUDA correctness | NOT RUN | driver output for every accepted candidate |
-| NCU profiling | NOT RUN | Elapsed Cycles plus selected bottleneck metrics |
-| CUDA Events timing | NOT RUN | warmup and repeated independent timing samples |
-| Cross-GPU comparison | NOT RUN | matching 3080 and L40S/A100 configurations |
-| Performance results | pending | reviewed tables generated from recorded artifacts |
+| Provider/Recorder/Suite CPU tests | PASSED — 52 passed | `tests/` and the published validation report |
+| Real gateway smoke | BLOCKED — HTTP 401, no retry | `artifacts/portfolio-v1.0/results/analysis_summary.json` |
+| RTX 3080 container and `sm_86` build | PASSED | `artifacts/portfolio-v1.0/environment/environment.json` |
+| Official candidate correctness | PASSED — 10/10 | Core 10 comparison JSON and raw SHA256 manifest |
+| RMSNorm edge correctness | PASSED | committed `edge_driver.cpp` and deep-case artifacts |
+| CUDA Events timing | COMPLETED — 20/100/3 | Core 10 comparison JSON/CSV |
+| Same-GPU PyTorch comparison | COMPLETED | `pytorch_core10_rtx3080.csv` |
+| NCU hardware counters | BLOCKED — `ERR_NVGPUCTRPERM` | environment manifest and historical validation report |
+| Cross-GPU comparison | NOT RUN — deferred Day 11–14 | no performance claim published |
 
-## Validation order
+The manual follow-up validates all ten candidates and formally improves 4/10 under the strict gate. Agent-driven rollout search remains separate and unexecuted because the one bounded live API request failed authentication.
+<!-- VALIDATION_STATUS:END -->
 
-1. Run CPU-only provider tests with a fake Chat Completions client. Check client-side fan-out, concurrency, retry classification, request budget, token accounting, and secret redaction.
-2. Execute `run_portfolio.py --dry-run` and validate all three artifact schemas without an API or GPU.
-3. Send one real gateway request using the exact externally supplied model ID. Do not begin CUDA rollouts until this smoke test passes.
-4. On WSL2 with RTX 3080, record driver, CUDA toolkit, container, Python dependency, and Git commit information. Verify compilation, correctness, GPU server startup, and NCU permission.
-5. Run the Core 10 suite with `3 rollouts × 3 steps`. Serialize GPU compilation and evaluation; cap LLM concurrency at four.
-6. Run the RMSNorm case study with `8 rollouts × 5 steps`. If there is no correct improvement of at least 5% by day 9, switch the deep case study to task 047 Sum Reduction.
-7. Use NCU Elapsed Cycles only as the search signal. Re-measure final candidates independently with CUDA Events after warmup and repeated runs.
-8. Re-run RMSNorm, Softmax, and Small-K MatMul on RTX 3080 and L40S. Use A100 only when L40S is unavailable, and report the substitution.
+## Completed development and experiment timeline
 
-## Result acceptance rules
+1. **Days 1–2 — provider and observability:** implemented the OpenAI-compatible provider boundary, client-side fan-out, retry classification, atomic request/token reservation, usage fallback, Recorder sequence/atomicity/redaction, Suite validation, and offline dry-run artifacts.
+2. **Days 3–7 — local GPU validation:** pinned the NGC PyTorch 25.01 container, mapped the RTX 3080 to `sm_86`, validated compiler/GPU servers, added the independent CUDA Events runner, and recorded the baseline Core 10 state. The bounded live API smoke returned HTTP 401, so Agent Pilot/Core 10 rollouts did not run.
+3. **Days 8–10 — RMSNorm deep case:** implemented V1–V3c, added odd/tiny/63–65-channel correctness inputs, retained failed variants, and published the 49.348× paired V3c result. NCU counter access remained blocked, so no hardware-counter attribution was published.
+4. **Core 10 follow-up:** added nine manual candidates, reran all ten tasks with 20 warmups, 100 samples, three independent process Sessions, AB/BA ordering, and compared them with same-GPU PyTorch eager/out/fused methods.
+5. **Publication:** checked in redacted JSON/CSV/SVG reports and SHA256 links for 362 ignored raw JSON/JSONL/CSV/SVG/log files. Merged PR #4 contains the code and artifact publication; Draft PR #5 tracks the living-documentation follow-up.
 
-- A candidate is rejected if any correctness input fails, even if its timing is faster.
-- Report hardware, precision, shapes, warmup count, repetition count, central statistic, dispersion, CUDA version, driver, and commit with every performance table.
-- Compare against the unmodified upstream CUDA kernel and a relevant PyTorch baseline; label each baseline separately.
-- Do not compare NCU Elapsed Cycles directly across GPU architectures.
-- Do not publish a speedup until the final CUDA Events measurement is reproducible and traceable to a committed kernel.
-- Upstream KernelBlaster paper results are background context, not evidence for this fork.
+## Result interpretation
 
-The language model remains an external inference service throughout this work. Rollouts update search trajectories and the optimization database; they do not train or fine-tune model weights.
+- The diagnostic candidate medians include unstable tasks and are useful for prioritizing follow-up work, not release claims.
+- The strict score requires correctness, no more than 5% cross-session spread, every paired Session not slower, and at least 1.01× aggregate speedup. Rejected tasks remain in the denominator as upstream 1.0.
+- The nine newly developed candidates score 5.020× diagnostic and 3.302× strict versus upstream; 004, 007, and 040 pass the strict gate.
+- Full Core 10, including the existing RMSNorm case, scores 6.351× diagnostic and 4.356× strict versus upstream.
+- Against the fastest measured PyTorch method, the nine-candidate diagnostic/strict ratios are 1.415×/0.931×; the full-ten ratios are 1.447×/0.992×.
+- Task 007 calls cuBLAS and therefore demonstrates correct mature-library integration rather than a custom GEMM beating cuBLAS.
+
+Canonical evidence:
+
+- [Per-task comparison JSON](../../artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json)
+- [Full Chinese analysis](../../artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md)
+- [Standalone English summary](../../artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md)
+- [Environment manifest](../../artifacts/portfolio-v1.0/environment/environment.json)
+- [Raw-artifact SHA256 manifest](../../artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv)
+
+## Acceptance rules
+
+- Reject a candidate when any official or extra correctness input fails, regardless of timing.
+- Preserve original and timing-normalized source SHA256 values in each raw manifest.
+- Report GPU, SM target, precision, shape, seed, warmup, repetitions, inner loops, Session/order, median, p10/p90, telemetry, driver/CUDA/container, and source provenance.
+- Treat upstream CUDA, candidate CUDA, PyTorch eager/out/fused, and paper-reported results as separate baselines.
+- Stop formal performance claims when the automatic cooldown/retest still exceeds the 5% Session gate.
+- Do not infer NCU bottlenecks from CUDA Events or code inspection; `ERR_NVGPUCTRPERM` remains an explicit attribution blocker.
+
+## Remaining blockers and deferred work
+
+- Supply a valid external API credential before Agent-driven Pilot/Core 10 search; the single 401 request was not retried or billed as a successful completion.
+- Reload the Windows NVIDIA driver after enabling performance counters, then collect and export the required NCU sections.
+- Run L40S/A100 matching comparisons only in the deferred Day 11–14 scope.
+- Generalize fixed-shape candidates across shapes, dtypes, layouts, streams, graph capture, backward paths, and stricter numerical tolerances before production-library claims.
+
+## Reproduction commands
+
+```bash
+python scripts/benchmark_candidates.py \
+  --warmup 20 --repetitions 100 --sessions 3 \
+  --cooldown-seconds 60 \
+  --output-dir out/portfolio/candidates/<run-id>
+
+python scripts/benchmark_pytorch.py \
+  --warmup 20 --repetitions 100 --sessions 3 \
+  --output-dir out/portfolio/pytorch/<run-id>
+
+python scripts/analyze_core10_comparison.py \
+  --candidate-summary out/portfolio/candidates/<run-id>/suite_summary.json \
+  --pytorch-summary out/portfolio/pytorch/<run-id>/pytorch_summary.json \
+  --output-dir out/portfolio/analysis/<run-id>
+
+python scripts/sync_portfolio_docs.py --write
+python scripts/sync_portfolio_docs.py --check
+```
+
+The language model remains an external inference service. Rollouts update trajectories and the optimization database; they do not train or fine-tune model weights.

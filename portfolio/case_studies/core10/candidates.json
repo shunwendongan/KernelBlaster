@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "gpu_target": "sm_86",
+  "provenance": "manual_core10_optimization",
+  "tasks": [
+    {"id": "004", "name": "row_block_half2", "source": "004_matvec_sm86.cu"},
+    {"id": "007", "name": "cublas_gemm_ex", "source": "007_small_k_matmul_cublas.cu"},
+    {"id": "019", "name": "pack8_relu", "source": "019_relu_sm86.cu"},
+    {"id": "023", "name": "cached_softmax", "source": "023_softmax_sm86.cu"},
+    {"id": "026", "name": "pack8_gelu", "source": "026_gelu_sm86.cu"},
+    {"id": "036", "name": "rmsnorm_v3c", "source": "../rmsnorm/best_rmsnorm_sm86.cu", "extra_correctness_drivers": ["../rmsnorm/edge_driver.cpp"], "provenance": "day8_10_deep_case"},
+    {"id": "040", "name": "multiblock_layernorm", "source": "040_layernorm_sm86.cu"},
+    {"id": "047", "name": "spatial_half2_sum", "source": "047_sum_sm86.cu"},
+    {"id": "088", "name": "pack8_mingpt_gelu", "source": "088_mingpt_gelu_sm86.cu"},
+    {"id": "095", "name": "warp_cross_entropy", "source": "095_cross_entropy_sm86.cu"}
+  ]
+}

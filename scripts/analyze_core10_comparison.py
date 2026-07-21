@@ -10,11 +10,15 @@ import json
 import math
 import os
 from pathlib import Path
+import random
+import statistics
 from typing import Any
 
 
 TASK_IDS = ("004", "007", "019", "023", "026", "036", "040", "047", "088", "095")
 MIN_MATERIAL_SPEEDUP = 1.01
+MIN_CONFIRMATION_SESSIONS = 5
+BOOTSTRAP_RESAMPLES = 10_000
 
 
 def _load(path: Path) -> dict[str, Any]:
@@ -34,6 +38,25 @@ def _geomean(values: list[float]) -> float:
     if not values or any(value <= 0 for value in values):
         raise ValueError("Geometric mean requires positive values.")
     return math.exp(sum(math.log(value) for value in values) / len(values))
+
+
+def paired_bootstrap_interval(
+    session_speedups: list[float],
+    *,
+    seed: int = 20260719,
+    resamples: int = BOOTSTRAP_RESAMPLES,
+) -> tuple[float, float] | None:
+    if len(session_speedups) < 2:
+        return None
+    rng = random.Random(seed)
+    estimates = []
+    for _ in range(resamples):
+        sample = [rng.choice(session_speedups) for _ in session_speedups]
+        estimates.append(statistics.median(sample))
+    estimates.sort()
+    lower_index = int(0.025 * (len(estimates) - 1))
+    upper_index = int(0.975 * (len(estimates) - 1))
+    return estimates[lower_index], estimates[upper_index]
 
 
 def _eager_method(task_id: str) -> str:
@@ -87,22 +110,36 @@ def build_comparison_rows(
         correct_methods = [row for row in torch_methods if row.get("correct")]
         if not correct_methods:
             raise ValueError(f"Task {task_id} has no correct PyTorch method.")
-        best = min(correct_methods, key=lambda row: float(row["median_us"]))
+        stable_methods = [row for row in correct_methods if row.get("stable")]
+        best = (
+            min(stable_methods, key=lambda row: float(row["median_us"]))
+            if stable_methods
+            else None
+        )
 
         baseline_us = float(candidate["baseline_median_us"])
         candidate_us = float(candidate["candidate_median_us"])
         attempted_speedup = float(candidate["speedup"])
+        session_speedups = [
+            float(value) for value in (candidate.get("session_speedups") or [])
+        ]
+        bootstrap_interval = paired_bootstrap_interval(session_speedups)
+        bootstrap_lower = bootstrap_interval[0] if bootstrap_interval else None
+        confirmation_ready = len(session_speedups) >= MIN_CONFIRMATION_SESSIONS
         verified_improvement = bool(
             candidate.get("correct")
             and candidate.get("stable")
             and candidate.get("performance_claim_allowed")
             and candidate.get("all_sessions_not_slower")
             and attempted_speedup >= MIN_MATERIAL_SPEEDUP
+            and confirmation_ready
+            and bootstrap_lower is not None
+            and bootstrap_lower > 1.0
         )
         selected_us = candidate_us if verified_improvement else baseline_us
         selected_variant = candidate["candidate"] if verified_improvement else "upstream_baseline"
         eager_us = float(eager["median_us"])
-        best_us = float(best["median_us"])
+        best_us = float(best["median_us"]) if best is not None else None
         rows.append(
             {
                 "task_id": task_id,
@@ -125,7 +162,13 @@ def build_comparison_rows(
                     "candidate_session_medians_us"
                 ),
                 "attempted_speedup": attempted_speedup,
-                "session_speedups": candidate.get("session_speedups"),
+                "session_speedups": session_speedups,
+                "confirmation_sessions": len(session_speedups),
+                "confirmation_ready": confirmation_ready,
+                "bootstrap_95_lower": bootstrap_lower,
+                "bootstrap_95_upper": (
+                    bootstrap_interval[1] if bootstrap_interval else None
+                ),
                 "verified_improvement": verified_improvement,
                 "selected_variant": selected_variant,
                 "selected_median_us": selected_us,
@@ -137,14 +180,23 @@ def build_comparison_rows(
                 "pytorch_eager_p90_us": eager.get("p90_us"),
                 "candidate_vs_pytorch_eager": eager_us / candidate_us,
                 "selected_vs_pytorch_eager": eager_us / selected_us,
-                "pytorch_best_method": best["method"],
-                "pytorch_best_allocation_mode": best["allocation_mode"],
+                "pytorch_comparison_status": (
+                    "comparable" if best is not None else "inconclusive"
+                ),
+                "pytorch_best_method": best["method"] if best is not None else None,
+                "pytorch_best_allocation_mode": (
+                    best["allocation_mode"] if best is not None else None
+                ),
                 "pytorch_best_median_us": best_us,
-                "pytorch_best_stable": bool(best.get("stable")),
-                "pytorch_best_p10_us": best.get("p10_us"),
-                "pytorch_best_p90_us": best.get("p90_us"),
-                "candidate_vs_pytorch_best": best_us / candidate_us,
-                "selected_vs_pytorch_best": best_us / selected_us,
+                "pytorch_best_stable": bool(best and best.get("stable")),
+                "pytorch_best_p10_us": best.get("p10_us") if best else None,
+                "pytorch_best_p90_us": best.get("p90_us") if best else None,
+                "candidate_vs_pytorch_best": (
+                    best_us / candidate_us if best_us is not None else None
+                ),
+                "selected_vs_pytorch_best": (
+                    best_us / selected_us if best_us is not None else None
+                ),
             }
         )
     return rows
@@ -153,19 +205,29 @@ def build_comparison_rows(
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     attempted = [float(row["attempted_speedup"]) for row in rows]
     selected = [float(row["portfolio_speedup"]) for row in rows]
-    library = [float(row["selected_vs_pytorch_best"]) for row in rows]
-    attempted_library = [float(row["candidate_vs_pytorch_best"]) for row in rows]
+    library = [
+        float(row["selected_vs_pytorch_best"])
+        for row in rows
+        if row["selected_vs_pytorch_best"] is not None
+    ]
+    attempted_library = [
+        float(row["candidate_vs_pytorch_best"])
+        for row in rows
+        if row["candidate_vs_pytorch_best"] is not None
+    ]
     return {
         "denominator": len(rows),
         "material_speedup_threshold": MIN_MATERIAL_SPEEDUP,
+        "minimum_confirmation_sessions": MIN_CONFIRMATION_SESSIONS,
         "verified_improved_tasks": sum(row["verified_improvement"] for row in rows),
         "correct_tasks": sum(row["correct"] for row in rows),
         "stable_tasks": sum(row["stable"] for row in rows),
         "attempted_candidate_geomean_speedup": _geomean(attempted),
         "all10_selected_portfolio_geomean_speedup": _geomean(selected),
-        "selected_vs_pytorch_best_geomean": _geomean(library),
-        "attempted_candidate_vs_pytorch_best_geomean": _geomean(
-            attempted_library
+        "pytorch_comparable_tasks": len(library),
+        "selected_vs_pytorch_best_geomean": _geomean(library) if library else None,
+        "attempted_candidate_vs_pytorch_best_geomean": (
+            _geomean(attempted_library) if attempted_library else None
         ),
         "custom_faster_than_pytorch_best_tasks": sum(value > 1.0 for value in library),
         "pytorch_best_faster_tasks": sum(value < 1.0 for value in library),
@@ -218,15 +280,17 @@ def render_svg(rows: list[dict[str, Any]], path: Path) -> None:
     for index, row in enumerate(rows):
         y = top + index * row_height
         attempted = float(row["attempted_speedup"])
-        library = float(row["selected_vs_pytorch_best"])
+        library_raw = row["selected_vs_pytorch_best"]
+        library = float(library_raw) if library_raw is not None else None
         attempted_x = x_for(attempted)
-        library_x = x_for(library)
+        library_x = x_for(library) if library is not None else one_x
         parts.append(f'<text x="24" y="{y + 18}" class="label">{escape(row["task_id"] + " " + row["kernel"])}</text>')
         parts.append(f'<line x1="{min(one_x, attempted_x):.1f}" y1="{y + 10}" x2="{max(one_x, attempted_x):.1f}" y2="{y + 10}" stroke="#3578d4" stroke-width="8"/>')
-        color = "#248a5b" if library >= 1.0 else "#d07428"
+        color = "#9ca3af" if library is None else ("#248a5b" if library >= 1.0 else "#d07428")
         parts.append(f'<line x1="{min(one_x, library_x):.1f}" y1="{y + 28}" x2="{max(one_x, library_x):.1f}" y2="{y + 28}" stroke="{color}" stroke-width="8"/>')
         parts.append(f'<text x="920" y="{y + 14}" class="small">candidate {attempted:.3f}×</text>')
-        parts.append(f'<text x="920" y="{y + 32}" class="small">vs PyTorch {library:.3f}×</text>')
+        library_label = f"{library:.3f}×" if library is not None else "inconclusive"
+        parts.append(f'<text x="920" y="{y + 32}" class="small">vs PyTorch {library_label}</text>')
     parts.append("</svg>")
     path.write_text("\n".join(parts) + "\n", encoding="utf-8")
 
@@ -258,7 +322,7 @@ def main() -> int:
     _atomic_json(
         comparison_json,
         {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "hardware": "NVIDIA GeForce RTX 3080 (sm_86)",
             "candidate_protocol": candidate_payload.get("protocol"),
             "pytorch_protocol": pytorch_payload.get("protocol"),

@@ -61,13 +61,25 @@ def test_generated_status_blocks_are_localized_and_evidence_is_labeled():
     chinese = MODULE._root_block(context, chinese=True)
     english = MODULE._root_block(context, chinese=False)
 
-    assert "52 项通过" in chinese
-    assert "10/10 个候选通过" in chinese
-    assert "阻塞：HTTP 401 invalid_api_key；不重试" in chinese
+    assert "98 项通过" in chinese
+    assert "历史 10/10；schema v2 定向验证 5/5 通过" in chinese
+    assert "未运行（历史记录为 HTTP 401；凭据尚未重新验证）" in chinese
     assert "未运行（Day 11–14 不在本阶段范围）" in chinese
     assert "10/10 candidates passed" not in chinese
+    assert "Schema v2 定向验证" in chinese
+    assert "Schema-v2 targeted validation" in english
     assert "Full Chinese report" in english
     assert "English full report" not in english
+
+
+def test_docs_markdown_explanations_have_chinese_and_english_pairs():
+    english_documents = [
+        path for path in (ROOT / "docs").rglob("*.md") if not path.name.endswith(".zh-CN.md")
+    ]
+    assert english_documents
+    for english in english_documents:
+        chinese = english.with_name(f"{english.stem}.zh-CN.md")
+        assert chinese.is_file(), f"Missing Chinese documentation pair for {english}"
 
 
 def test_replace_block_rejects_missing_markers():

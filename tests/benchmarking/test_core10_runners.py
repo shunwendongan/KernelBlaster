@@ -97,7 +97,7 @@ def test_comparison_selects_only_verified_improvements():
                 "baseline_median_us": 20.0,
                 "candidate_median_us": 10.0 if improved else 21.0,
                 "speedup": 2.0 if improved else 20.0 / 21.0,
-                "session_speedups": [2.0, 2.0, 2.0] if improved else [0.95] * 3,
+                "session_speedups": [2.0] * 5 if improved else [0.95] * 5,
             }
         )
         eager_method = (
@@ -133,3 +133,74 @@ def test_comparison_selects_only_verified_improvements():
     assert failed["portfolio_speedup"] == 1.0
     assert failed["pytorch_best_method"] == "pytorch_fused_gelu_tanh"
     assert ANALYZE.summarize(rows)["verified_improved_tasks"] == 9
+
+
+def test_comparison_excludes_unstable_pytorch_method():
+    candidate_results = []
+    pytorch_results = []
+    for task_id in ANALYZE.TASK_IDS:
+        candidate_results.append(
+            {
+                "task_id": task_id,
+                "kernel": f"kernel-{task_id}",
+                "candidate": f"candidate-{task_id}",
+                "source": f"{task_id}.cu",
+                "correct": True,
+                "stable": True,
+                "performance_claim_allowed": True,
+                "all_sessions_not_slower": True,
+                "baseline_median_us": 20.0,
+                "candidate_median_us": 10.0,
+                "speedup": 2.0,
+                "session_speedups": [2.0] * 5,
+            }
+        )
+        eager_name = (
+            "pytorch_driver_formula" if task_id == "088" else "pytorch_eager"
+        )
+        pytorch_results.extend(
+            [
+                {
+                    "task_id": task_id,
+                    "method": eager_name,
+                    "allocation_mode": "framework_allocated",
+                    "median_us": 15.0,
+                    "correct": True,
+                    "stable": True,
+                },
+                {
+                    "task_id": task_id,
+                    "method": "unstable_but_fast",
+                    "allocation_mode": "framework_allocated",
+                    "median_us": 1.0,
+                    "correct": True,
+                    "stable": False,
+                },
+            ]
+        )
+    rows = ANALYZE.build_comparison_rows(
+        {"results": candidate_results}, {"results": pytorch_results}
+    )
+    assert all(row["pytorch_best_method"] != "unstable_but_fast" for row in rows)
+
+
+def test_core10_manifest_declares_edge_drivers_and_non_reentrant_candidates():
+    payload = json.loads(
+        (ROOT / "portfolio" / "case_studies" / "core10" / "candidates.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    tasks = {task["id"]: task for task in payload["tasks"]}
+    for task_id in ("004", "007", "036", "040", "095"):
+        assert tasks[task_id]["extra_correctness_drivers"]
+        for relative in tasks[task_id]["extra_correctness_drivers"]:
+            assert (ROOT / "portfolio" / "case_studies" / "core10" / relative).resolve().is_file()
+    for task_id in ("007", "040", "095"):
+        assert tasks[task_id]["reentrant"] is False
+
+
+def test_gpu_ci_keeps_correctness_and_ncu_probes_out_of_formal_timing():
+    workflow = (ROOT / ".github" / "workflows" / "gpu-validation.yml").read_text(
+        encoding="utf-8"
+    )
+    assert workflow.count("--correctness-only") == 2

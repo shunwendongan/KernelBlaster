@@ -310,7 +310,13 @@ def main() -> int:
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--repetitions", type=int, default=100)
     parser.add_argument("--inner-loops", type=int, default=0)
-    parser.add_argument("--sessions", type=int, default=3)
+    parser.add_argument(
+        "--phase",
+        choices=("discovery", "confirmation"),
+        default="confirmation",
+        help="Discovery uses 3 sessions; formal confirmation uses 5.",
+    )
+    parser.add_argument("--sessions", type=int, default=None)
     parser.add_argument("--seed", type=int, default=20260719)
     parser.add_argument("--max-session-spread-percent", type=float, default=5.0)
     parser.add_argument("--reference-only", action="store_true")
@@ -326,6 +332,8 @@ def main() -> int:
         "--worker-session", type=int, default=0, help=argparse.SUPPRESS
     )
     args = parser.parse_args()
+    if args.sessions is None:
+        args.sessions = 3 if args.phase == "discovery" else 5
     if args.worker:
         return _worker(args)
     if min(args.warmup, args.repetitions, args.sessions) < 1 or args.inner_loops < 0:
@@ -451,6 +459,7 @@ def main() -> int:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "git_commit": commit,
         "protocol": {
+            "phase": args.phase,
             "warmup": args.warmup,
             "repetitions": args.repetitions,
             "sessions": args.sessions,

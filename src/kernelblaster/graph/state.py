@@ -49,6 +49,7 @@ class GraphState(TypedDict):
         Path  # Path to the optimized CUDA code based on NCU profiling and benchmarking
     )
     rl_ncu_cuda_fp: Path  # Path to the RL-optimized CUDA code
+    run_outcome: Dict[str, Any]  # Serialized RunOutcome terminal state
 
 
 def save_state_to_json(state: GraphState, output_path: str) -> None:

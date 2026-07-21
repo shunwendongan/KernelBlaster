@@ -14,6 +14,7 @@
 # limitations under the License.
 import argparse
 import asyncio
+import os
 import sys
 from loguru import logger
 from pathlib import Path
@@ -26,6 +27,7 @@ import json
 import uvicorn
 from fastapi import (
     FastAPI,
+    Depends,
     HTTPException,
     BackgroundTasks,
 )
@@ -37,18 +39,24 @@ from ..agents.utils.file_operations import get_agent_status
 from ..config import config, WorkflowConfig, GPUType
 from ..resources import *
 from ..workflow import *
+from .auth import require_worker_token
 
 
 app = FastAPI(title="KernelBlaster API")
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
-    allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
-)
+cors_origins = [
+    value.strip()
+    for value in os.getenv("KERNELBLASTER_CORS_ORIGINS", "").split(",")
+    if value.strip()
+]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_credentials=False,
+        allow_methods=["GET", "POST"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
 
 
 # Task tracking
@@ -66,11 +74,19 @@ class Task:
     def __init__(self, task_id, params, user_id):
         self.task_id = task_id
         self.params = params
-        self.folder = (
-            OUTPUT_DIR / params.folder
-            if params.folder
-            else OUTPUT_DIR / user_id / task_id if user_id else OUTPUT_DIR / task_id
-        )
+        output_root = OUTPUT_DIR.resolve()
+        if params.folder:
+            requested = Path(params.folder)
+            if requested.is_absolute():
+                raise ValueError("Task folder must be relative to the output directory")
+            folder = output_root / requested
+        elif user_id:
+            folder = output_root / user_id / task_id
+        else:
+            folder = output_root / task_id
+        self.folder = folder.resolve()
+        if not self.folder.is_relative_to(output_root):
+            raise ValueError("Task folder escapes the output directory")
         self.status = TaskStatus.PENDING
         self.creation_time = time.time()
         self.start_time = None
@@ -351,10 +367,17 @@ async def process_task(task_id: str, params: WorkflowRequest):
                 task.status = TaskStatus.TIMEOUT
                 task.result = result.error
                 logger.warning(f"Task {task_id} timed out: {task.result}")
-            else:
+            elif result.success:
                 task.status = TaskStatus.COMPLETED
                 task.result = result.generated_codes
                 logger.info(f"Task {task_id} completed successfully: {task.result}")
+            else:
+                task.status = TaskStatus.FAILED
+                task.result = result.outcome.to_dict()
+                logger.warning(
+                    f"Task {task_id} ended with {result.outcome.status.value}: "
+                    f"{result.error}"
+                )
 
     except asyncio.CancelledError:
         logger.info(f"Task {task_id} was cancelled")
@@ -393,9 +416,16 @@ async def create_task(task_id: str, params: WorkflowRequest):
 
 
 @app.post("/submit", response_model=TaskResponse)
-async def submit_workflow(request: WorkflowRequest, background_tasks: BackgroundTasks):
+async def submit_workflow(
+    request: WorkflowRequest,
+    background_tasks: BackgroundTasks,
+    _authorized: None = Depends(require_worker_token),
+):
     task_id = str(uuid.uuid4())
-    task = Task(task_id, request, request.user_id)
+    try:
+        task = Task(task_id, request, request.user_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     logger.info(f"Task {task_id} created: {task.folder}")
     TASKS[task_id] = task
 
@@ -415,7 +445,10 @@ async def submit_workflow(request: WorkflowRequest, background_tasks: Background
 
 
 @app.get("/status/{task_id}")
-async def get_task_status(task_id: str):
+async def get_task_status(
+    task_id: str,
+    _authorized: None = Depends(require_worker_token),
+):
     """HTTP endpoint to get the status of a task."""
     status_data = get_task_status_data(task_id)
     if "error" in status_data:
@@ -424,7 +457,10 @@ async def get_task_status(task_id: str):
 
 
 @app.post("/cancel/{task_id}", response_model=TaskResponse)
-async def cancel_task(task_id: str):
+async def cancel_task(
+    task_id: str,
+    _authorized: None = Depends(require_worker_token),
+):
     if task_id not in TASKS:
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
 
@@ -516,7 +552,7 @@ def run_server(host, port, output_dir, gpu: Optional[GPUType]):
 def main():
     global OUTPUT_DIR
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
+    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind to")
     parser.add_argument(
         "--concurrency", type=int, default=16, help="Maximum concurrent workflows"

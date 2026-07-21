@@ -1,0 +1,49 @@
+services:
+  control:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: dev
+    stdin_open: true
+    tty: true
+    volumes:
+      - ..:/kernelblaster
+    environment:
+      KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a per-run worker token}
+      KERNELBLASTER_LLM_API_KEY: ${KERNELBLASTER_LLM_API_KEY:-}
+      KERNELBLASTER_LLM_BASE_URL: ${KERNELBLASTER_LLM_BASE_URL:-}
+      MODEL: ${MODEL:-gpt-5-mini-2025-08-07}
+      GPU_SERVER_URL_RTX3080: http://gpu-worker:2002
+    networks: [control-plane, worker-plane]
+    depends_on: [gpu-worker]
+
+  gpu-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gpu
+    command:
+      ["python", "scripts/start_gpu_worker.py", "--host", "0.0.0.0", "--port", "2002"]
+    read_only: true
+    tmpfs:
+      # Uploaded binaries execute only from this bounded scratch filesystem.
+      - /tmp:rw,exec,nosuid,nodev,size=2g
+    environment:
+      KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a per-run worker token}
+      KERNELBLASTER_MAX_GPU_BINARY_BYTES: ${KERNELBLASTER_MAX_GPU_BINARY_BYTES:-268435456}
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 16g
+    networks: [worker-plane]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  control-plane: {}
+  worker-plane:
+    internal: true

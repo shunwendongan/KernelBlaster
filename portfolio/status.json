@@ -1,13 +1,7 @@
 {
-  "schema_version": "1.0",
-  "updated_at": "2026-07-20",
-  "development_stage": "days_1_10_validated_core10_followup_published",
-  "publication": {
-    "branch": "codex/validation-gpt56-gpu",
-    "pull_request": 5,
-    "pull_request_url": "https://github.com/shunwendongan/KernelBlaster/pull/5",
-    "draft": true
-  },
+  "schema_version": "2.0",
+  "updated_at": "2026-07-21",
+  "development_stage": "trusted_research_prototype_hardening",
   "sources": {
     "environment": "artifacts/portfolio-v1.0/environment/environment.json",
     "comparison": "artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json",
@@ -19,24 +13,29 @@
     "comparison_csv": "artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.csv",
     "comparison_figure": "artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg",
     "raw_sha256": "artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv",
-    "artifact_sha256": "artifacts/portfolio-v1.0/SHA256SUMS.json"
+    "artifact_sha256": "artifacts/portfolio-v1.0/SHA256SUMS.json",
+    "targeted_validation_v2": "artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json",
+    "targeted_validation_report_en": "artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.en.md",
+    "targeted_validation_report_zh": "artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.zh-CN.md",
+    "artifact_sha256_v2": "artifacts/portfolio-v2.0/SHA256SUMS.json"
   },
   "validation": {
-    "published_cpu_pytest": "52 passed",
+    "current_cpu_pytest": "98 passed",
     "gpu_container": "passed",
     "cuda_compile": "passed",
-    "official_correctness": "10/10 candidates passed",
+    "official_correctness": "historical 10/10; schema-v2 targeted 5/5 passed",
     "rmsnorm_edge_correctness": "passed",
-    "cuda_events": "completed",
+    "cuda_events": "schema-v2 targeted confirmation: 004/036/040 improved; 007 inconclusive; 095 exploratory",
     "pytorch_same_gpu": "completed",
-    "live_api_smoke": "blocked: HTTP 401 invalid_api_key; no retry",
+    "live_api_smoke": "NOT RUN (historical HTTP 401; credential not revalidated)",
     "ncu_counters": "blocked: ERR_NVGPUCTRPERM",
     "cross_gpu": "NOT RUN (Day 11-14 out of scope)"
   },
   "remaining_work": [
-    "Provide a valid external API credential before Agent-driven Pilot/Core 10 search.",
-    "Reload the Windows NVIDIA driver and rerun NCU counter collection.",
-    "Run matching L40S/A100 comparisons only in the deferred Day 11-14 scope.",
-    "Generalize fixed-shape candidates across shapes, dtypes, layouts, streams, and backward paths."
+    "Run schema-v2 correctness and five-session confirmation for the remaining Core 10 tasks.",
+    "Repeat 007 until both upstream and candidate satisfy the Session stability gate; confirm 095 with five Sessions.",
+    "Run one bounded API smoke only after all local gates pass.",
+    "Move NCU attribution to an eligible worker while local containers remain events_only.",
+    "Run matching L40S/A100 comparisons and publish each GPU independently."
   ]
 }

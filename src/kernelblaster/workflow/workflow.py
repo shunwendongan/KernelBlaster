@@ -17,13 +17,14 @@ import time
 import asyncio
 import loguru
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterator
 import shutil
 
 from ..graph import build_graph
 from ..config import config, WorkflowConfig
 from ..graph.state import save_state_to_json
+from ..outcomes import RunOutcome, RunStatus
 
 __all__ = ["WorkflowResult", "run_workflow"]
 
@@ -32,19 +33,28 @@ __all__ = ["WorkflowResult", "run_workflow"]
 class WorkflowResult:
     config: WorkflowConfig
     rl_cuda_perf_filepath: Path = None  # RL-optimized CUDA code
-    error: str = (
-        "Failed code generation due to an error or reaching the maximum number of attempts."
+    outcome: RunOutcome = field(
+        default_factory=lambda: RunOutcome(
+            status=RunStatus.FAILED,
+            reason="Failed code generation due to an error or reaching the maximum number of attempts.",
+        )
     )
-    timeout: bool = False
 
-    def set_error(self, error: str, timeout: bool = False):
-        self.error = error
-        self.timeout = timeout
+    @property
+    def error(self) -> str:
+        return self.outcome.reason or self.outcome.status.value
+
+    @property
+    def timeout(self) -> bool:
+        return self.outcome.status is RunStatus.TIMEOUT
+
+    def set_outcome(self, outcome: RunOutcome):
+        self.outcome = outcome
+        self.rl_cuda_perf_filepath = outcome.artifact_path if outcome.success else None
 
     @property
     def success(self) -> bool:
-        # RL optimization is the only agent now
-        return self.rl_cuda_perf_filepath is not None
+        return self.outcome.success
 
     def agents(self) -> Iterator[str]:
         """
@@ -77,8 +87,11 @@ class WorkflowResult:
         self,
         folder: str,
     ):
-        if self.rl_cuda_perf_filepath is None:
-            (folder / "failed_rl_cuda_perf").write_text(self.error)
+        if not self.success:
+            (folder / "failed_rl_cuda_perf").write_text(self.error, encoding="utf-8")
+            finished = folder / "rl_ncu" / ".finished"
+            finished.parent.mkdir(parents=True, exist_ok=True)
+            finished.write_text(self.outcome.status.value + "\n", encoding="utf-8")
 
     def remove_existing_files(self, folder: Path):
         failed_file = folder / "failed_rl_cuda_perf"
@@ -129,14 +142,34 @@ async def run_workflow(
             timeout=timeout_seconds,
         )
         save_state_to_json(final_state, folder / "state.json")
+        outcome_payload = final_state.get("run_outcome")
+        outcome = (
+            RunOutcome.from_dict(outcome_payload)
+            if outcome_payload
+            else RunOutcome(
+                status=RunStatus.FAILED,
+                reason="Workflow completed without a terminal run outcome.",
+            )
+        )
         result = WorkflowResult(
             config=workflow_config,
-            rl_cuda_perf_filepath=final_state.get("rl_ncu_cuda_fp"),
+            rl_cuda_perf_filepath=(outcome.artifact_path if outcome.success else None),
+            outcome=outcome,
         )
     except asyncio.TimeoutError:
-        result.set_error(
-            f"Timeout after {timeout_seconds / 60} minutes",
-            timeout=True,
+        result.set_outcome(
+            RunOutcome(
+                status=RunStatus.TIMEOUT,
+                reason=f"Timeout after {timeout_seconds / 60} minutes",
+            )
+        )
+    except Exception as error:
+        job_logger.exception(f"Workflow failed for task {task_id}: {error}")
+        result.set_outcome(
+            RunOutcome(
+                status=RunStatus.FAILED,
+                reason=f"{type(error).__name__}: {error}",
+            )
         )
 
     # Successes will be written by the agents themselves

@@ -18,6 +18,7 @@ from typing import Optional
 from pathlib import Path
 import os
 import json
+import shlex
 import time
 
 from loguru import logger
@@ -69,15 +70,30 @@ async def _run_gpu_binary(
         )
         data.add_field("n_runs", str(n_runs))
         data.add_field("timeout", str(timeout))
-        if env_vars:
-            data.add_field("env_vars", json.dumps(env_vars))
         if prefix_command:
-            data.add_field("prefix_command", prefix_command)
+            prefix = shlex.split(prefix_command)
+            prefix_environment = {}
+            while prefix and "=" in prefix[0] and not prefix[0].startswith("-"):
+                key, value = prefix.pop(0).split("=", 1)
+                if key != "NVIDIA_TF32_OVERRIDE":
+                    raise FeedbackError(
+                        f"Profiler environment assignment is not allowed: {key}"
+                    )
+                prefix_environment[key] = value
+            if not prefix:
+                raise FeedbackError("Profiler prefix did not name a profiler")
+            effective_env = dict(env_vars or {})
+            effective_env.update(prefix_environment)
+            data.add_field("env_vars", json.dumps(effective_env))
+            data.add_field("profiler", os.path.basename(prefix[0]))
+            data.add_field("profiler_args", json.dumps(prefix[1:]))
+        elif env_vars:
+            data.add_field("env_vars", json.dumps(env_vars))
 
         if url and "api.nvcf.nvidia.com" in url and os.getenv("NVCF_API_KEY"):
             headers = {"Authorization": f"Bearer {os.getenv('NVCF_API_KEY')}"}
         else:
-            headers = {}
+            headers = {"Authorization": f"Bearer {config.WORKER_TOKEN}"}
         async with TCPClient.get_session().post(
             f"{url}/gpu/binary", data=data, timeout=timeout, headers=headers
         ) as response:
@@ -253,6 +269,7 @@ async def _compile_cu(
                 "sm_version": gpu.sm,
             },
             timeout=timeout,
+            headers={"Authorization": f"Bearer {config.WORKER_TOKEN}"},
         ) as response:
             if response.status != 200:
                 response_text = await response.text()

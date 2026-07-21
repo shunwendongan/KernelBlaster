@@ -9,21 +9,21 @@ This fork has completed the Day 1–10 infrastructure, the RMSNorm deep case, ma
 
 | Validation item | Current status |
 | --- | --- |
-| CPU tests | **52 passed** for the published experiment bundle |
-| CUDA build and official correctness | **passed; 10/10 candidates passed** |
-| CUDA Events and same-GPU PyTorch | **completed; 20 warmups / 100 samples / 3 Sessions** |
-| External LLM smoke | **blocked: HTTP 401 invalid_api_key; no retry** |
+| CPU tests | **98 passed** on the current branch |
+| CUDA build and official correctness | **historical 10/10; schema-v2 targeted 5/5 passed** |
+| CUDA Events and same-GPU PyTorch | **schema v2 targeted: 004/036/040 improved; 007 inconclusive; 095 exploratory** |
+| External LLM smoke | **NOT RUN (historical HTTP 401; credential not revalidated)** |
 | Nsight Compute counters | **blocked: ERR_NVGPUCTRPERM** |
 | Cross-GPU rerun | **NOT RUN (Day 11-14 out of scope)** |
 
-| Measured scope | Versus upstream (diagnostic / strict) | Versus fastest PyTorch method (diagnostic / strict) |
+| Historical v1 scope | Versus upstream (diagnostic / old strict gate) | Versus fastest PyTorch method (diagnostic / old strict gate) |
 | --- | ---: | ---: |
 | Nine new candidates | 5.020× / 3.302× | 1.415× / 0.931× |
 | Full Core 10, including RMSNorm | 6.351× / 4.356× | 1.447× / 0.992× |
 
-The strict view requires correctness, cross-session stability, no slower Session, and at least 1.01× speedup; every rejected task remains in the denominator as upstream 1.0. 3/9 new candidates and 4/10 Core 10 tasks pass that gate. Agent-driven search remains unexecuted because the live API smoke returned 401; these are audited manual candidates and are not mixed with the upstream paper claims.
+These immutable strict values remain historical v1 evidence. A separate targeted schema-v2 rerun renewed 004/036/040, classified 007 as inconclusive, and kept 095 exploratory; it is not a full Core 10 or Agent result. The new gate also checks p99/max error regression, NaN/Inf, and five-run determinism. Neither the Agent Pilot nor Core 10 search has been rerun.
 
-[Full Chinese report](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [English summary](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [Per-task JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [Comparison figure](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [Raw-file hashes](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [Candidate manifest](portfolio/case_studies/core10/candidates.json) · [Draft PR #5](https://github.com/shunwendongan/KernelBlaster/pull/5)
+[Schema-v2 targeted validation](artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.en.md) · [Schema-v2 result JSON](artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json) · [Full Chinese report](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [English summary](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [Per-task JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [Comparison figure](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [Raw-file hashes](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [Candidate manifest](portfolio/case_studies/core10/candidates.json)
 <!-- PORTFOLIO_STATUS:END -->
 
 ### Reproduce the validated RTX 3080 comparison
@@ -118,9 +118,8 @@ docker build . -t kernelblaster -f docker/Dockerfile
 
 ```bash
 docker run --rm -it --name=kernelblaster \
-    --privileged --gpus all --cap-add=SYS_ADMIN --device /dev/fuse \
+    --gpus all \
     --ulimit memlock=-1 --ulimit stack=67108864 \
-    --ipc=host --net=host \
     -e USER_NAME=$(whoami) \
     -e USER_ID=$(id -u) \
     -e GROUP_ID=$(id -g) \
@@ -128,6 +127,16 @@ docker run --rm -it --name=kernelblaster \
     kernelblaster \
     dev
 ```
+
+The ordinary Events path does not require host networking, `--privileged`, or
+`SYS_ADMIN`. If local NCU counters remain unavailable, the run is recorded as
+`events_only`; deploy an explicitly authorized profiler worker instead of
+raising privileges on the control container.
+
+For isolation between the LLM control process and uploaded CUDA binaries, set a
+fresh `KERNELBLASTER_WORKER_TOKEN` and use `docker/compose.worker.yml`. Its GPU
+worker receives no LLM key, has an internal-only network, a read-only root
+filesystem, a bounded tmpfs, dropped capabilities, and process/memory limits.
 
 ### 3. Set your API key and run the default example
 
@@ -142,7 +151,12 @@ export RL_EXPERIMENT_NAME=${RL_EXPERIMENT_NAME:-kernelblaster}
 bash scripts/run_single_kernelblaster.sh
 ```
 
-By default, `scripts/run_single_kernelblaster.sh` launches a single KernelBench-CUDA RL optimization run with profiling enabled, starts the shared GPU server if needed, and writes outputs under `out/<dataset>/<precision>/<experiment>/`.
+For the bounded research acceptance sequence, use
+`python scripts/run_trusted_pilot.py`. It enforces runtime → compile/correctness
+→ three-session Events → NCU permission probe → one 64-token API smoke → the
+2×2 RMSNorm Pilot, stopping immediately when a required gate fails.
+
+By default, `scripts/run_single_kernelblaster.sh` launches a single KernelBench-CUDA RL optimization run with CUDA Events profiling, starts the loopback-only shared GPU server if needed, and writes outputs under `out/<dataset>/<precision>/<experiment>/`.
 
 Note that this example runs a single sample from the Level 1 KernelBench-CUDA dataset. This can be extended by passing additional problems via the `--problem-numbers` flag and the `--subset` flag.
 

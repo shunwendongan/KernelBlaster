@@ -1,0 +1,91 @@
+# 验证状态与基准协议
+
+**简体中文** | [English](validation.md)
+
+这是 Portfolio fork 的持续验证记录。历史原始运行仍以追加方式保存在被忽略的 `out/portfolio/` 目录；审阅后的证据发布在 `artifacts/portfolio-v1.0/`。
+
+<!-- VALIDATION_STATUS:START -->
+| 门禁 | 当前状态 | 规范证据 |
+| --- | --- | --- |
+| Provider/Recorder/Suite CPU 测试 | 通过 — 98 项通过 | `tests/` |
+| 真实网关冒烟 | 未运行 — 历史 HTTP 401 尚未重新验证 | 历史 `artifacts/portfolio-v1.0/results/analysis_summary.json` |
+| RTX 3080 容器与 `sm_86` 构建 | 通过 | `artifacts/portfolio-v1.0/environment/environment.json` |
+| 官方候选正确性 | 历史 v1 通过 — 10/10；schema v2 定向 5/5 通过 | `artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json` |
+| RMSNorm 边界正确性 | 通过 | 已提交的 `edge_driver.cpp` 与深度案例 artifacts |
+| CUDA Events 计时 | schema v2 定向确认：004/036/040 提升；007 无法定论；095 探索 | `artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json` |
+| 同卡 PyTorch 对比 | 已完成 | `pytorch_core10_rtx3080.csv` |
+| NCU 硬件计数器 | 阻塞 — `ERR_NVGPUCTRPERM` | 环境清单与历史验证报告 |
+| 跨 GPU 对比 | 未运行 — 延后至 Day 11–14 | 未发布性能声明 |
+
+历史手工跟进验证了全部十个候选，并在旧门槛下改进 4/10。相关声明作为不可变历史证据保留。schema v2 定向结果只覆盖五题，不能外推为完整 Core 10 或 Agent 搜索结论。
+<!-- VALIDATION_STATUS:END -->
+
+## 已完成的开发与实验时间线
+
+1. **Day 1–2 — Provider 与可观测性：**完成 OpenAI 兼容 Provider 边界、客户端 fan-out、重试分类、原子请求/Token 预留、用量回退、Recorder 序号/原子性/脱敏、Suite 校验、离线 dry-run artifact。
+2. **Day 3–7 — 本地 GPU 验证：**固定 NGC PyTorch 25.01 容器，将 RTX 3080 映射到 `sm_86`，验证编译/GPU Server，加入独立 CUDA Events Runner，并记录 Core 10 基线。受限 API 冒烟返回 HTTP 401，因此没有运行 Agent Pilot/Core 10 rollout。
+3. **Day 8–10 — RMSNorm 深度案例：**实现 V1–V3c，加入奇数/极小/63–65 通道正确性输入，保留失败候选，并发布相对 V0 的 49.348× 配对 V3c 结果。NCU 计数器访问仍阻塞，没有发布硬件计数器归因。
+4. **Core 10 跟进：**新增九个手工候选，使用 20 次预热、100 次采样、三个独立进程 Session、AB/BA 顺序重跑十个任务，并与同卡 PyTorch eager/out/fused 方法比较。
+5. **发布：**提交脱敏 JSON/CSV/SVG 报告和 SHA256 链接，覆盖 362 个被忽略的原始 JSON/JSONL/CSV/SVG/log 文件。已合并的 PR #4 和 #5 包含 artifact 发布与持续文档跟进。
+6. **Schema-v2 定向验证：**重跑 004/007/036/040/095 的正确性，并对 004/007/036/040 做五 Session 确认。004/036/040 通过新的 bootstrap 与稳定性门槛；007 因上游基线不稳定而无法定论；095 保持探索状态。
+
+## 结果解释
+
+- 历史 v1 的诊断候选中位数包含不稳定任务，适合确定后续方向，不代表发布声明。
+- 当前 schema-v2 门槛要求正确、跨 Session spread 不超过 5%、五个配对 Session、中位加速至少 1.01×，且配对 bootstrap 95% 下界大于 1.0。
+- 九个新候选相对上游的诊断/严格几何平均为 5.020×/3.302×；004、007、040 通过严格门槛。
+- 完整 Core 10（含现有 RMSNorm）相对上游的诊断/严格几何平均为 6.351×/4.356×。
+- 相对测得最快的 PyTorch 方法，九题诊断/严格比值为 1.415×/0.931×；完整十题为 1.447×/0.992×。
+- 007 调用 cuBLAS，体现的是成熟库的正确集成，而不是自定义 GEMM 击败 cuBLAS。
+
+规范证据：
+
+- [Schema-v2 定向验证](../../artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.zh-CN.md)
+- [Schema-v2 结果 JSON](../../artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json)
+- [逐题对比 JSON](../../artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json)
+- [中文完整分析](../../artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md)
+- [英文摘要](../../artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md)
+- [环境清单](../../artifacts/portfolio-v1.0/environment/environment.json)
+- [原始 artifact SHA256 清单](../../artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv)
+
+## 验收规则
+
+- 任一官方或额外正确性输入失败都拒绝候选，无论计时结果如何。
+- 每个原始清单保留原始源码和计时规范化源码的 SHA256。
+- 报告 GPU、SM 目标、精度、形状、seed、预热、重复次数、inner loops、Session/顺序、中位数、p10/p90、遥测、驱动/CUDA/容器和源码出处。
+- 上游 CUDA、候选 CUDA、PyTorch eager/out/fused 以及论文报告结果必须作为不同基线处理。
+- 自动冷却/重测后仍超过 5% Session 门槛时，停止正式性能声明。
+- 至少要求五个配对确认 Session、中位加速不低于 1.01×，且配对 bootstrap 95% 下界大于 1.0。
+- 不得从 CUDA Events 或代码检查推断 NCU 瓶颈；`ERR_NVGPUCTRPERM` 仍是明确的归因阻塞项。
+
+## 剩余阻塞与延后工作
+
+- 提供有效外部 API 凭据后再运行 Agent Pilot/Core 10 搜索；单次 401 请求未作为成功 completion 重试或计费。
+- 对其余五个 Core 10 任务运行 schema-v2 正确性和五 Session 确认；重跑 007 直至双方稳定，并用五 Session 确认 095。
+- 在明确授权的 Profiler Worker 上采集所需 NCU sections；本地 Docker/WSL 保持 `events_only`。
+- 分别运行并发布 L40S/A100 匹配对比。
+- 在生产库声明前，将固定形状候选推广到不同 shape、dtype、layout、stream、图捕获、反向路径，并采用更严格数值容差。
+
+## 复现命令
+
+```bash
+python scripts/benchmark_candidates.py \
+  --phase confirmation \
+  --warmup 20 --repetitions 100 --sessions 5 \
+  --cooldown-seconds 60 \
+  --output-dir out/portfolio/candidates/<run-id>
+
+python scripts/benchmark_pytorch.py \
+  --warmup 20 --repetitions 100 --sessions 5 \
+  --output-dir out/portfolio/pytorch/<run-id>
+
+python scripts/analyze_core10_comparison.py \
+  --candidate-summary out/portfolio/candidates/<run-id>/suite_summary.json \
+  --pytorch-summary out/portfolio/pytorch/<run-id>/pytorch_summary.json \
+  --output-dir out/portfolio/analysis/<run-id>
+
+python scripts/sync_portfolio_docs.py --write
+python scripts/sync_portfolio_docs.py --check
+```
+
+语言模型仍是外部推理服务。Rollout 会更新轨迹和优化数据库，但不会训练或微调模型权重。

@@ -69,7 +69,11 @@ class GPUType(StrEnum):
         if _current_gpu is None:
             name = (
                 subprocess.check_output(
-                    "nvidia-smi --query-gpu=gpu_name --format=csv,noheader", shell=True
+                    [
+                        "nvidia-smi",
+                        "--query-gpu=gpu_name",
+                        "--format=csv,noheader",
+                    ]
                 )
                 .decode("utf-8")
                 .strip()

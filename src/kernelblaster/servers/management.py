@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import requests
+import os
 import subprocess
 from pathlib import Path
 try:
@@ -21,13 +22,18 @@ except Exception:  # pragma: no cover
     import logging
 
     logger = logging.getLogger(__name__)
-from torch.utils import cmake_prefix_path
 from io import TextIOWrapper
 import time
 import psutil
 import socket
 from ..config import GPUType, config
 from typing import Optional
+
+
+def _worker_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment["KERNELBLASTER_WORKER_TOKEN"] = config.WORKER_TOKEN
+    return environment
 
 
 def test_server_connection(process, url, timeout: int = 5):
@@ -97,6 +103,11 @@ def initialize_compiler_server(
     # Start the compile server
     compiler_server_process = None
     # Check that libtorch exists
+    try:
+        from torch.utils import cmake_prefix_path
+    except ImportError:
+        logger.error("PyTorch is required to start the compilation server.")
+        return False
     if not Path(cmake_prefix_path).exists():
         logger.error(
             f"Libtorch CMake prefix path {cmake_prefix_path} does not exist! Please install pytorch."
@@ -113,6 +124,8 @@ def initialize_compiler_server(
         str(psutil.cpu_count(logical=False) - 1),  # physical CPU cores
         "--artifacts-dir",
         str(artifacts_dir),
+        "--host",
+        "127.0.0.1",
     ]
 
     # Use a single file for both stdout and stderr
@@ -121,6 +134,7 @@ def initialize_compiler_server(
         stdout=log_file,
         stderr=log_file,
         start_new_session=True,
+        env=_worker_environment(),
     )
 
     compile_server_url = f"http://localhost:{port}"
@@ -156,6 +170,8 @@ def initialize_gpu_server(
         "src.kernelblaster.servers.gpu",
         "--port",
         str(port),
+        "--host",
+        "127.0.0.1",
     ]
 
     # Use a single file for both stdout and stderr
@@ -164,6 +180,7 @@ def initialize_gpu_server(
         stdout=log_file,
         stderr=log_file,
         start_new_session=True,
+        env=_worker_environment(),
     )
 
     gpu_server_url = f"http://localhost:{port}"
@@ -198,6 +215,8 @@ def start_standalone_gpu_server(port: int = None, log_file_path: str = None) -> 
         "src.kernelblaster.servers.gpu",
         "--port",
         str(port),
+        "--host",
+        "127.0.0.1",
     ]
     
     # Set up logging
@@ -219,6 +238,7 @@ def start_standalone_gpu_server(port: int = None, log_file_path: str = None) -> 
         stdout=stdout_file,
         stderr=stderr_file,
         start_new_session=True,
+        env=_worker_environment(),
     )
     
     gpu_server_url = f"http://localhost:{port}"

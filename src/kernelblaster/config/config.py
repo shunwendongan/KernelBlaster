@@ -13,8 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import secrets
 from dotenv import load_dotenv
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from pathlib import Path
 from loguru import logger
 from urllib.parse import urlsplit, urlunsplit
@@ -76,6 +77,10 @@ class SystemConfig:
         "yes",
         "y",
         "on",
+    )
+    WORKER_TOKEN = os.getenv("KERNELBLASTER_WORKER_TOKEN") or secrets.token_urlsafe(32)
+    MAX_GPU_BINARY_BYTES = int(
+        os.getenv("KERNELBLASTER_MAX_GPU_BINARY_BYTES", str(256 * 1024 * 1024))
     )
     MAX_ATTEMPTS = int(os.getenv("MAX_ATTEMPTS", 300))
     NUM_PARALLEL_GENERATIONS_PER_ATTEMPT = int(
@@ -223,10 +228,13 @@ class WorkflowConfig:
     shared_optimization_database: Any = None
 
     def dict(self):
-        d = asdict(self)
-        # Remove non-serializable/shared objects from dict for workflow input
-        d.pop("shared_optimization_database", None)
-        return d
+        # Do not use dataclasses.asdict(): it deep-copies values before they can
+        # be removed, and the shared database intentionally owns an RLock.
+        return {
+            name: value
+            for name, value in vars(self).items()
+            if name != "shared_optimization_database"
+        }
 
     def should_skip_folder(self, folder: Path):
         """Check if we should skip processing this problem based on existing files"""
@@ -236,9 +244,9 @@ class WorkflowConfig:
 
         files = os.listdir(folder)
 
-        def should_skip(name: str, folder_key: str):
+        def should_skip(name: str, folder_key: str, enabled_field: str):
             # The files are created by the agents themselves
-            agent_enabled = getattr(self, f"run_{name}")
+            agent_enabled = getattr(self, enabled_field)
             return (
                 not agent_enabled
                 or f"final_{name}.cu" in files
@@ -248,6 +256,8 @@ class WorkflowConfig:
                     and not self.retry_failed
                 )
             )
+
+        return should_skip("rl_cuda_perf", "rl_ncu", "run_cuda_perf")
 
 
     def validate(self):

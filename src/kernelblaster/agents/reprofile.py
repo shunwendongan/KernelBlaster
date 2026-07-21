@@ -484,8 +484,6 @@ class ReProfileAgent:
                     # Run NCU twice: once for text output (for cycles extraction), once for export file
                     # This is because --export suppresses the normal text output
                     safe_kernel_name = kernel_name.replace(" ", "_").replace("/", "_")
-                    ncu_report_file = f"/tmp/kernelagent_gpu_{safe_kernel_name}_{problem_name}.ncu-rep"
-                    
                     # First run: get text output with sections (for cycles extraction)
                     ncu_basic_command = f"NVIDIA_TF32_OVERRIDE=0 ncu --section=SpeedOfLight --section=SpeedOfLight_RooflineChart -k {kernel_name}"
                     ncu_logs["basic"]["commands"].append({
@@ -521,8 +519,6 @@ class ReProfileAgent:
                     (logs_dir / f"ncu_basic_{kernel_name}_stdout.txt").write_text(ncu_stdout)
                     (logs_dir / f"ncu_basic_{kernel_name}_stderr.txt").write_text(ncu_stderr)
                     (logs_dir / f"ncu_basic_{kernel_name}_command.txt").write_text(ncu_basic_command)
-                    (logs_dir / f"ncu_basic_{kernel_name}_export_command.txt").write_text(ncu_export_command)
-                    
                     if self.detailed_profiling:
                         # Detailed profiling with report file
                         # Run NCU twice: once for text output (for CSV parsing), once for export file

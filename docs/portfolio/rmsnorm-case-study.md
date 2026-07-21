@@ -10,6 +10,7 @@ Current status: **validated on NVIDIA GeForce RTX 3080 (sm_86)**.
 - The independent V3c deep run measured 49.348× versus its paired V0.
 - The later unified Core 10 rerun measured 52.772×; the difference is retained as run-to-run evidence, not silently averaged.
 - The targeted five-Session schema-v2 confirmation measured 56.332× median paired speedup and passed the bootstrap and stability gates.
+- The full schema-v2 Core 10 rerun measured 54.228× and also passed the formal gate; both runs remain separate.
 - NCU hardware-counter attribution remains blocked by `ERR_NVGPUCTRPERM`; CUDA Events and code-derived mapping evidence are reported separately.
 <!-- RMSNORM_STATUS:END -->
 

@@ -8,7 +8,7 @@ Current measured state (2026-07-21):
 - RTX 3080 / `sm_86` CUDA build, correctness, and CUDA Events: **completed**
 - Same-GPU PyTorch eager/out/fused comparison: **completed**
 - Historical v1 manual Core 10 strict verified improvements: **4/10**
-- Targeted schema-v2 confirmation: **3 improved, 1 inconclusive, 1 exploratory**
+- Full manual schema-v2 confirmation: **4 improved, 1 no improvement, 5 inconclusive**
 - LLM live smoke: **not rerun; historical result was HTTP 401**; no Agent Core 10 search claim
 - NCU counter attribution: **blocked by `ERR_NVGPUCTRPERM`**
 - Cross-GPU comparison: **not run; deferred Day 11–14**

@@ -8,7 +8,7 @@
 - RTX 3080 / `sm_86` CUDA 构建、正确性与 CUDA Events：**已完成**
 - 同卡 PyTorch eager/out/fused 对比：**已完成**
 - 历史 v1 手工 Core 10 严格验证提升：**4/10**
-- Schema v2 定向确认：**3 项提升、1 项无法定论、1 项探索中**
+- Schema v2 完整手工确认：**4 项提升、1 项无提升、5 项无法定论**
 - LLM 在线冒烟：**尚未重跑；历史结果为 HTTP 401**；没有 Agent Core 10 搜索声明
 - NCU 计数器归因：**受 `ERR_NVGPUCTRPERM` 阻塞**
 - 跨 GPU 对比：**未运行；延后至 Day 11–14**

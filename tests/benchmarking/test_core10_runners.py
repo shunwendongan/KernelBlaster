@@ -131,8 +131,18 @@ def test_comparison_selects_only_verified_improvements():
     failed = next(row for row in rows if row["task_id"] == "088")
     assert failed["selected_variant"] == "upstream_baseline"
     assert failed["portfolio_speedup"] == 1.0
+    assert failed["candidate_outcome"] == "no_improvement"
+    assert failed["candidate_exclusion_reason"] == "paired_session_slower"
     assert failed["pytorch_best_method"] == "pytorch_fused_gelu_tanh"
     assert ANALYZE.summarize(rows)["verified_improved_tasks"] == 9
+
+    candidate_results[0]["session_speedups"] = [2.0] * 3
+    incomplete_rows = ANALYZE.build_comparison_rows(
+        {"results": candidate_results}, {"results": pytorch_results}
+    )
+    incomplete = next(row for row in incomplete_rows if row["task_id"] == "004")
+    assert incomplete["candidate_outcome"] == "inconclusive"
+    assert incomplete["candidate_exclusion_reason"] == "insufficient_confirmation"
 
 
 def test_comparison_excludes_unstable_pytorch_method():
@@ -197,6 +207,37 @@ def test_core10_manifest_declares_edge_drivers_and_non_reentrant_candidates():
             assert (ROOT / "portfolio" / "case_studies" / "core10" / relative).resolve().is_file()
     for task_id in ("007", "040", "095"):
         assert tasks[task_id]["reentrant"] is False
+
+
+def test_bilingual_confirmation_report_labels_outcomes_and_links_json():
+    payload = {
+        "summary": {
+            "verified_improved_tasks": 1,
+            "no_improvement_tasks": 0,
+            "inconclusive_tasks": 0,
+            "all10_selected_portfolio_geomean_speedup": 2.0,
+            "pytorch_comparable_tasks": 1,
+            "selected_vs_pytorch_best_geomean": 1.1,
+        },
+        "results": [
+            {
+                "task_id": "004",
+                "candidate_outcome": "improved",
+                "attempted_speedup": 2.0,
+                "bootstrap_95_lower": 1.8,
+                "baseline_session_spread_percent": 1.0,
+                "candidate_session_spread_percent": 0.5,
+                "pytorch_best_method": "pytorch_eager",
+                "selected_vs_pytorch_best": 1.1,
+            }
+        ],
+    }
+    english = ANALYZE.render_report(payload, chinese=False)
+    chinese = ANALYZE.render_report(payload, chinese=True)
+    assert "Candidate outcome" in english
+    assert "正式提升" in chinese
+    assert "core10_rtx3080_comparison.json" in english
+    assert "core10-rtx3080-confirmation.zh-CN.md" in english
 
 
 def test_gpu_ci_keeps_correctness_and_ncu_probes_out_of_formal_timing():

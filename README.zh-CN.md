@@ -9,9 +9,9 @@
 
 | 验证项目 | 当前状态 |
 | --- | --- |
-| CPU 测试 | **98 项通过**（当前分支） |
-| CUDA 编译与官方正确性 | **历史 10/10；schema v2 定向验证 5/5 通过** |
-| CUDA Events 与同卡 PyTorch | **schema v2 定向验证：004/036/040 正式提升；007 无法定论；095 保持探索** |
+| CPU 测试 | **100 项通过**（当前分支） |
+| CUDA 编译与官方正确性 | **历史 10/10；schema v2 完整验证 10/10 通过** |
+| CUDA Events 与同卡 PyTorch | **schema v2 完整验证：4 项提升、1 项无提升、5 项无法定论；9/10 题有稳定 PyTorch 方法** |
 | 外部 LLM 冒烟测试 | **未运行（历史记录为 HTTP 401；凭据尚未重新验证）** |
 | Nsight Compute 硬件计数器 | **阻塞：ERR_NVGPUCTRPERM** |
 | 跨 GPU 复测 | **未运行（Day 11–14 不在本阶段范围）** |
@@ -21,9 +21,9 @@
 | 本轮新增九题 | 5.020× / 3.302× | 1.415× / 0.931× |
 | 完整 Core 10（含 RMSNorm） | 6.351× / 4.356× | 1.447× / 0.992× |
 
-上述严格值作为不可变的历史 v1 证据保留。独立的 schema v2 定向复测已续认 004/036/040，将 007 标为无法定论，并让 095 保持探索；它不是完整 Core 10 或 Agent 结果。新口径还检查 p99/max 误差回归、NaN/Inf 和五次确定性。当前 Agent Pilot 与 Core 10 搜索均未重新运行。
+上述严格值作为不可变的历史 v1 证据保留。独立的 schema v2 完整手工确认验证了 10/10 正确性，正式确认 004/007/036/040，将 088 标为无提升，并把 019/023/026/047/095 保持为无法定论。当前口径下，严格 Core 10 相对上游的几何平均为 4.381×；仅在 9/10 个存在正确且稳定 PyTorch 方法的可比任务上，严格结果相对最快稳定方法的几何平均为 1.053×。它仍不是 Agent 搜索结果。新口径还检查 p99/max 误差回归、NaN/Inf 和五次确定性。当前 Agent Pilot 与 Core 10 Agent 搜索均未运行。
 
-[Schema v2 定向验证](artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.zh-CN.md) · [Schema v2 结果 JSON](artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json) · [中文完整报告](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [英文摘要](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [逐题 JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [对比图](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [原始文件哈希](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [候选清单](portfolio/case_studies/core10/candidates.json)
+[Schema v2 完整 Core 10 验证](artifacts/portfolio-v2.0/core10/core10-rtx3080-confirmation.zh-CN.md) · [Schema v2 完整结果 JSON](artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json) · [Schema v2 定向验证](artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.zh-CN.md) · [Schema v2 结果 JSON](artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json) · [中文完整报告](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [英文摘要](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [逐题 JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [对比图](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [原始文件哈希](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [候选清单](portfolio/case_studies/core10/candidates.json)
 <!-- PORTFOLIO_STATUS:END -->
 
 ### 复现 RTX 3080 正式对比
@@ -32,12 +32,12 @@
 
 ```bash
 python scripts/benchmark_candidates.py \
-  --warmup 20 --repetitions 100 --sessions 3 \
+  --warmup 20 --repetitions 100 --sessions 5 \
   --cooldown-seconds 60 \
   --output-dir out/portfolio/candidates/<run-id>
 
 python scripts/benchmark_pytorch.py \
-  --warmup 20 --repetitions 100 --sessions 3 \
+  --warmup 20 --repetitions 100 --sessions 5 \
   --output-dir out/portfolio/pytorch/<run-id>
 
 python scripts/analyze_core10_comparison.py \

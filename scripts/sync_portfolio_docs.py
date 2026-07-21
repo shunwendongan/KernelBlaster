@@ -129,6 +129,7 @@ def load_context(root: Path = ROOT_DIR) -> dict[str, Any]:
     resolved = {name: _resolve_source(root, str(path)) for name, path in sources.items()}
     environment = _load_json(resolved["environment"])
     comparison = _load_json(resolved["comparison"])
+    expected = {"004", "007", "019", "023", "026", "036", "040", "047", "088", "095"}
     targeted_v2 = _load_json(
         resolved["targeted_validation_v2"],
         allowed_schema_versions=("2.0",),
@@ -140,11 +141,30 @@ def load_context(root: Path = ROOT_DIR) -> dict[str, Any]:
         raise DocumentationSyncError(
             "Schema-v2 targeted validation must contain 004/007/036/040/095."
         )
+    core10_v2 = _load_json(
+        resolved["core10_validation_v2"],
+        allowed_schema_versions=("2.0",),
+    )
+    core10_v2_results = core10_v2.get("results")
+    if not isinstance(core10_v2_results, list) or {
+        str(row.get("task_id")) for row in core10_v2_results
+    } != expected:
+        raise DocumentationSyncError(
+            "Schema-v2 full validation must contain exactly the Core 10 task IDs."
+        )
+    core10_v2_summary = core10_v2.get("summary", {})
+    if (
+        int(core10_v2_summary.get("verified_improved_tasks", -1)) != 4
+        or int(core10_v2_summary.get("no_improvement_tasks", -1)) != 1
+        or int(core10_v2_summary.get("inconclusive_tasks", -1)) != 5
+    ):
+        raise DocumentationSyncError(
+            "Schema-v2 full validation has unexpected terminal outcome counts."
+        )
     rows = comparison.get("results")
     if not isinstance(rows, list) or len(rows) != 10:
         raise DocumentationSyncError("Core 10 comparison must contain exactly ten results.")
     task_ids = {str(row.get("task_id")) for row in rows}
-    expected = {"004", "007", "019", "023", "026", "036", "040", "047", "088", "095"}
     if task_ids != expected:
         raise DocumentationSyncError(f"Unexpected Core 10 task IDs: {sorted(task_ids)}")
 
@@ -200,6 +220,9 @@ def load_context(root: Path = ROOT_DIR) -> dict[str, Any]:
         "comparison": comparison,
         "targeted_v2": targeted_v2,
         "targeted_v2_results": targeted_results,
+        "core10_v2": core10_v2,
+        "core10_v2_results": core10_v2_results,
+        "core10_v2_summary": core10_v2_summary,
         "rows": rows,
         "all10": all10,
         "new9": new9,
@@ -240,7 +263,7 @@ def _validation_labels(validation: dict[str, Any], *, chinese: bool) -> dict[str
 
     cpu_match = re.fullmatch(r"(\d+) passed", raw["current_cpu_pytest"])
     correctness_match = re.fullmatch(
-        r"historical (\d+/\d+); schema-v2 targeted (\d+/\d+) passed",
+        r"historical (\d+/\d+); schema-v2 full (\d+/\d+) passed",
         raw["official_correctness"],
     )
     if not cpu_match or not correctness_match:
@@ -262,7 +285,7 @@ def _validation_labels(validation: dict[str, Any], *, chinese: bool) -> dict[str
     return {
         "current_cpu_pytest": f"{cpu_match.group(1)} 项通过",
         "official_correctness": (
-            f"历史 {correctness_match.group(1)}；schema v2 定向验证 "
+            f"历史 {correctness_match.group(1)}；schema v2 完整验证 "
             f"{correctness_match.group(2)} 通过"
         ),
         "live_api_smoke": "未运行（历史记录为 HTTP 401；凭据尚未重新验证）",
@@ -281,6 +304,20 @@ def _evidence_links(
         else sources["targeted_validation_report_en"]
     )
     labels = (
+        (
+            "Schema v2 完整 Core 10 验证",
+            "Schema-v2 full Core 10 validation",
+            (
+                sources["core10_validation_report_zh_v2"]
+                if chinese
+                else sources["core10_validation_report_en_v2"]
+            ),
+        ),
+        (
+            "Schema v2 完整结果 JSON",
+            "Schema-v2 full result JSON",
+            sources["core10_validation_v2"],
+        ),
         ("Schema v2 定向验证", "Schema-v2 targeted validation", targeted_report),
         ("Schema v2 结果 JSON", "Schema-v2 result JSON", sources["targeted_validation_v2"]),
         ("中文完整报告", "Full Chinese report", sources["comparison_report_zh"]),
@@ -300,6 +337,7 @@ def _root_block(context: dict[str, Any], *, chinese: bool) -> str:
     status = context["status"]
     validation = _validation_labels(status["validation"], chinese=chinese)
     n9, a10 = context["new9"], context["all10"]
+    v2 = context["core10_v2_summary"]
     if chinese:
         return f"""当前 Fork 已在 **{context['gpu_name']}（{context['sm']}）** 上完成 Day 1–10 基础设施、RMSNorm 深度案例、Core 10 手工候选和同卡 PyTorch 对比。环境为 WSL2、CUDA {context['cuda']}、驱动 {context['driver']}。
 
@@ -307,7 +345,7 @@ def _root_block(context: dict[str, Any], *, chinese: bool) -> str:
 | --- | --- |
 | CPU 测试 | **{validation['current_cpu_pytest']}**（当前分支） |
 | CUDA 编译与官方正确性 | **{validation['official_correctness']}** |
-| CUDA Events 与同卡 PyTorch | **schema v2 定向验证：004/036/040 正式提升；007 无法定论；095 保持探索** |
+| CUDA Events 与同卡 PyTorch | **schema v2 完整验证：{v2['verified_improved_tasks']} 项提升、{v2['no_improvement_tasks']} 项无提升、{v2['inconclusive_tasks']} 项无法定论；9/10 题有稳定 PyTorch 方法** |
 | 外部 LLM 冒烟测试 | **{validation['live_api_smoke']}** |
 | Nsight Compute 硬件计数器 | **{validation['ncu_counters']}** |
 | 跨 GPU 复测 | **{validation['cross_gpu']}** |
@@ -317,7 +355,7 @@ def _root_block(context: dict[str, Any], *, chinese: bool) -> str:
 | 本轮新增九题 | {_f(n9['attempted_upstream'])} / {_f(n9['strict_upstream'])} | {_f(n9['attempted_pytorch'])} / {_f(n9['strict_pytorch'])} |
 | 完整 Core 10（含 RMSNorm） | {_f(a10['attempted_upstream'])} / {_f(a10['strict_upstream'])} | {_f(a10['attempted_pytorch'])} / {_f(a10['strict_pytorch'])} |
 
-上述严格值作为不可变的历史 v1 证据保留。独立的 schema v2 定向复测已续认 004/036/040，将 007 标为无法定论，并让 095 保持探索；它不是完整 Core 10 或 Agent 结果。新口径还检查 p99/max 误差回归、NaN/Inf 和五次确定性。当前 Agent Pilot 与 Core 10 搜索均未重新运行。
+上述严格值作为不可变的历史 v1 证据保留。独立的 schema v2 完整手工确认验证了 10/10 正确性，正式确认 004/007/036/040，将 088 标为无提升，并把 019/023/026/047/095 保持为无法定论。当前口径下，严格 Core 10 相对上游的几何平均为 {_f(v2['all10_selected_portfolio_geomean_speedup'])}；仅在 {v2['pytorch_comparable_tasks']}/10 个存在正确且稳定 PyTorch 方法的可比任务上，严格结果相对最快稳定方法的几何平均为 {_f(v2['selected_vs_pytorch_best_geomean'])}。它仍不是 Agent 搜索结果。新口径还检查 p99/max 误差回归、NaN/Inf 和五次确定性。当前 Agent Pilot 与 Core 10 Agent 搜索均未运行。
 
 {_evidence_links(context, chinese=True)}"""
     return f"""This fork has completed the Day 1–10 infrastructure, the RMSNorm deep case, manual Core 10 candidates, and a same-GPU PyTorch comparison on **{context['gpu_name']} ({context['sm']})**. The measured environment is WSL2, CUDA {context['cuda']}, and driver {context['driver']}.
@@ -326,7 +364,7 @@ def _root_block(context: dict[str, Any], *, chinese: bool) -> str:
 | --- | --- |
 | CPU tests | **{validation['current_cpu_pytest']}** on the current branch |
 | CUDA build and official correctness | **{validation['official_correctness']}** |
-| CUDA Events and same-GPU PyTorch | **schema v2 targeted: 004/036/040 improved; 007 inconclusive; 095 exploratory** |
+| CUDA Events and same-GPU PyTorch | **schema v2 full: {v2['verified_improved_tasks']} improved, {v2['no_improvement_tasks']} no improvement, {v2['inconclusive_tasks']} inconclusive; 9/10 tasks have a stable PyTorch method** |
 | External LLM smoke | **{validation['live_api_smoke']}** |
 | Nsight Compute counters | **{validation['ncu_counters']}** |
 | Cross-GPU rerun | **{validation['cross_gpu']}** |
@@ -336,21 +374,22 @@ def _root_block(context: dict[str, Any], *, chinese: bool) -> str:
 | Nine new candidates | {_f(n9['attempted_upstream'])} / {_f(n9['strict_upstream'])} | {_f(n9['attempted_pytorch'])} / {_f(n9['strict_pytorch'])} |
 | Full Core 10, including RMSNorm | {_f(a10['attempted_upstream'])} / {_f(a10['strict_upstream'])} | {_f(a10['attempted_pytorch'])} / {_f(a10['strict_pytorch'])} |
 
-These immutable strict values remain historical v1 evidence. A separate targeted schema-v2 rerun renewed 004/036/040, classified 007 as inconclusive, and kept 095 exploratory; it is not a full Core 10 or Agent result. The new gate also checks p99/max error regression, NaN/Inf, and five-run determinism. Neither the Agent Pilot nor Core 10 search has been rerun.
+These immutable strict values remain historical v1 evidence. A separate full manual schema-v2 confirmation passed 10/10 correctness, formally confirmed 004/007/036/040, classified 088 as no improvement, and left 019/023/026/047/095 inconclusive. Under the current gate, the strict Core 10 geometric mean versus upstream is {_f(v2['all10_selected_portfolio_geomean_speedup'])}; across the {v2['pytorch_comparable_tasks']}/10 tasks with a correct and stable PyTorch method, the strict ratio versus the fastest stable method is {_f(v2['selected_vs_pytorch_best_geomean'])}. This is still not an Agent-search result. The new gate also checks p99/max error regression, NaN/Inf, and five-run determinism. Neither the Agent Pilot nor Core 10 Agent search has run.
 
 {_evidence_links(context, chinese=False)}"""
 
 
 def _index_block(context: dict[str, Any], *, chinese: bool) -> str:
     n9, a10 = context["new9"], context["all10"]
+    v2 = context["core10_v2_summary"]
     if chinese:
         return f"""**更新日期：{context['status']['updated_at']}**
 
 - Day 1–2：Provider、Recorder、Suite、dry-run 与 CPU 测试已完成。
 - Day 3–7：WSL2/RTX 3080、容器、编译、正确性和 CUDA Events 基准设施已完成；历史 API 冒烟为 401，当前凭据尚未重新验证。
 - Day 8–10：RMSNorm V0–V3c 已完成，独立深度结果 {_f(context['rmsnorm_deep_speedup'])}；统一 Core 10 复测 {_f(context['rmsnorm_unified_speedup'])}。
-- 后续 Core 10：历史 v1 的九个新增候选全部正确，旧严格口径通过 {n9['verified']}/9；schema v2 定向复测确认 004/036/040，007 无法定论，095 保持探索。
-- PyTorch 对照：完整十题严格组合为 {_f(a10['strict_pytorch'])}，总体基本持平；不稳定任务在报告中保持显式标记。
+- 后续 Core 10：schema v2 完整手工确认通过 10/10 正确性，确认 {v2['verified_improved_tasks']} 项提升、{v2['no_improvement_tasks']} 项无提升、{v2['inconclusive_tasks']} 项无法定论；9/10 题有稳定 PyTorch 方法。
+- Schema v2 PyTorch 对照：仅在 {v2['pytorch_comparable_tasks']}/10 个存在正确且稳定方法的可比任务上，严格结果相对最快稳定方法的几何平均为 {_f(v2['selected_vs_pytorch_best_geomean'])}；026 不进入该几何平均。
 
 {_evidence_links(context, chinese=True, prefix='../../')}"""
     return f"""**Last updated: {context['status']['updated_at']}**
@@ -358,53 +397,53 @@ def _index_block(context: dict[str, Any], *, chinese: bool) -> str:
 - Days 1–2: provider, recorder, suite validation, dry-run, and CPU tests are complete.
 - Days 3–7: WSL2/RTX 3080, container, compilation, correctness, and CUDA Events infrastructure are complete; the historical API smoke returned 401 and the current credential has not been revalidated.
 - Days 8–10: RMSNorm V0–V3c is complete, with {_f(context['rmsnorm_deep_speedup'])} in the independent deep run and {_f(context['rmsnorm_unified_speedup'])} in the unified Core 10 rerun.
-- Core 10 follow-up: historical v1 validated all nine new candidates and {n9['verified']}/9 passed its old strict gate; targeted schema v2 confirmed 004/036/040, left 007 inconclusive, and kept 095 exploratory.
-- PyTorch comparison: the strict full-ten ratio is {_f(a10['strict_pytorch'])}, effectively parity; unstable tasks remain explicitly labeled.
+- Core 10 follow-up: full manual schema v2 passed 10/10 correctness and produced {v2['verified_improved_tasks']} improvements, {v2['no_improvement_tasks']} no-improvement result, and {v2['inconclusive_tasks']} inconclusive results; 9/10 tasks have a stable PyTorch method.
+- Schema-v2 PyTorch comparison: across the {v2['pytorch_comparable_tasks']}/10 comparable tasks with a correct and stable method, the strict geometric mean versus the fastest stable method is {_f(v2['selected_vs_pytorch_best_geomean'])}; task 026 is excluded from that geometric mean.
 
 {_evidence_links(context, chinese=False, prefix='../../')}"""
 
 
 def _validation_block(context: dict[str, Any], *, chinese: bool) -> str:
     validation = context["status"]["validation"]
-    v2_source = context["sources"]["targeted_validation_v2"]
+    v2_source = context["sources"]["core10_validation_v2"]
     if chinese:
         return f"""| 门禁 | 当前状态 | 规范证据 |
 | --- | --- | --- |
 | Provider/Recorder/Suite CPU 测试 | 通过 — {_validation_labels(validation, chinese=True)['current_cpu_pytest']} | `tests/` |
 | 真实网关冒烟 | 未运行 — 历史 HTTP 401 尚未重新验证 | 历史 `artifacts/portfolio-v1.0/results/analysis_summary.json` |
 | RTX 3080 容器与 `sm_86` 构建 | 通过 | `artifacts/portfolio-v1.0/environment/environment.json` |
-| 官方候选正确性 | 历史 v1 通过 — 10/10；schema v2 定向 5/5 通过 | `{v2_source}` |
+| 官方候选正确性 | 历史 v1 通过 — 10/10；schema v2 完整 10/10 通过 | `{v2_source}` |
 | RMSNorm 边界正确性 | 通过 | 已提交的 `edge_driver.cpp` 与深度案例 artifacts |
-| CUDA Events 计时 | schema v2 定向确认：004/036/040 提升；007 无法定论；095 探索 | `{v2_source}` |
-| 同卡 PyTorch 对比 | 已完成 | `pytorch_core10_rtx3080.csv` |
+| CUDA Events 计时 | schema v2 完整确认：4 项提升；1 项无提升；5 项无法定论 | `{v2_source}` |
+| 同卡 PyTorch 对比 | schema v2 完整确认；9/10 题有稳定方法 | `{v2_source}` |
 | NCU 硬件计数器 | 阻塞 — `ERR_NVGPUCTRPERM` | 环境清单与历史验证报告 |
 | 跨 GPU 对比 | 未运行 — 延后至 Day 11–14 | 未发布性能声明 |
 
-历史手工跟进验证了全部十个候选，并在旧门槛下改进 {context['all10']['verified']}/10。相关声明作为不可变历史证据保留。schema v2 定向结果只覆盖五题，不能外推为完整 Core 10 或 Agent 搜索结论。"""
+历史手工跟进验证了全部十个候选，并在旧门槛下改进 {context['all10']['verified']}/10。相关声明作为不可变历史证据保留。schema v2 完整结果仍是手工候选确认，不能外推为 Agent 搜索结论。"""
     return f"""| Gate | Current status | Canonical evidence |
 | --- | --- | --- |
 | Provider/Recorder/Suite CPU tests | PASSED — {validation['current_cpu_pytest']} | `tests/` |
 | Real gateway smoke | NOT RUN — historical HTTP 401 has not been revalidated | historical `artifacts/portfolio-v1.0/results/analysis_summary.json` |
 | RTX 3080 container and `sm_86` build | PASSED | `artifacts/portfolio-v1.0/environment/environment.json` |
-| Official candidate correctness | HISTORICAL V1 PASSED — 10/10; schema-v2 targeted 5/5 passed | `{v2_source}` |
+| Official candidate correctness | HISTORICAL V1 PASSED — 10/10; schema-v2 full 10/10 passed | `{v2_source}` |
 | RMSNorm edge correctness | PASSED | committed `edge_driver.cpp` and deep-case artifacts |
-| CUDA Events timing | schema-v2 targeted confirmation: 004/036/040 improved; 007 inconclusive; 095 exploratory | `{v2_source}` |
-| Same-GPU PyTorch comparison | COMPLETED | `pytorch_core10_rtx3080.csv` |
+| CUDA Events timing | schema-v2 full confirmation: 4 improved; 1 no improvement; 5 inconclusive | `{v2_source}` |
+| Same-GPU PyTorch comparison | schema-v2 full confirmation; 9/10 tasks have a stable method | `{v2_source}` |
 | NCU hardware counters | BLOCKED — `ERR_NVGPUCTRPERM` | environment manifest and historical validation report |
 | Cross-GPU comparison | NOT RUN — deferred Day 11–14 | no performance claim published |
 
-The historical manual follow-up validated all ten candidates and improved {context['all10']['verified']}/10 under the old gate. Those claims remain immutable historical evidence. The targeted schema-v2 result covers only five tasks and must not be generalized to a full Core 10 or Agent-search claim."""
+The historical manual follow-up validated all ten candidates and improved {context['all10']['verified']}/10 under the old gate. Those claims remain immutable historical evidence. The full schema-v2 result still confirms manual candidates and must not be generalized to an Agent-search claim."""
 
 
 def _architecture_block(context: dict[str, Any], *, chinese: bool) -> str:
-    targeted = context["targeted_v2"]["summary"]
+    full_v2 = context["core10_v2_summary"]
     if chinese:
         return f"""当前实测状态（{context['status']['updated_at']}）：
 
 - RTX 3080 / `{context['sm']}` CUDA 构建、正确性与 CUDA Events：**已完成**
 - 同卡 PyTorch eager/out/fused 对比：**已完成**
 - 历史 v1 手工 Core 10 严格验证提升：**{context['all10']['verified']}/10**
-- Schema v2 定向确认：**{targeted['improved']} 项提升、{targeted['inconclusive']} 项无法定论、{targeted['exploratory']} 项探索中**
+- Schema v2 完整手工确认：**{full_v2['verified_improved_tasks']} 项提升、{full_v2['no_improvement_tasks']} 项无提升、{full_v2['inconclusive_tasks']} 项无法定论**
 - LLM 在线冒烟：**尚未重跑；历史结果为 HTTP 401**；没有 Agent Core 10 搜索声明
 - NCU 计数器归因：**受 `ERR_NVGPUCTRPERM` 阻塞**
 - 跨 GPU 对比：**未运行；延后至 Day 11–14**
@@ -415,7 +454,7 @@ def _architecture_block(context: dict[str, Any], *, chinese: bool) -> str:
 - RTX 3080 / `{context['sm']}` CUDA build, correctness, and CUDA Events: **completed**
 - Same-GPU PyTorch eager/out/fused comparison: **completed**
 - Historical v1 manual Core 10 strict verified improvements: **{context['all10']['verified']}/10**
-- Targeted schema-v2 confirmation: **{targeted['improved']} improved, {targeted['inconclusive']} inconclusive, {targeted['exploratory']} exploratory**
+- Full manual schema-v2 confirmation: **{full_v2['verified_improved_tasks']} improved, {full_v2['no_improvement_tasks']} no improvement, {full_v2['inconclusive_tasks']} inconclusive**
 - LLM live smoke: **not rerun; historical result was HTTP 401**; no Agent Core 10 search claim
 - NCU counter attribution: **blocked by `ERR_NVGPUCTRPERM`**
 - Cross-GPU comparison: **not run; deferred Day 11–14**
@@ -428,6 +467,10 @@ def _rmsnorm_block(context: dict[str, Any], *, chinese: bool) -> str:
         row for row in context["targeted_v2_results"] if row["task_id"] == "036"
     )
     v2_speedup = float(v2_rmsnorm["performance_gate"]["median_speedup"])
+    full_v2_rmsnorm = next(
+        row for row in context["core10_v2_results"] if row["task_id"] == "036"
+    )
+    full_v2_speedup = float(full_v2_rmsnorm["attempted_speedup"])
     if chinese:
         return f"""当前状态：**已在 {context['gpu_name']}（{context['sm']}）上验证**。
 
@@ -436,6 +479,7 @@ def _rmsnorm_block(context: dict[str, Any], *, chinese: bool) -> str:
 - 独立 V3c 深度测试相对配对 V0 测得 {_f(context['rmsnorm_deep_speedup'])}。
 - 后续统一 Core 10 复测测得 {_f(context['rmsnorm_unified_speedup'])}；该差异作为跨运行证据保留，不做静默平均。
 - Schema v2 的五 Session 定向确认测得配对中位加速 {_f(v2_speedup)}，并通过 bootstrap 与稳定性门槛。
+- Schema v2 完整 Core 10 复现测得 {_f(full_v2_speedup)}，同样通过正式门槛；两次结果分别保留。
 - NCU 硬件计数器归因仍受 `ERR_NVGPUCTRPERM` 阻塞；CUDA Events 与源码推导的映射证据分开报告。"""
     return f"""Current status: **validated on {context['gpu_name']} ({context['sm']})**.
 
@@ -444,6 +488,7 @@ def _rmsnorm_block(context: dict[str, Any], *, chinese: bool) -> str:
 - The independent V3c deep run measured {_f(context['rmsnorm_deep_speedup'])} versus its paired V0.
 - The later unified Core 10 rerun measured {_f(context['rmsnorm_unified_speedup'])}; the difference is retained as run-to-run evidence, not silently averaged.
 - The targeted five-Session schema-v2 confirmation measured {_f(v2_speedup)} median paired speedup and passed the bootstrap and stability gates.
+- The full schema-v2 Core 10 rerun measured {_f(full_v2_speedup)} and also passed the formal gate; both runs remain separate.
 - NCU hardware-counter attribution remains blocked by `ERR_NVGPUCTRPERM`; CUDA Events and code-derived mapping evidence are reported separately."""
 
 

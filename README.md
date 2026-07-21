@@ -9,9 +9,9 @@ This fork has completed the Day 1–10 infrastructure, the RMSNorm deep case, ma
 
 | Validation item | Current status |
 | --- | --- |
-| CPU tests | **98 passed** on the current branch |
-| CUDA build and official correctness | **historical 10/10; schema-v2 targeted 5/5 passed** |
-| CUDA Events and same-GPU PyTorch | **schema v2 targeted: 004/036/040 improved; 007 inconclusive; 095 exploratory** |
+| CPU tests | **100 passed** on the current branch |
+| CUDA build and official correctness | **historical 10/10; schema-v2 full 10/10 passed** |
+| CUDA Events and same-GPU PyTorch | **schema v2 full: 4 improved, 1 no improvement, 5 inconclusive; 9/10 tasks have a stable PyTorch method** |
 | External LLM smoke | **NOT RUN (historical HTTP 401; credential not revalidated)** |
 | Nsight Compute counters | **blocked: ERR_NVGPUCTRPERM** |
 | Cross-GPU rerun | **NOT RUN (Day 11-14 out of scope)** |
@@ -21,9 +21,9 @@ This fork has completed the Day 1–10 infrastructure, the RMSNorm deep case, ma
 | Nine new candidates | 5.020× / 3.302× | 1.415× / 0.931× |
 | Full Core 10, including RMSNorm | 6.351× / 4.356× | 1.447× / 0.992× |
 
-These immutable strict values remain historical v1 evidence. A separate targeted schema-v2 rerun renewed 004/036/040, classified 007 as inconclusive, and kept 095 exploratory; it is not a full Core 10 or Agent result. The new gate also checks p99/max error regression, NaN/Inf, and five-run determinism. Neither the Agent Pilot nor Core 10 search has been rerun.
+These immutable strict values remain historical v1 evidence. A separate full manual schema-v2 confirmation passed 10/10 correctness, formally confirmed 004/007/036/040, classified 088 as no improvement, and left 019/023/026/047/095 inconclusive. Under the current gate, the strict Core 10 geometric mean versus upstream is 4.381×; across the 9/10 tasks with a correct and stable PyTorch method, the strict ratio versus the fastest stable method is 1.053×. This is still not an Agent-search result. The new gate also checks p99/max error regression, NaN/Inf, and five-run determinism. Neither the Agent Pilot nor Core 10 Agent search has run.
 
-[Schema-v2 targeted validation](artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.en.md) · [Schema-v2 result JSON](artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json) · [Full Chinese report](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [English summary](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [Per-task JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [Comparison figure](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [Raw-file hashes](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [Candidate manifest](portfolio/case_studies/core10/candidates.json)
+[Schema-v2 full Core 10 validation](artifacts/portfolio-v2.0/core10/core10-rtx3080-confirmation.en.md) · [Schema-v2 full result JSON](artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json) · [Schema-v2 targeted validation](artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.en.md) · [Schema-v2 result JSON](artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json) · [Full Chinese report](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [English summary](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [Per-task JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [Comparison figure](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [Raw-file hashes](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [Candidate manifest](portfolio/case_studies/core10/candidates.json)
 <!-- PORTFOLIO_STATUS:END -->
 
 ### Reproduce the validated RTX 3080 comparison
@@ -32,12 +32,12 @@ Run these commands inside the pinned NGC 25.01 container on an `sm_86` GPU. Raw 
 
 ```bash
 python scripts/benchmark_candidates.py \
-  --warmup 20 --repetitions 100 --sessions 3 \
+  --warmup 20 --repetitions 100 --sessions 5 \
   --cooldown-seconds 60 \
   --output-dir out/portfolio/candidates/<run-id>
 
 python scripts/benchmark_pytorch.py \
-  --warmup 20 --repetitions 100 --sessions 3 \
+  --warmup 20 --repetitions 100 --sessions 5 \
   --output-dir out/portfolio/pytorch/<run-id>
 
 python scripts/analyze_core10_comparison.py \

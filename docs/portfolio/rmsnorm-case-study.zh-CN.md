@@ -10,6 +10,7 @@
 - 独立 V3c 深度测试相对配对 V0 测得 49.348×。
 - 后续统一 Core 10 复测测得 52.772×；该差异作为跨运行证据保留，不做静默平均。
 - Schema v2 的五 Session 定向确认测得配对中位加速 56.332×，并通过 bootstrap 与稳定性门槛。
+- Schema v2 完整 Core 10 复现测得 54.228×，同样通过正式门槛；两次结果分别保留。
 - NCU 硬件计数器归因仍受 `ERR_NVGPUCTRPERM` 阻塞；CUDA Events 与源码推导的映射证据分开报告。
 <!-- RMSNORM_STATUS:END -->
 

@@ -15,6 +15,7 @@ import statistics
 from typing import Any
 
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
 TASK_IDS = ("004", "007", "019", "023", "026", "036", "040", "047", "088", "095")
 MIN_MATERIAL_SPEEDUP = 1.01
 MIN_CONFIRMATION_SESSIONS = 5
@@ -73,6 +74,42 @@ def augment_candidate_details(
             continue
         path = (base_dir / relative).resolve()
         detail = _load(path)
+        manifest_path = path.parent / "run_manifest.json"
+        if not manifest_path.is_file():
+            raise ValueError(f"Task {row['task_id']} is missing run_manifest.json.")
+        manifest = _load(manifest_path)
+        candidate_variant = manifest.get("variants", {}).get(row["candidate"])
+        baseline_variant = manifest.get("variants", {}).get("baseline")
+        if not candidate_variant or not baseline_variant:
+            raise ValueError(f"Task {row['task_id']} manifest is missing measured variants.")
+        source_path = (
+            ROOT_DIR / "portfolio" / "case_studies" / "core10" / row["source"]
+        ).resolve()
+        measured_source_hash = str(candidate_variant["source_sha256"])
+        if not source_path.is_file() or _sha256(source_path) != measured_source_hash:
+            raise ValueError(
+                f"Task {row['task_id']} candidate source does not match the measured hash."
+            )
+        row.update(
+            {
+                "measurement_git_commit": manifest.get("git_commit"),
+                "profiling_mode": manifest.get("profiling_mode"),
+                "correctness_error_regression": manifest.get(
+                    "correctness_error_regression", {}
+                ).get("status"),
+                "candidate_source_sha256": measured_source_hash,
+                "candidate_normalized_sha256": candidate_variant.get(
+                    "normalized_sha256"
+                ),
+                "baseline_source_sha256": baseline_variant.get("source_sha256"),
+                "driver_sha256": manifest.get("driver_sha256"),
+                "extra_correctness_drivers": manifest.get(
+                    "extra_correctness_drivers", []
+                ),
+                "raw_summary_sha256": _sha256(path),
+                "raw_manifest_sha256": _sha256(manifest_path),
+            }
+        )
         variants = detail.get("summaries", {})
         for prefix, variant in (("baseline", "baseline"), ("candidate", row["candidate"])):
             selected = variants.get(variant)
@@ -81,6 +118,9 @@ def augment_candidate_details(
             row[f"{prefix}_p10_us"] = selected["all_samples"]["p10_us"]
             row[f"{prefix}_p90_us"] = selected["all_samples"]["p90_us"]
             row[f"{prefix}_session_medians_us"] = selected["session_medians"]
+            row[f"{prefix}_session_spread_percent"] = selected[
+                "session_spread_percent"
+            ]
 
 
 def build_comparison_rows(
@@ -136,6 +176,25 @@ def build_comparison_rows(
             and bootstrap_lower is not None
             and bootstrap_lower > 1.0
         )
+        if verified_improvement:
+            candidate_outcome = "improved"
+            candidate_exclusion_reason = None
+        elif not candidate.get("correct"):
+            candidate_outcome = "failed"
+            candidate_exclusion_reason = "correctness_failed"
+        elif not candidate.get("stable"):
+            candidate_outcome = "inconclusive"
+            candidate_exclusion_reason = "session_spread_exceeded"
+        elif not confirmation_ready or bootstrap_lower is None:
+            candidate_outcome = "inconclusive"
+            candidate_exclusion_reason = "insufficient_confirmation"
+        else:
+            candidate_outcome = "no_improvement"
+            candidate_exclusion_reason = (
+                "paired_session_slower"
+                if not candidate.get("all_sessions_not_slower")
+                else "formal_performance_gate_failed"
+            )
         selected_us = candidate_us if verified_improvement else baseline_us
         selected_variant = candidate["candidate"] if verified_improvement else "upstream_baseline"
         eager_us = float(eager["median_us"])
@@ -146,6 +205,22 @@ def build_comparison_rows(
                 "kernel": candidate["kernel"],
                 "candidate": candidate["candidate"],
                 "source": candidate["source"],
+                "measurement_git_commit": candidate.get("measurement_git_commit"),
+                "profiling_mode": candidate.get("profiling_mode"),
+                "correctness_error_regression": candidate.get(
+                    "correctness_error_regression"
+                ),
+                "candidate_source_sha256": candidate.get("candidate_source_sha256"),
+                "candidate_normalized_sha256": candidate.get(
+                    "candidate_normalized_sha256"
+                ),
+                "baseline_source_sha256": candidate.get("baseline_source_sha256"),
+                "driver_sha256": candidate.get("driver_sha256"),
+                "extra_correctness_drivers": candidate.get(
+                    "extra_correctness_drivers", []
+                ),
+                "raw_summary_sha256": candidate.get("raw_summary_sha256"),
+                "raw_manifest_sha256": candidate.get("raw_manifest_sha256"),
                 "correct": bool(candidate.get("correct")),
                 "stable": bool(candidate.get("stable")),
                 "all_sessions_not_slower": bool(candidate.get("all_sessions_not_slower")),
@@ -155,16 +230,24 @@ def build_comparison_rows(
                 "baseline_session_medians_us": candidate.get(
                     "baseline_session_medians_us"
                 ),
+                "baseline_session_spread_percent": candidate.get(
+                    "baseline_session_spread_percent"
+                ),
                 "candidate_median_us": candidate_us,
                 "candidate_p10_us": candidate.get("candidate_p10_us"),
                 "candidate_p90_us": candidate.get("candidate_p90_us"),
                 "candidate_session_medians_us": candidate.get(
                     "candidate_session_medians_us"
                 ),
+                "candidate_session_spread_percent": candidate.get(
+                    "candidate_session_spread_percent"
+                ),
                 "attempted_speedup": attempted_speedup,
                 "session_speedups": session_speedups,
                 "confirmation_sessions": len(session_speedups),
                 "confirmation_ready": confirmation_ready,
+                "candidate_outcome": candidate_outcome,
+                "candidate_exclusion_reason": candidate_exclusion_reason,
                 "bootstrap_95_lower": bootstrap_lower,
                 "bootstrap_95_upper": (
                     bootstrap_interval[1] if bootstrap_interval else None
@@ -220,6 +303,12 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "material_speedup_threshold": MIN_MATERIAL_SPEEDUP,
         "minimum_confirmation_sessions": MIN_CONFIRMATION_SESSIONS,
         "verified_improved_tasks": sum(row["verified_improvement"] for row in rows),
+        "no_improvement_tasks": sum(
+            row["candidate_outcome"] == "no_improvement" for row in rows
+        ),
+        "inconclusive_tasks": sum(
+            row["candidate_outcome"] == "inconclusive" for row in rows
+        ),
         "correct_tasks": sum(row["correct"] for row in rows),
         "stable_tasks": sum(row["stable"] for row in rows),
         "attempted_candidate_geomean_speedup": _geomean(attempted),
@@ -303,6 +392,121 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def render_report(payload: dict[str, Any], *, chinese: bool) -> str:
+    summary = payload["summary"]
+    rows = payload["results"]
+
+    def ratio(value: float | None) -> str:
+        return "—" if value is None else f"{float(value):.3f}×"
+
+    if chinese:
+        title = "# RTX 3080 Core 10 schema-v2 完整确认"
+        language = "**简体中文** | [English](core10-rtx3080-confirmation.en.md)"
+        intro = (
+            "本报告是手工候选的完整 Core 10 确认，不是 Agent 自动搜索结果。"
+            "正式提升要求正确、五个独立进程 Session、双方 spread 不超过 5%、"
+            "中位加速至少 1.01×，且配对 bootstrap 95% 下界大于 1.0。"
+        )
+        header = (
+            "| 任务 | 候选结论 | 候选加速 | Bootstrap 95% 下界 | "
+            "基线/候选 spread | 稳定 PyTorch 基线 | 严格选中结果 / PyTorch |"
+        )
+        divider = "| --- | --- | ---: | ---: | ---: | --- | ---: |"
+        labels = {
+            "improved": "正式提升",
+            "no_improvement": "无提升",
+            "inconclusive": "无法定论",
+            "failed": "失败",
+        }
+        summary_text = (
+            f"严格结果为 {summary['verified_improved_tasks']} 项提升、"
+            f"{summary['no_improvement_tasks']} 项无提升、"
+            f"{summary['inconclusive_tasks']} 项无法定论。"
+            f"相对上游的严格 Core 10 几何平均为 "
+            f"{ratio(summary['all10_selected_portfolio_geomean_speedup'])}。"
+            f"PyTorch 有 {summary['pytorch_comparable_tasks']}/10 题存在正确且稳定的方法；"
+            f"仅在这些可比题上，严格结果相对最快稳定 PyTorch 的几何平均为 "
+            f"{ratio(summary['selected_vs_pytorch_best_geomean'])}。"
+        )
+        caveat = (
+            "026 没有稳定 PyTorch 方法，因此不进入 PyTorch 几何平均。"
+            "019、023、026、047、095 在自动重测后仍未满足 CUDA Session 稳定性门槛；"
+            "其诊断 speedup 不作为正式声明。NCU 计数器仍不可用，本地模式为 `events_only`。"
+        )
+    else:
+        title = "# RTX 3080 Core 10 schema-v2 full confirmation"
+        language = "**English** | [简体中文](core10-rtx3080-confirmation.zh-CN.md)"
+        intro = (
+            "This is a full Core 10 confirmation of manual candidates, not an "
+            "Agent-generated search result. A formal improvement requires correctness, "
+            "five independent process Sessions, at most 5% spread on both sides, at "
+            "least 1.01× median speedup, and a paired-bootstrap 95% lower bound above 1.0."
+        )
+        header = (
+            "| Task | Candidate outcome | Candidate speedup | Bootstrap 95% lower | "
+            "Baseline/candidate spread | Stable PyTorch baseline | Strict selected / PyTorch |"
+        )
+        divider = "| --- | --- | ---: | ---: | ---: | --- | ---: |"
+        labels = {
+            "improved": "improved",
+            "no_improvement": "no improvement",
+            "inconclusive": "inconclusive",
+            "failed": "failed",
+        }
+        summary_text = (
+            f"The strict result contains {summary['verified_improved_tasks']} improvements, "
+            f"{summary['no_improvement_tasks']} no-improvement result, and "
+            f"{summary['inconclusive_tasks']} inconclusive results. The strict Core 10 "
+            f"geometric mean versus upstream is "
+            f"{ratio(summary['all10_selected_portfolio_geomean_speedup'])}. "
+            f"A correct and stable PyTorch method exists for "
+            f"{summary['pytorch_comparable_tasks']}/10 tasks; on only those comparable "
+            f"tasks, the strict geometric mean versus the fastest stable PyTorch method "
+            f"is {ratio(summary['selected_vs_pytorch_best_geomean'])}."
+        )
+        caveat = (
+            "Task 026 has no stable PyTorch method and is excluded from the PyTorch "
+            "geometric mean. Tasks 019, 023, 026, 047, and 095 still fail the CUDA "
+            "Session-stability gate after automatic retesting, so their diagnostic "
+            "speedups are not formal claims. NCU counters remain unavailable and the "
+            "local profiling mode is `events_only`."
+        )
+
+    table_rows = []
+    for row in rows:
+        pytorch = row["pytorch_best_method"] or "—"
+        table_rows.append(
+            "| "
+            + " | ".join(
+                (
+                    str(row["task_id"]),
+                    labels[row["candidate_outcome"]],
+                    ratio(row["attempted_speedup"]),
+                    ratio(row["bootstrap_95_lower"]),
+                    (
+                        f"{float(row['baseline_session_spread_percent']):.3f}% / "
+                        f"{float(row['candidate_session_spread_percent']):.3f}%"
+                    ),
+                    pytorch,
+                    ratio(row["selected_vs_pytorch_best"]),
+                )
+            )
+            + " |"
+        )
+    return "\n\n".join(
+        (
+            title,
+            language,
+            intro,
+            "\n".join((header, divider, *table_rows)),
+            summary_text,
+            caveat,
+            "Canonical machine-readable evidence: "
+            "[JSON](core10_rtx3080_comparison.json).",
+        )
+    ) + "\n"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--candidate-summary", type=Path, required=True)
@@ -314,24 +518,34 @@ def main() -> int:
     augment_candidate_details(candidate_payload, args.candidate_summary.resolve().parent)
     rows = build_comparison_rows(candidate_payload, pytorch_payload)
     output_dir = args.output_dir.resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        parser.error(f"Refusing to overwrite output directory: {output_dir}")
     comparison_csv = output_dir / "core10_rtx3080_comparison.csv"
     comparison_json = output_dir / "core10_rtx3080_comparison.json"
     figure = output_dir / "core10_rtx3080_comparison.svg"
     _write_csv(comparison_csv, rows)
-    _atomic_json(
-        comparison_json,
-        {
-            "schema_version": "2.0",
-            "hardware": "NVIDIA GeForce RTX 3080 (sm_86)",
-            "candidate_protocol": candidate_payload.get("protocol"),
-            "pytorch_protocol": pytorch_payload.get("protocol"),
-            "summary": summarize(rows),
-            "results": rows,
-        },
-    )
+    comparison_payload = {
+        "schema_version": "2.0",
+        "hardware": "NVIDIA GeForce RTX 3080 (sm_86)",
+        "profiling_mode": "events_only",
+        "candidate_protocol": candidate_payload.get("protocol"),
+        "pytorch_protocol": pytorch_payload.get("protocol"),
+        "summary": summarize(rows),
+        "results": rows,
+    }
+    _atomic_json(comparison_json, comparison_payload)
     render_svg(rows, figure)
-    files = [comparison_csv, comparison_json, figure]
+    report_en = output_dir / "core10-rtx3080-confirmation.en.md"
+    report_zh = output_dir / "core10-rtx3080-confirmation.zh-CN.md"
+    report_en.write_text(
+        render_report(comparison_payload, chinese=False), encoding="utf-8"
+    )
+    report_zh.write_text(
+        render_report(comparison_payload, chinese=True), encoding="utf-8"
+    )
+    files = [comparison_csv, comparison_json, figure, report_en, report_zh]
     _atomic_json(
         output_dir / "core10_rtx3080_SHA256SUMS.json",
         {path.name: _sha256(path) for path in files},

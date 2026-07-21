@@ -1,4 +1,10 @@
 {
+  "core10/core10-rtx3080-confirmation.en.md": "e234f8b89e29715016dbe102fd615f795a911eb09026a1751d75f6dc1b810b5d",
+  "core10/core10-rtx3080-confirmation.zh-CN.md": "078aac452dda7034dd27e8ed888515ee159f99a80e70a1523894003821f21256",
+  "core10/core10_rtx3080_SHA256SUMS.json": "9c127bba79c0553c9ec631ed4f59e4ef758d690e09a832f16d8b8e744c2bbfec",
+  "core10/core10_rtx3080_comparison.csv": "ec495d0a4c779fcdcd508f124a1478a7d2bf53fdf086c1d086167965d2f34df4",
+  "core10/core10_rtx3080_comparison.json": "8f06b902606190dc8c3ad3643e4f5a663c1adb079e13417ad9eb165b878e98fa",
+  "core10/core10_rtx3080_comparison.svg": "1c4f2ad651c0edb16dadfd9835aaa09e9157deb7873ddaab861328fe49db056b",
   "reports/rtx3080-targeted-validation.en.md": "5f48e5fdd8e046068e7cd57cbe7ae09c6a784ce0ed214d262128eddcc46e058a",
   "reports/rtx3080-targeted-validation.zh-CN.md": "19cf8e64fbf959bca064991f9de25e3ae65ef9f9dc7f178c3123a9190e8b58a9",
   "results/rtx3080_targeted_validation.json": "5603a419bb2d855e2c1aaef9a40b184d9d5dd3065dcd7d277bf6af79154314d8"

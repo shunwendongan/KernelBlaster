@@ -7,17 +7,17 @@ This document is the living validation record for the portfolio fork. Historical
 <!-- VALIDATION_STATUS:START -->
 | Gate | Current status | Canonical evidence |
 | --- | --- | --- |
-| Provider/Recorder/Suite CPU tests | PASSED — 98 passed | `tests/` |
+| Provider/Recorder/Suite CPU tests | PASSED — 100 passed | `tests/` |
 | Real gateway smoke | NOT RUN — historical HTTP 401 has not been revalidated | historical `artifacts/portfolio-v1.0/results/analysis_summary.json` |
 | RTX 3080 container and `sm_86` build | PASSED | `artifacts/portfolio-v1.0/environment/environment.json` |
-| Official candidate correctness | HISTORICAL V1 PASSED — 10/10; schema-v2 targeted 5/5 passed | `artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json` |
+| Official candidate correctness | HISTORICAL V1 PASSED — 10/10; schema-v2 full 10/10 passed | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
 | RMSNorm edge correctness | PASSED | committed `edge_driver.cpp` and deep-case artifacts |
-| CUDA Events timing | schema-v2 targeted confirmation: 004/036/040 improved; 007 inconclusive; 095 exploratory | `artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json` |
-| Same-GPU PyTorch comparison | COMPLETED | `pytorch_core10_rtx3080.csv` |
+| CUDA Events timing | schema-v2 full confirmation: 4 improved; 1 no improvement; 5 inconclusive | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
+| Same-GPU PyTorch comparison | schema-v2 full confirmation; 9/10 tasks have a stable method | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
 | NCU hardware counters | BLOCKED — `ERR_NVGPUCTRPERM` | environment manifest and historical validation report |
 | Cross-GPU comparison | NOT RUN — deferred Day 11–14 | no performance claim published |
 
-The historical manual follow-up validated all ten candidates and improved 4/10 under the old gate. Those claims remain immutable historical evidence. The targeted schema-v2 result covers only five tasks and must not be generalized to a full Core 10 or Agent-search claim.
+The historical manual follow-up validated all ten candidates and improved 4/10 under the old gate. Those claims remain immutable historical evidence. The full schema-v2 result still confirms manual candidates and must not be generalized to an Agent-search claim.
 <!-- VALIDATION_STATUS:END -->
 
 ## Completed development and experiment timeline
@@ -27,12 +27,13 @@ The historical manual follow-up validated all ten candidates and improved 4/10 u
 3. **Days 8–10 — RMSNorm deep case:** implemented V1–V3c, added odd/tiny/63–65-channel correctness inputs, retained failed variants, and published the 49.348× paired V3c result. NCU counter access remained blocked, so no hardware-counter attribution was published.
 4. **Core 10 follow-up:** added nine manual candidates, reran all ten tasks with 20 warmups, 100 samples, three independent process Sessions, AB/BA ordering, and compared them with same-GPU PyTorch eager/out/fused methods.
 5. **Publication:** checked in redacted JSON/CSV/SVG reports and SHA256 links for 362 ignored raw JSON/JSONL/CSV/SVG/log files. Merged PRs #4 and #5 contain the artifact publication and living-documentation follow-up.
-6. **Schema-v2 targeted validation:** reran correctness for 004/007/036/040/095 and five-Session confirmation for 004/007/036/040. Tasks 004/036/040 passed the new bootstrap and stability gate, 007 was inconclusive because the upstream baseline was unstable, and 095 remains exploratory.
+6. **Schema-v2 full confirmation:** reran all ten manual candidates and the same-GPU PyTorch methods with five independent process Sessions. Correctness passed 10/10; 004/007/036/040 improved, 088 reported no improvement, and 019/023/026/047/095 remained inconclusive after automatic retesting.
 
 ## Result interpretation
 
 - Historical v1 diagnostic candidate medians include unstable tasks and are useful for prioritizing follow-up work, not release claims.
 - The current schema-v2 gate requires correctness, no more than 5% cross-session spread, five paired Sessions, at least 1.01× median speedup, and a paired-bootstrap 95% lower bound above 1.0.
+- Under schema v2, the strict Core 10 geometric mean versus upstream is 4.381×. A stable PyTorch method exists for 9/10 tasks; only across those comparable tasks, the strict ratio versus the fastest stable PyTorch method is 1.053×.
 - The nine newly developed candidates score 5.020× diagnostic and 3.302× strict versus upstream; 004, 007, and 040 pass the strict gate.
 - Full Core 10, including the existing RMSNorm case, scores 6.351× diagnostic and 4.356× strict versus upstream.
 - Against the fastest measured PyTorch method, the nine-candidate diagnostic/strict ratios are 1.415×/0.931×; the full-ten ratios are 1.447×/0.992×.
@@ -40,6 +41,8 @@ The historical manual follow-up validated all ten candidates and improved 4/10 u
 
 Canonical evidence:
 
+- [Schema-v2 full Core 10 confirmation](../../artifacts/portfolio-v2.0/core10/core10-rtx3080-confirmation.en.md)
+- [Schema-v2 full comparison JSON](../../artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json)
 - [Schema-v2 targeted validation](../../artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.en.md)
 - [Schema-v2 result JSON](../../artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json)
 - [Per-task comparison JSON](../../artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json)
@@ -61,7 +64,8 @@ Canonical evidence:
 ## Remaining blockers and deferred work
 
 - Supply a valid external API credential before Agent-driven Pilot/Core 10 search; the single 401 request was not retried or billed as a successful completion.
-- Run schema-v2 correctness and five-Session confirmation for the other five Core 10 tasks; rerun 007 until both sides are stable and confirm 095 with five Sessions.
+- Diagnose the repeatable Session instability in 019/023/026/047/095 without promoting their diagnostic speedups.
+- Rerun PyTorch 026 until a correct stable framework baseline exists before including it in a PyTorch geometric mean.
 - Collect the required NCU sections on an explicitly authorized profiler worker; local Docker/WSL remains `events_only`.
 - Run and publish L40S/A100 matching comparisons independently.
 - Generalize fixed-shape candidates across shapes, dtypes, layouts, streams, graph capture, backward paths, and stricter numerical tolerances before production-library claims.

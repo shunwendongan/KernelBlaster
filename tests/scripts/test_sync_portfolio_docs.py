@@ -97,10 +97,14 @@ def test_docs_markdown_explanations_have_chinese_and_english_pairs():
     english_documents = [
         path for path in (ROOT / "docs").rglob("*.md") if not path.name.endswith(".zh-CN.md")
     ]
+    chinese_documents = list((ROOT / "docs").rglob("*.zh-CN.md"))
     assert english_documents
+    assert len(english_documents) == len(chinese_documents)
     for english in english_documents:
         chinese = english.with_name(f"{english.stem}.zh-CN.md")
         assert chinese.is_file(), f"Missing Chinese documentation pair for {english}"
+        assert chinese.name in english.read_text(encoding="utf-8")
+        assert english.name in chinese.read_text(encoding="utf-8")
 
 
 def test_replace_block_rejects_missing_markers():

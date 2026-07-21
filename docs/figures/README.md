@@ -1,5 +1,7 @@
 # Figure provenance
 
+**English** | [简体中文](README.zh-CN.md)
+
 The top-level README files reference these upstream project figures from this directory:
 
 - `flow_chart.png`

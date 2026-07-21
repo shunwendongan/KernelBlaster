@@ -1,5 +1,7 @@
 # 图表来源
 
+**简体中文** | [English](README.md)
+
 顶层中英文 README 引用了本目录中的上游项目图表：
 
 - `flow_chart.png`

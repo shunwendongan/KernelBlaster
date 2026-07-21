@@ -79,7 +79,7 @@ def test_candidate_manifest_rejects_duplicate_ids(tmp_path):
         CANDIDATES.load_candidates(manifest)
 
 
-def test_comparison_selects_only_verified_improvements():
+def test_comparison_selects_only_verified_improvements(tmp_path):
     candidate_results = []
     pytorch_results = []
     for task_id in ANALYZE.TASK_IDS:
@@ -143,6 +143,10 @@ def test_comparison_selects_only_verified_improvements():
     incomplete = next(row for row in incomplete_rows if row["task_id"] == "004")
     assert incomplete["candidate_outcome"] == "inconclusive"
     assert incomplete["candidate_exclusion_reason"] == "insufficient_confirmation"
+
+    csv_path = tmp_path / "comparison.csv"
+    ANALYZE._write_csv(csv_path, rows)
+    assert b"\r\n" not in csv_path.read_bytes()
 
 
 def test_comparison_excludes_unstable_pytorch_method():

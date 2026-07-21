@@ -338,7 +338,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         for row in rows
     ]
     with path.open("w", newline="", encoding="utf-8") as stream:
-        writer = csv.DictWriter(stream, fieldnames=list(serializable[0]))
+        writer = csv.DictWriter(
+            stream, fieldnames=list(serializable[0]), lineterminator="\n"
+        )
         writer.writeheader()
         writer.writerows(serializable)
 

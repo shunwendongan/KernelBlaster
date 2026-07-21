@@ -28,6 +28,8 @@ import asyncio
 import sys
 from ..config import config
 from ..observability import event_context
+from ..outcomes import RunOutcome, RunStatus
+from ..profiling import ProfilerBackend, ProfilerUnavailable, ProfilingMode
 from .feedback import FeedbackAgent, Feedback, FeedbackConfig
 from .database import OptimizationDatabase, OptimizationEntry, CompositeOptimization
 from .rl_agents import (
@@ -315,6 +317,11 @@ class RLNCUAgent(FeedbackAgent):
     """
     RL-based CUDA optimization agent implementing strategy-guided rollouts.
     """
+
+    @staticmethod
+    def next_performance_state(current_state: str | None, new_state: str | None) -> str:
+        """Never erase a known state with a missing profiler classification."""
+        return new_state or current_state or "events_only/unknown"
     
     def __init__(
         self,
@@ -325,6 +332,7 @@ class RLNCUAgent(FeedbackAgent):
         replay_buffer_size: int = 1000,
         update_frequency: int = 10,  # Update database every N trajectories
         database: Optional[OptimizationDatabase] = None,
+        profiler_backend: Optional[ProfilerBackend] = None,
     ):
         # Initialize base feedback agent
         super().__init__(fb_config)
@@ -345,6 +353,7 @@ class RLNCUAgent(FeedbackAgent):
         self.replay_buffer = ReplayBuffer(max_size=replay_buffer_size)
         self.max_rollout_steps = max_rollout_steps
         self.update_frequency = update_frequency
+        self.profiler_backend = profiler_backend
         
         # RL agents
         self.policy_evaluation_agent = PolicyEvaluationAgent()
@@ -354,18 +363,60 @@ class RLNCUAgent(FeedbackAgent):
         # Tracking
         self.iteration_count = 0
         self.total_trajectories = 0
+        self._next_trajectory_id = 0
         self.best_cycles = float('inf')
         self.initial_cycles = None
+        self.profiling_mode = "ncu"
         
         # Concurrency helpers
         import asyncio as _asyncio
         self._trajectory_lock: _asyncio.Lock = _asyncio.Lock()
+        self._policy_lock: _asyncio.Lock = _asyncio.Lock()
         
         # Current trajectory
         self.current_trajectory = None
         
         # Number of RL iterations to run (can be set by the workflow)
         self.num_rl_iterations = 50  # Default to 50 RL iterations
+
+    async def _profile_candidate(self, filepath: Path) -> Tuple[str, str, str, int]:
+        if self.profiler_backend is None:
+            return await self.gather_perf_metrics(filepath)
+
+        result = await self.profiler_backend.profile(filepath)
+        self.profiling_mode = result.mode.value
+        if not result.available:
+            raise ProfilerUnavailable(result.error or "Profiler returned no timing metric")
+        measurement = result.elapsed_cycles
+        if measurement is None and result.elapsed_us is not None:
+            # The rollout data model historically calls its ranking signal "cycles".
+            # Keep that interface stable while using nanoseconds as the Events score.
+            measurement = round(result.elapsed_us * 1000.0)
+        if measurement is None or measurement <= 0:
+            raise ProfilerUnavailable("Profiler returned no positive timing metric")
+        return (
+            result.annotated_source,
+            result.raw_output,
+            result.stderr,
+            measurement,
+        )
+
+    async def _classify_profile_state(
+        self,
+        ncu_log: str,
+        metrics: dict,
+        code: str,
+        measurement: int,
+    ) -> str:
+        """Only derive an NCU state when hardware-counter evidence exists."""
+        if self.profiling_mode == ProfilingMode.EVENTS_ONLY.value or not ncu_log.strip():
+            return "events_only/unknown"
+        return await self.database.get_state_from_ncu_report(
+            ncu_log,
+            metrics,
+            code,
+            elapsed_cycles=measurement,
+        )
 
     async def initialize(self):
         """Initialize the agent by gathering initial profiling data."""
@@ -375,7 +426,7 @@ class RLNCUAgent(FeedbackAgent):
 
         self.agent_logger.info(f"Gathering initial NCU log...")
         try:
-            annotated_ncu, init_ncu_log, _, cycles = await self.gather_perf_metrics(
+            annotated_ncu, init_ncu_log, _, cycles = await self._profile_candidate(
                 self.code_to_optimize_fp
             )
             self.initial_cycles = cycles
@@ -385,10 +436,16 @@ class RLNCUAgent(FeedbackAgent):
             self.last_ncu_log = init_ncu_log
             
             # Save initial state
-            init_metrics = parse_ncu_metrics(init_ncu_log)
-            initial_state = await self.database.get_state_from_ncu_report(
-                init_ncu_log, init_metrics, self.code_to_optimize, elapsed_cycles=cycles
-            )
+            if self.profiling_mode == ProfilingMode.EVENTS_ONLY.value:
+                initial_state = "events_only/unknown"
+            else:
+                init_metrics = parse_ncu_metrics(init_ncu_log)
+                initial_state = await self.database.get_state_from_ncu_report(
+                    init_ncu_log,
+                    init_metrics,
+                    self.code_to_optimize,
+                    elapsed_cycles=cycles,
+                )
             
             self.agent_logger.info(f"Initial state: {initial_state}, cycles: {cycles}")
             
@@ -416,7 +473,23 @@ class RLNCUAgent(FeedbackAgent):
             except Exception as _e:
                 self.agent_logger.warning(f"Failed to write fallback 0_init_annotated.cu: {_e}")
 
-    async def run(self) -> Path:
+        except Exception as e:
+            if "ERR_NVGPUCTRPERM" not in str(e):
+                raise
+            self.profiling_mode = "events_only"
+            self.initial_cycles = None
+            self.last_ncu_log = ""
+            initial_state = "events_only/unknown"
+            self.agent_logger.warning(
+                "NCU performance counters are unavailable; the run is marked "
+                "events_only and cannot make a profile-guided success claim."
+            )
+            (self.folder / "0_init_annotated.cu").write_text(
+                self.code_to_optimize,
+                encoding="utf-8",
+            )
+
+    async def run(self) -> RunOutcome:
         """
         Override the base run method to implement RL-specific behavior.
         Runs multiple RL iterations **in parallel** and returns the best result.
@@ -425,17 +498,21 @@ class RLNCUAgent(FeedbackAgent):
         
         best_filename = None
         best_cycles = float('inf')
+        iteration_errors: list[str] = []
 
         # Ensure initial profiling data is available ONCE before spawning tasks
-        if not hasattr(self, "last_ncu_log") or not self.last_ncu_log:
+        if not hasattr(self, "last_ncu_log"):
             await self.initialize()
         # Compute and share the initial state derived from the initial NCU log
-        initial_state_shared = await self.database.get_state_from_ncu_report(
-            self.last_ncu_log,
-            parse_ncu_metrics(self.last_ncu_log),
-            self.code_to_optimize,
-            elapsed_cycles=self.initial_cycles,
-        )
+        if self.last_ncu_log and self.profiling_mode == ProfilingMode.NCU.value:
+            initial_state_shared = await self.database.get_state_from_ncu_report(
+                self.last_ncu_log,
+                parse_ncu_metrics(self.last_ncu_log),
+                self.code_to_optimize,
+                elapsed_cycles=self.initial_cycles,
+            )
+        else:
+            initial_state_shared = "events_only/unknown"
 
         async def _run_single_iteration(iteration_idx: int):
             """Helper that performs one rollout and returns its trajectory."""
@@ -448,6 +525,7 @@ class RLNCUAgent(FeedbackAgent):
                 trajectory = await self.run_rollout(self.code_to_optimize, initial_state)
                 return iteration_idx, trajectory
             except Exception as exc:
+                iteration_errors.append(str(exc))
                 self.agent_logger.error(
                     f"RL iteration {iteration_idx + 1} failed: {exc}")
                 return iteration_idx, None
@@ -472,10 +550,7 @@ class RLNCUAgent(FeedbackAgent):
                     self.agent_logger.info(
                         f"[Async] New best result from iter {iteration_idx}: {best_cycles} cycles")
 
-            # Update replay buffer & trajectory counters **after** trajectory is complete
-            if trajectory:
-                self.replay_buffer.add_trajectory(trajectory)
-                self.total_trajectories += 1
+            await self._record_completed_trajectory(trajectory)
 
         # After all tasks completed
         # Persist a numbered snapshot of the optimisation database JSON
@@ -501,18 +576,58 @@ class RLNCUAgent(FeedbackAgent):
                     if not init_fp or not init_fp.exists():
                         self.code_to_optimize_fp = self.folder / "init.cu"
                         self.code_to_optimize_fp.write_text(self.code_to_optimize)
-                    _, _, _, baseline_cycles = await self.gather_perf_metrics(self.code_to_optimize_fp)
+                    _, _, _, baseline_cycles = await self._profile_candidate(self.code_to_optimize_fp)
                     self.initial_cycles = baseline_cycles
             except Exception as e:
                 self.agent_logger.warning(
                     f"Failed to obtain baseline cycles before finalizing result: {e}"
                 )
 
-            # Decide success vs failure based on improvement over baseline.
-            if self.initial_cycles is not None and best_cycles < self.initial_cycles:
+            preliminary_speedup = (
+                self.initial_cycles / best_cycles
+                if self.initial_cycles is not None and best_cycles > 0
+                else None
+            )
+            performance_gate = {
+                "passed": False,
+                "reason": "Five-session CUDA Events confirmation was not run.",
+            }
+            confirmation_error: str | None = None
+            confirm_pair = getattr(self.profiler_backend, "confirm_pair", None)
+            if confirm_pair is not None and self.initial_cycles is not None:
+                try:
+                    gate_result = await confirm_pair(
+                        self.code_to_optimize_fp,
+                        best_filename,
+                    )
+                    performance_gate = gate_result.to_dict()
+                except Exception as error:
+                    confirmation_error = f"{type(error).__name__}: {error}"
+                    performance_gate = {
+                        "passed": False,
+                        "reason": "CUDA Events confirmation failed.",
+                        "error": confirmation_error,
+                    }
+
+            # A search-time improvement is provisional. Only the independent,
+            # paired Events gate may promote it to a formal result artifact.
+            if performance_gate.get("passed") is True:
                 final_filename = self.folder / "success_rl_optimization.cu"
-                final_filename.write_text(best_filename.read_text())
-                return final_filename
+                final_filename.write_text(
+                    best_filename.read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+                return RunOutcome(
+                    status=RunStatus.IMPROVED,
+                    artifact_path=final_filename,
+                    profiling_mode=self.profiling_mode,
+                    metrics={
+                        "baseline_cycles": self.initial_cycles,
+                        "best_cycles": best_cycles,
+                        "search_speedup": preliminary_speedup,
+                        "performance_gate": performance_gate,
+                    },
+                )
 
             failure_file = self.folder / "failure_rl_optimization.cu"
             baseline_str = self.initial_cycles if self.initial_cycles is not None else "N/A"
@@ -532,7 +647,21 @@ class RLNCUAgent(FeedbackAgent):
             self.agent_logger.error(
                 "RL did not produce an improvement; wrote failure_rl_optimization.cu with baseline (if available)"
             )
-            return failure_file
+            return RunOutcome(
+                status=RunStatus.NO_IMPROVEMENT,
+                artifact_path=failure_file,
+                reason=(
+                    "Candidate search completed, but the formal performance gate "
+                    "did not confirm an improvement."
+                ),
+                profiling_mode=self.profiling_mode,
+                metrics={
+                    "baseline_cycles": self.initial_cycles,
+                    "best_cycles": best_cycles,
+                    "search_speedup": preliminary_speedup,
+                    "performance_gate": performance_gate,
+                },
+            )
 
         # No trajectory produced a candidate. Still write a failure file (with baseline if available).
         try:
@@ -541,7 +670,7 @@ class RLNCUAgent(FeedbackAgent):
                 if not init_fp or not init_fp.exists():
                     self.code_to_optimize_fp = self.folder / "init.cu"
                     self.code_to_optimize_fp.write_text(self.code_to_optimize)
-                _, _, _, cycles = await self.gather_perf_metrics(self.code_to_optimize_fp)
+                _, _, _, cycles = await self._profile_candidate(self.code_to_optimize_fp)
                 self.initial_cycles = cycles
                 self.best_cycles = min(self.best_cycles, cycles) if self.best_cycles else cycles
         except Exception as e:
@@ -561,7 +690,20 @@ class RLNCUAgent(FeedbackAgent):
         self.agent_logger.error(
             "All RL iterations failed; wrote failure_rl_optimization.cu with baseline (if available)"
         )
-        return failure_file
+        permission_blocked = any(
+            "ERR_NVGPUCTRPERM" in error for error in iteration_errors
+        )
+        return RunOutcome(
+            status=(RunStatus.BLOCKED if permission_blocked else RunStatus.FAILED),
+            artifact_path=failure_file,
+            reason=(
+                "NCU performance-counter access is blocked."
+                if permission_blocked
+                else "All RL iterations failed before producing a valid candidate."
+            ),
+            profiling_mode=self.profiling_mode,
+            metrics={"iteration_errors": iteration_errors},
+        )
 
     async def gather_perf_metrics(self, filepath: Path) -> Tuple[str, str, str, int]:
         """Gather performance metrics using NCU profiling."""
@@ -929,8 +1071,8 @@ class RLNCUAgent(FeedbackAgent):
         # Create per-trajectory folder for logs & artefacts
         # --------------------------------------------------------------
         async with self._trajectory_lock:
-            self.total_trajectories += 1
-            trajectory_index = self.total_trajectories  # Unique per agent instance
+            self._next_trajectory_id += 1
+            trajectory_index = self._next_trajectory_id
 
         # Use uuid suffix to avoid folder name collisions in concurrent runs
         _uid = _uuid.uuid4().hex[:8]
@@ -1140,7 +1282,7 @@ class RLNCUAgent(FeedbackAgent):
                 
                 # Update for next step
                 current_code = optimized_code
-                current_state = new_state
+                current_state = self.next_performance_state(current_state, new_state)
                 current_cycles = new_cycles
                 last_ncu_log = new_ncu_log or last_ncu_log  # keep for next iteration
                 
@@ -1166,6 +1308,22 @@ class RLNCUAgent(FeedbackAgent):
                 break
         
         return trajectory
+
+    async def _record_completed_trajectory(self, trajectory: Trajectory) -> None:
+        """Record a completed trajectory exactly once and trigger policy updates."""
+
+        self.replay_buffer.add_trajectory(trajectory)
+        async with self._trajectory_lock:
+            self.total_trajectories += 1
+            update_due = (
+                self.update_frequency > 0
+                and self.total_trajectories % self.update_frequency == 0
+            )
+
+        if update_due:
+            async with self._policy_lock:
+                self.iteration_count += 1
+                await self.policy_update_cycle()
 
     # ------------------------------------------------------------------
     # Helper to find an optimisation entry by its technique/composite ID
@@ -1223,7 +1381,7 @@ class RLNCUAgent(FeedbackAgent):
         
         # Gather current profiling data; tolerate numeric-verification failures
         try:
-            annotated_ncu, ncu_log, _, _ = await self.gather_perf_metrics(temp_file)
+            annotated_ncu, ncu_log, _, _ = await self._profile_candidate(temp_file)
         except FeedbackError as prof_err:
             self.agent_logger.warning(
                 f"Profiling failed at step {step} with FeedbackError; using empty NCU log. Details: {prof_err}"
@@ -1324,7 +1482,7 @@ class RLNCUAgent(FeedbackAgent):
 
             try:
                 # Profile the optimized code (this implicitly compiles + runs it)
-                _, new_ncu_log, _, new_cycles = await self.gather_perf_metrics(filepath)
+                _, new_ncu_log, _, new_cycles = await self._profile_candidate(filepath)
 
                 # If we reach here, compilation and run were successful
                 compile_success = True
@@ -1429,7 +1587,18 @@ class RLNCUAgent(FeedbackAgent):
         # ------------------------------------------------------------------
         new_metrics = parse_ncu_metrics(new_ncu_log)
         # new_state = await self.database.get_state_from_ncu_report(new_ncu_log, new_metrics)
-        new_state = None  # TODO: Temp Disable state update
+        try:
+            new_state = await self._classify_profile_state(
+                new_ncu_log,
+                new_metrics,
+                optimized_code,
+                new_cycles,
+            )
+        except Exception as state_error:
+            self.agent_logger.warning(
+                f"Could not classify the optimized candidate state: {state_error}"
+            )
+            new_state = "events_only/unknown" if not new_ncu_log else "unknown"
         return optimized_code, new_cycles, new_state, new_ncu_log
 
     def calculate_reward(self, predicted_improvement: Optional[float], actual_improvement: float, 
@@ -1478,7 +1647,8 @@ class RLNCUAgent(FeedbackAgent):
             recent_failures = []
             for traj in self.replay_buffer.get_recent_trajectories(5):
                 for step in traj.steps:
-                    if step.reward < 0 or step.actual_improvement < step.predicted_improvement * 0.5:
+                    predicted = step.predicted_improvement or 0.0
+                    if step.reward < 0 or step.actual_improvement < predicted * 0.5:
                         recent_failures.append(step)
             
             # Performance Gap Analysis
@@ -1526,16 +1696,14 @@ class RLNCUAgent(FeedbackAgent):
         
         try:
             # Profile initial code to determine state
-            annotated_ncu, ncu_log, _, cycles = await self.gather_perf_metrics(filepath)
+            annotated_ncu, ncu_log, _, cycles = await self._profile_candidate(filepath)
             metrics = parse_ncu_metrics(ncu_log)
             initial_state = await self.database.get_state_from_ncu_report(ncu_log, metrics, code, elapsed_cycles=cycles)
             
             # Run optimization rollout
             trajectory = await self.run_rollout(code, initial_state)
             
-            # Add trajectory to replay buffer
-            self.replay_buffer.add_trajectory(trajectory)
-            self.total_trajectories += 1
+            await self._record_completed_trajectory(trajectory)
             
             # Update best performance
             if trajectory.final_cycles < self.best_cycles:

@@ -79,7 +79,7 @@ def test_candidate_manifest_rejects_duplicate_ids(tmp_path):
         CANDIDATES.load_candidates(manifest)
 
 
-def test_comparison_selects_only_verified_improvements():
+def test_comparison_selects_only_verified_improvements(tmp_path):
     candidate_results = []
     pytorch_results = []
     for task_id in ANALYZE.TASK_IDS:
@@ -97,7 +97,7 @@ def test_comparison_selects_only_verified_improvements():
                 "baseline_median_us": 20.0,
                 "candidate_median_us": 10.0 if improved else 21.0,
                 "speedup": 2.0 if improved else 20.0 / 21.0,
-                "session_speedups": [2.0, 2.0, 2.0] if improved else [0.95] * 3,
+                "session_speedups": [2.0] * 5 if improved else [0.95] * 5,
             }
         )
         eager_method = (
@@ -131,5 +131,121 @@ def test_comparison_selects_only_verified_improvements():
     failed = next(row for row in rows if row["task_id"] == "088")
     assert failed["selected_variant"] == "upstream_baseline"
     assert failed["portfolio_speedup"] == 1.0
+    assert failed["candidate_outcome"] == "no_improvement"
+    assert failed["candidate_exclusion_reason"] == "paired_session_slower"
     assert failed["pytorch_best_method"] == "pytorch_fused_gelu_tanh"
     assert ANALYZE.summarize(rows)["verified_improved_tasks"] == 9
+
+    candidate_results[0]["session_speedups"] = [2.0] * 3
+    incomplete_rows = ANALYZE.build_comparison_rows(
+        {"results": candidate_results}, {"results": pytorch_results}
+    )
+    incomplete = next(row for row in incomplete_rows if row["task_id"] == "004")
+    assert incomplete["candidate_outcome"] == "inconclusive"
+    assert incomplete["candidate_exclusion_reason"] == "insufficient_confirmation"
+
+    csv_path = tmp_path / "comparison.csv"
+    ANALYZE._write_csv(csv_path, rows)
+    assert b"\r\n" not in csv_path.read_bytes()
+
+
+def test_comparison_excludes_unstable_pytorch_method():
+    candidate_results = []
+    pytorch_results = []
+    for task_id in ANALYZE.TASK_IDS:
+        candidate_results.append(
+            {
+                "task_id": task_id,
+                "kernel": f"kernel-{task_id}",
+                "candidate": f"candidate-{task_id}",
+                "source": f"{task_id}.cu",
+                "correct": True,
+                "stable": True,
+                "performance_claim_allowed": True,
+                "all_sessions_not_slower": True,
+                "baseline_median_us": 20.0,
+                "candidate_median_us": 10.0,
+                "speedup": 2.0,
+                "session_speedups": [2.0] * 5,
+            }
+        )
+        eager_name = (
+            "pytorch_driver_formula" if task_id == "088" else "pytorch_eager"
+        )
+        pytorch_results.extend(
+            [
+                {
+                    "task_id": task_id,
+                    "method": eager_name,
+                    "allocation_mode": "framework_allocated",
+                    "median_us": 15.0,
+                    "correct": True,
+                    "stable": True,
+                },
+                {
+                    "task_id": task_id,
+                    "method": "unstable_but_fast",
+                    "allocation_mode": "framework_allocated",
+                    "median_us": 1.0,
+                    "correct": True,
+                    "stable": False,
+                },
+            ]
+        )
+    rows = ANALYZE.build_comparison_rows(
+        {"results": candidate_results}, {"results": pytorch_results}
+    )
+    assert all(row["pytorch_best_method"] != "unstable_but_fast" for row in rows)
+
+
+def test_core10_manifest_declares_edge_drivers_and_non_reentrant_candidates():
+    payload = json.loads(
+        (ROOT / "portfolio" / "case_studies" / "core10" / "candidates.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    tasks = {task["id"]: task for task in payload["tasks"]}
+    for task_id in ("004", "007", "036", "040", "095"):
+        assert tasks[task_id]["extra_correctness_drivers"]
+        for relative in tasks[task_id]["extra_correctness_drivers"]:
+            assert (ROOT / "portfolio" / "case_studies" / "core10" / relative).resolve().is_file()
+    for task_id in ("007", "040", "095"):
+        assert tasks[task_id]["reentrant"] is False
+
+
+def test_bilingual_confirmation_report_labels_outcomes_and_links_json():
+    payload = {
+        "summary": {
+            "verified_improved_tasks": 1,
+            "no_improvement_tasks": 0,
+            "inconclusive_tasks": 0,
+            "all10_selected_portfolio_geomean_speedup": 2.0,
+            "pytorch_comparable_tasks": 1,
+            "selected_vs_pytorch_best_geomean": 1.1,
+        },
+        "results": [
+            {
+                "task_id": "004",
+                "candidate_outcome": "improved",
+                "attempted_speedup": 2.0,
+                "bootstrap_95_lower": 1.8,
+                "baseline_session_spread_percent": 1.0,
+                "candidate_session_spread_percent": 0.5,
+                "pytorch_best_method": "pytorch_eager",
+                "selected_vs_pytorch_best": 1.1,
+            }
+        ],
+    }
+    english = ANALYZE.render_report(payload, chinese=False)
+    chinese = ANALYZE.render_report(payload, chinese=True)
+    assert "Candidate outcome" in english
+    assert "正式提升" in chinese
+    assert "core10_rtx3080_comparison.json" in english
+    assert "core10-rtx3080-confirmation.zh-CN.md" in english
+
+
+def test_gpu_ci_keeps_correctness_and_ncu_probes_out_of_formal_timing():
+    workflow = (ROOT / ".github" / "workflows" / "gpu-validation.yml").read_text(
+        encoding="utf-8"
+    )
+    assert workflow.count("--correctness-only") == 2

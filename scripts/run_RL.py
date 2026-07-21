@@ -18,6 +18,7 @@ import os
 import sys
 import signal
 import glob
+import shutil
 from loguru import logger
 from pathlib import Path
 import json
@@ -35,8 +36,10 @@ from src.kernelblaster.observability import (
     record_event,
     set_run_recorder,
 )
+from src.kernelblaster.outcomes import RunStatus
 from src.kernelblaster.resources import *
 from src.kernelblaster.workflow import run_workflow
+from src.kernelblaster.agents.database import LLMInterface, OptimizationDatabase
 
 from data import get_dataset
 from utils.arguments import *
@@ -47,6 +50,11 @@ CLEANUP_IN_PROGRESS = False
 SIGNAL_COUNT = 0
 COMPREHENSIVE_ANALYSIS_CACHE = None
 RUN_RECORDER = None
+
+
+def resolve_target_gpu(gpu: str | None) -> GPUType:
+    """Resolve the GPU whose server URL should be configured for this run."""
+    return GPUType(gpu) if gpu is not None else GPUType.current()
 
 
 def load_comprehensive_analysis_results():
@@ -282,7 +290,7 @@ async def process_problem(
     semaphore,
     workflow_config,
     timeout_minutes,
-) -> tuple[dict[str, Path], bool]:
+) -> tuple[dict[str, Path], RunStatus]:
     problem_id = entry["id"]
     user_message = entry.get("user_message", "")
     reference_code = None
@@ -341,6 +349,7 @@ async def process_problem(
                 workflow_config,
                 job_logger=job_logger,
                 timeout_seconds=timeout_minutes * 60,
+                shared_database=workflow_config.shared_optimization_database,
             )
         if result.success:
             logger.info(
@@ -350,11 +359,28 @@ async def process_problem(
             logger.error(
                 f"❌ Failed to generate codes for {problem_id}: {result.error}"
             )
+        record_event(
+            "task_outcome",
+            status=(
+                "ok"
+                if result.outcome.status.value in {"improved", "no_improvement"}
+                else "error"
+            ),
+            task_id=task_id or problem_id,
+            stage="terminal",
+            data={
+                "task_id": task_id or problem_id,
+                "outcome": result.outcome.status.value,
+                "profiling_mode": result.outcome.profiling_mode,
+                "reason": result.outcome.reason,
+                "metrics": result.outcome.metrics,
+            },
+        )
         job_logger.remove(job_logger_id)
-    return result.generated_codes, result.success
+    return result.generated_codes, result.outcome.status
 
 
-async def async_main():
+async def async_main() -> int:
     parser = argparse.ArgumentParser()
     add_common_arguments(parser)
     parser.add_argument(
@@ -499,7 +525,7 @@ async def async_main():
         # Use existing GPU server if URL provided, otherwise create new one
         if args.gpu_server_url:
             logger.info(f"Using existing GPU server at {args.gpu_server_url}")
-            config.set_gpu_server_url(GPUType.current(), args.gpu_server_url)
+            config.set_gpu_server_url(resolve_target_gpu(args.gpu), args.gpu_server_url)
             GPU_SERVER = None  # No need to manage our own server
         else:
             GPU_SERVER = GPUServer(logger, OUT_DIR, gpu=args.gpu, port=args.gpu_port)
@@ -520,7 +546,7 @@ async def async_main():
             status="error",
             data={"error_type": type(e).__name__},
         )
-        return
+        return 2
 
     config.print_config(logger)
 
@@ -535,18 +561,26 @@ async def async_main():
     tasks = []
 
     workflow_config = create_workflow_config(args)
+    workflow_config.shared_optimization_database = OptimizationDatabase(
+        OUT_DIR / "optimization_database.md",
+        None,
+        LLMInterface(args.model, logger),
+    )
 
     logger.info(f"Processing {len(dataset)} problems")
     for entry in dataset_iter:
         problem_id = entry["id"]
-        folder = OUT_DIR / problem_id
+        folder = (OUT_DIR / problem_id).resolve()
+        if folder == OUT_DIR.resolve() or not folder.is_relative_to(OUT_DIR.resolve()):
+            logger.error(f"Skipping unsafe task output path for {problem_id!r}: {folder}")
+            continue
         if workflow_config.should_skip_folder(folder):
             continue
         elif args.no_resume:
             logger.warning(
                 f"Retrying {problem_id} from scratch because --no-resume flag is set."
             )
-            os.system(f"rm -r {folder}/*")
+            shutil.rmtree(folder, ignore_errors=True)
         elif folder.exists():
             logger.debug(f"Resuming {problem_id}")
 
@@ -565,13 +599,28 @@ async def async_main():
 
     logger.info(f"Waiting for {len(tasks)} tasks to complete")
     # Wait for all tasks to complete
+    exit_code = 0
     if tasks:
         logger.info(
             f"Processing {len(tasks)} problems with concurrency {args.concurrency}"
         )
-        await asyncio.gather(*tasks)
+        task_results = await asyncio.gather(*tasks, return_exceptions=True)
+        for task_result in task_results:
+            if isinstance(task_result, Exception):
+                exit_code = 2
+                logger.error(
+                    f"A task escaped workflow error isolation: "
+                    f"{type(task_result).__name__}: {task_result}"
+                )
+            elif task_result[1] in {
+                RunStatus.FAILED,
+                RunStatus.TIMEOUT,
+                RunStatus.BLOCKED,
+            }:
+                exit_code = 2
     else:
         logger.info("No problems to process")
+    return exit_code
 
 
 def main():
@@ -579,10 +628,12 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
     
+    exit_code = 0
     try:
-        asyncio.run(async_main())
+        exit_code = asyncio.run(async_main())
     except KeyboardInterrupt:
         logger.error("KeyboardInterrupt detected, cleaning up...")
+        exit_code = 130
     except Exception as e:
         logger.error(f"Unhandled exception: {e}")
         raise e
@@ -590,7 +641,8 @@ def main():
         cleanup_servers()
         if RUN_RECORDER is not None:
             RUN_RECORDER.close()
+    return exit_code
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

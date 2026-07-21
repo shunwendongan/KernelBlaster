@@ -1,12 +1,15 @@
 # Portfolio Architecture and API Configuration
 
+**English** | [简体中文](architecture.zh-CN.md)
+
 <!-- ARCHITECTURE_STATUS:START -->
-Current measured state (2026-07-20):
+Current measured state (2026-07-21):
 
 - RTX 3080 / `sm_86` CUDA build, correctness, and CUDA Events: **completed**
 - Same-GPU PyTorch eager/out/fused comparison: **completed**
-- Manual Core 10 strict verified improvements: **4/10**
-- LLM live smoke: **blocked by HTTP 401**; no Agent Core 10 search claim
+- Historical v1 manual Core 10 strict verified improvements: **4/10**
+- Full manual schema-v2 confirmation: **4 improved, 1 no improvement, 5 inconclusive**
+- LLM live smoke: **not rerun; historical result was HTTP 401**; no Agent Core 10 search claim
 - NCU counter attribution: **blocked by `ERR_NVGPUCTRPERM`**
 - Cross-GPU comparison: **not run; deferred Day 11–14**
 
@@ -85,7 +88,7 @@ Artifacts are stored below `out/` and intentionally ignored by Git. Selected, re
 ```mermaid
 flowchart LR
     SUITE["Core 10 suite + candidate manifest"] --> CUDA["benchmark_candidates.py"]
-    CUDA --> EVENTS["Correctness + CUDA Events 20/100/3"]
+    CUDA --> EVENTS["Correctness + CUDA Events 3 discovery / 5 confirmation"]
     PY["benchmark_pytorch.py"] --> PT["Eager / out / fused methods"]
     EVENTS --> JOIN["analyze_core10_comparison.py"]
     PT --> JOIN

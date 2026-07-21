@@ -26,9 +26,24 @@ TARGETS: tuple[tuple[Path, str, str], ...] = (
     (Path("README.zh-CN.md"), "PORTFOLIO_STATUS", "root_zh"),
     (Path("docs/portfolio/README.md"), "PORTFOLIO_PROGRESS", "index_en"),
     (Path("docs/portfolio/README.zh-CN.md"), "PORTFOLIO_PROGRESS", "index_zh"),
-    (Path("docs/portfolio/validation.md"), "VALIDATION_STATUS", "validation"),
-    (Path("docs/portfolio/architecture.md"), "ARCHITECTURE_STATUS", "architecture"),
-    (Path("docs/portfolio/rmsnorm-case-study.md"), "RMSNORM_STATUS", "rmsnorm"),
+    (Path("docs/portfolio/validation.md"), "VALIDATION_STATUS", "validation_en"),
+    (
+        Path("docs/portfolio/validation.zh-CN.md"),
+        "VALIDATION_STATUS",
+        "validation_zh",
+    ),
+    (Path("docs/portfolio/architecture.md"), "ARCHITECTURE_STATUS", "architecture_en"),
+    (
+        Path("docs/portfolio/architecture.zh-CN.md"),
+        "ARCHITECTURE_STATUS",
+        "architecture_zh",
+    ),
+    (Path("docs/portfolio/rmsnorm-case-study.md"), "RMSNORM_STATUS", "rmsnorm_en"),
+    (
+        Path("docs/portfolio/rmsnorm-case-study.zh-CN.md"),
+        "RMSNORM_STATUS",
+        "rmsnorm_zh",
+    ),
 )
 
 RELEVANT_PREFIXES = (
@@ -57,13 +72,18 @@ class DocumentationSyncError(RuntimeError):
     """Raised when the living documentation cannot be trusted."""
 
 
-def _load_json(path: Path) -> dict[str, Any]:
+def _load_json(
+    path: Path,
+    *,
+    allowed_schema_versions: tuple[str, ...] = ("1.0",),
+) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise DocumentationSyncError(f"Cannot read valid JSON from {path}: {error}") from error
-    if payload.get("schema_version") != "1.0":
-        raise DocumentationSyncError(f"{path} must use schema_version 1.0.")
+    if payload.get("schema_version") not in allowed_schema_versions:
+        allowed = ", ".join(allowed_schema_versions)
+        raise DocumentationSyncError(f"{path} must use schema_version {allowed}.")
     return payload
 
 
@@ -99,18 +119,52 @@ def _deep_case_speedup(path: Path) -> float:
 
 
 def load_context(root: Path = ROOT_DIR) -> dict[str, Any]:
-    status = _load_json(root / STATUS_PATH)
+    status = _load_json(
+        root / STATUS_PATH,
+        allowed_schema_versions=("2.0",),
+    )
     sources = status.get("sources")
     if not isinstance(sources, dict):
         raise DocumentationSyncError("portfolio/status.json requires a sources object.")
     resolved = {name: _resolve_source(root, str(path)) for name, path in sources.items()}
     environment = _load_json(resolved["environment"])
     comparison = _load_json(resolved["comparison"])
+    expected = {"004", "007", "019", "023", "026", "036", "040", "047", "088", "095"}
+    targeted_v2 = _load_json(
+        resolved["targeted_validation_v2"],
+        allowed_schema_versions=("2.0",),
+    )
+    targeted_results = targeted_v2.get("results")
+    if not isinstance(targeted_results, list) or {
+        str(row.get("task_id")) for row in targeted_results
+    } != {"004", "007", "036", "040", "095"}:
+        raise DocumentationSyncError(
+            "Schema-v2 targeted validation must contain 004/007/036/040/095."
+        )
+    core10_v2 = _load_json(
+        resolved["core10_validation_v2"],
+        allowed_schema_versions=("2.0",),
+    )
+    core10_v2_results = core10_v2.get("results")
+    if not isinstance(core10_v2_results, list) or {
+        str(row.get("task_id")) for row in core10_v2_results
+    } != expected:
+        raise DocumentationSyncError(
+            "Schema-v2 full validation must contain exactly the Core 10 task IDs."
+        )
+    core10_v2_summary = core10_v2.get("summary", {})
+    if (
+        int(core10_v2_summary.get("verified_improved_tasks", -1)) != 4
+        or int(core10_v2_summary.get("no_improvement_tasks", -1)) != 1
+        or int(core10_v2_summary.get("inconclusive_tasks", -1)) != 5
+    ):
+        raise DocumentationSyncError(
+            "Schema-v2 full validation has unexpected terminal outcome counts."
+        )
     rows = comparison.get("results")
     if not isinstance(rows, list) or len(rows) != 10:
         raise DocumentationSyncError("Core 10 comparison must contain exactly ten results.")
     task_ids = {str(row.get("task_id")) for row in rows}
-    expected = {"004", "007", "019", "023", "026", "036", "040", "047", "088", "095"}
     if task_ids != expected:
         raise DocumentationSyncError(f"Unexpected Core 10 task IDs: {sorted(task_ids)}")
 
@@ -164,6 +218,11 @@ def load_context(root: Path = ROOT_DIR) -> dict[str, Any]:
         "sources": sources,
         "environment": environment,
         "comparison": comparison,
+        "targeted_v2": targeted_v2,
+        "targeted_v2_results": targeted_results,
+        "core10_v2": core10_v2,
+        "core10_v2_results": core10_v2_results,
+        "core10_v2_summary": core10_v2_summary,
         "rows": rows,
         "all10": all10,
         "new9": new9,
@@ -186,7 +245,7 @@ def _f(value: float) -> str:
 def _validation_labels(validation: dict[str, Any], *, chinese: bool) -> dict[str, str]:
     """Render the canonical validation states without leaking one locale into another."""
     required = {
-        "published_cpu_pytest",
+        "current_cpu_pytest",
         "official_correctness",
         "live_api_smoke",
         "ncu_counters",
@@ -202,15 +261,16 @@ def _validation_labels(validation: dict[str, Any], *, chinese: bool) -> dict[str
     if not chinese:
         return raw
 
-    cpu_match = re.fullmatch(r"(\d+) passed", raw["published_cpu_pytest"])
+    cpu_match = re.fullmatch(r"(\d+) passed", raw["current_cpu_pytest"])
     correctness_match = re.fullmatch(
-        r"(\d+/\d+) candidates passed", raw["official_correctness"]
+        r"historical (\d+/\d+); schema-v2 full (\d+/\d+) passed",
+        raw["official_correctness"],
     )
     if not cpu_match or not correctness_match:
         raise DocumentationSyncError(
             "Cannot localize CPU/correctness status from portfolio/status.json."
         )
-    if raw["live_api_smoke"] != "blocked: HTTP 401 invalid_api_key; no retry":
+    if raw["live_api_smoke"] != "NOT RUN (historical HTTP 401; credential not revalidated)":
         raise DocumentationSyncError(
             "Cannot localize live_api_smoke status from portfolio/status.json."
         )
@@ -223,9 +283,12 @@ def _validation_labels(validation: dict[str, Any], *, chinese: bool) -> dict[str
             "Cannot localize cross_gpu status from portfolio/status.json."
         )
     return {
-        "published_cpu_pytest": f"{cpu_match.group(1)} 项通过",
-        "official_correctness": f"{correctness_match.group(1)} 个候选通过",
-        "live_api_smoke": "阻塞：HTTP 401 invalid_api_key；不重试",
+        "current_cpu_pytest": f"{cpu_match.group(1)} 项通过",
+        "official_correctness": (
+            f"历史 {correctness_match.group(1)}；schema v2 完整验证 "
+            f"{correctness_match.group(2)} 通过"
+        ),
+        "live_api_smoke": "未运行（历史记录为 HTTP 401；凭据尚未重新验证）",
         "ncu_counters": "阻塞：ERR_NVGPUCTRPERM",
         "cross_gpu": "未运行（Day 11–14 不在本阶段范围）",
     }
@@ -235,8 +298,28 @@ def _evidence_links(
     context: dict[str, Any], *, chinese: bool, prefix: str = ""
 ) -> str:
     sources = context["sources"]
-    publication = context["status"]["publication"]
+    targeted_report = (
+        sources["targeted_validation_report_zh"]
+        if chinese
+        else sources["targeted_validation_report_en"]
+    )
     labels = (
+        (
+            "Schema v2 完整 Core 10 验证",
+            "Schema-v2 full Core 10 validation",
+            (
+                sources["core10_validation_report_zh_v2"]
+                if chinese
+                else sources["core10_validation_report_en_v2"]
+            ),
+        ),
+        (
+            "Schema v2 完整结果 JSON",
+            "Schema-v2 full result JSON",
+            sources["core10_validation_v2"],
+        ),
+        ("Schema v2 定向验证", "Schema-v2 targeted validation", targeted_report),
+        ("Schema v2 结果 JSON", "Schema-v2 result JSON", sources["targeted_validation_v2"]),
         ("中文完整报告", "Full Chinese report", sources["comparison_report_zh"]),
         ("英文摘要", "English summary", sources["comparison_summary_en"]),
         ("逐题 JSON", "Per-task JSON", sources["comparison"]),
@@ -247,9 +330,6 @@ def _evidence_links(
     links = [
         f"[{zh if chinese else en}]({prefix}{path})" for zh, en, path in labels
     ]
-    links.append(
-        f"[Draft PR #{publication['pull_request']}]({publication['pull_request_url']})"
-    )
     return " · ".join(links)
 
 
@@ -257,107 +337,158 @@ def _root_block(context: dict[str, Any], *, chinese: bool) -> str:
     status = context["status"]
     validation = _validation_labels(status["validation"], chinese=chinese)
     n9, a10 = context["new9"], context["all10"]
+    v2 = context["core10_v2_summary"]
     if chinese:
         return f"""当前 Fork 已在 **{context['gpu_name']}（{context['sm']}）** 上完成 Day 1–10 基础设施、RMSNorm 深度案例、Core 10 手工候选和同卡 PyTorch 对比。环境为 WSL2、CUDA {context['cuda']}、驱动 {context['driver']}。
 
 | 验证项目 | 当前状态 |
 | --- | --- |
-| CPU 测试 | **{validation['published_cpu_pytest']}**（已发布实验批次） |
-| CUDA 编译与官方正确性 | **通过；{validation['official_correctness']}** |
-| CUDA Events 与同卡 PyTorch | **已完成；20 次预热 / 100 个样本 / 3 个独立进程 Session** |
+| CPU 测试 | **{validation['current_cpu_pytest']}**（当前分支） |
+| CUDA 编译与官方正确性 | **{validation['official_correctness']}** |
+| CUDA Events 与同卡 PyTorch | **schema v2 完整验证：{v2['verified_improved_tasks']} 项提升、{v2['no_improvement_tasks']} 项无提升、{v2['inconclusive_tasks']} 项无法定论；9/10 题有稳定 PyTorch 方法** |
 | 外部 LLM 冒烟测试 | **{validation['live_api_smoke']}** |
 | Nsight Compute 硬件计数器 | **{validation['ncu_counters']}** |
 | 跨 GPU 复测 | **{validation['cross_gpu']}** |
 
-| 实测范围 | 相对仓库原版（诊断 / 严格） | 相对 PyTorch 最快方法（诊断 / 严格） |
+| 历史 v1 实测范围 | 相对仓库原版（诊断 / 旧严格口径） | 相对 PyTorch 最快方法（诊断 / 旧严格口径） |
 | --- | ---: | ---: |
 | 本轮新增九题 | {_f(n9['attempted_upstream'])} / {_f(n9['strict_upstream'])} | {_f(n9['attempted_pytorch'])} / {_f(n9['strict_pytorch'])} |
 | 完整 Core 10（含 RMSNorm） | {_f(a10['attempted_upstream'])} / {_f(a10['strict_upstream'])} | {_f(a10['attempted_pytorch'])} / {_f(a10['strict_pytorch'])} |
 
-严格口径要求正确、跨 Session 稳定、每个 Session 不退化且提升至少 1.01×；未通过的任务按仓库原版 1.0 计入分母。九题有 {n9['verified']}/9 个正式提升，完整 Core 10 有 {a10['verified']}/10 个正式提升。LLM Agent 搜索仍因 401 未运行，这些结果来自可审计的手工候选，不与上游论文数据混用。
+上述严格值作为不可变的历史 v1 证据保留。独立的 schema v2 完整手工确认验证了 10/10 正确性，正式确认 004/007/036/040，将 088 标为无提升，并把 019/023/026/047/095 保持为无法定论。当前口径下，严格 Core 10 相对上游的几何平均为 {_f(v2['all10_selected_portfolio_geomean_speedup'])}；仅在 {v2['pytorch_comparable_tasks']}/10 个存在正确且稳定 PyTorch 方法的可比任务上，严格结果相对最快稳定方法的几何平均为 {_f(v2['selected_vs_pytorch_best_geomean'])}。它仍不是 Agent 搜索结果。新口径还检查 p99/max 误差回归、NaN/Inf 和五次确定性。当前 Agent Pilot 与 Core 10 Agent 搜索均未运行。
 
 {_evidence_links(context, chinese=True)}"""
     return f"""This fork has completed the Day 1–10 infrastructure, the RMSNorm deep case, manual Core 10 candidates, and a same-GPU PyTorch comparison on **{context['gpu_name']} ({context['sm']})**. The measured environment is WSL2, CUDA {context['cuda']}, and driver {context['driver']}.
 
 | Validation item | Current status |
 | --- | --- |
-| CPU tests | **{validation['published_cpu_pytest']}** for the published experiment bundle |
-| CUDA build and official correctness | **passed; {validation['official_correctness']}** |
-| CUDA Events and same-GPU PyTorch | **completed; 20 warmups / 100 samples / 3 Sessions** |
+| CPU tests | **{validation['current_cpu_pytest']}** on the current branch |
+| CUDA build and official correctness | **{validation['official_correctness']}** |
+| CUDA Events and same-GPU PyTorch | **schema v2 full: {v2['verified_improved_tasks']} improved, {v2['no_improvement_tasks']} no improvement, {v2['inconclusive_tasks']} inconclusive; 9/10 tasks have a stable PyTorch method** |
 | External LLM smoke | **{validation['live_api_smoke']}** |
 | Nsight Compute counters | **{validation['ncu_counters']}** |
 | Cross-GPU rerun | **{validation['cross_gpu']}** |
 
-| Measured scope | Versus upstream (diagnostic / strict) | Versus fastest PyTorch method (diagnostic / strict) |
+| Historical v1 scope | Versus upstream (diagnostic / old strict gate) | Versus fastest PyTorch method (diagnostic / old strict gate) |
 | --- | ---: | ---: |
 | Nine new candidates | {_f(n9['attempted_upstream'])} / {_f(n9['strict_upstream'])} | {_f(n9['attempted_pytorch'])} / {_f(n9['strict_pytorch'])} |
 | Full Core 10, including RMSNorm | {_f(a10['attempted_upstream'])} / {_f(a10['strict_upstream'])} | {_f(a10['attempted_pytorch'])} / {_f(a10['strict_pytorch'])} |
 
-The strict view requires correctness, cross-session stability, no slower Session, and at least 1.01× speedup; every rejected task remains in the denominator as upstream 1.0. {n9['verified']}/9 new candidates and {a10['verified']}/10 Core 10 tasks pass that gate. Agent-driven search remains unexecuted because the live API smoke returned 401; these are audited manual candidates and are not mixed with the upstream paper claims.
+These immutable strict values remain historical v1 evidence. A separate full manual schema-v2 confirmation passed 10/10 correctness, formally confirmed 004/007/036/040, classified 088 as no improvement, and left 019/023/026/047/095 inconclusive. Under the current gate, the strict Core 10 geometric mean versus upstream is {_f(v2['all10_selected_portfolio_geomean_speedup'])}; across the {v2['pytorch_comparable_tasks']}/10 tasks with a correct and stable PyTorch method, the strict ratio versus the fastest stable method is {_f(v2['selected_vs_pytorch_best_geomean'])}. This is still not an Agent-search result. The new gate also checks p99/max error regression, NaN/Inf, and five-run determinism. Neither the Agent Pilot nor Core 10 Agent search has run.
 
 {_evidence_links(context, chinese=False)}"""
 
 
 def _index_block(context: dict[str, Any], *, chinese: bool) -> str:
     n9, a10 = context["new9"], context["all10"]
+    v2 = context["core10_v2_summary"]
     if chinese:
         return f"""**更新日期：{context['status']['updated_at']}**
 
 - Day 1–2：Provider、Recorder、Suite、dry-run 与 CPU 测试已完成。
-- Day 3–7：WSL2/RTX 3080、容器、编译、正确性和 CUDA Events 基准设施已完成；LLM Agent Pilot/Core 10 因 API 401 未执行。
+- Day 3–7：WSL2/RTX 3080、容器、编译、正确性和 CUDA Events 基准设施已完成；历史 API 冒烟为 401，当前凭据尚未重新验证。
 - Day 8–10：RMSNorm V0–V3c 已完成，独立深度结果 {_f(context['rmsnorm_deep_speedup'])}；统一 Core 10 复测 {_f(context['rmsnorm_unified_speedup'])}。
-- 后续 Core 10：九个新增候选全部正确，严格通过 {n9['verified']}/9；完整 Core 10 严格组合 {_f(a10['strict_upstream'])}。
-- PyTorch 对照：完整十题严格组合为 {_f(a10['strict_pytorch'])}，总体基本持平；不稳定任务在报告中保持显式标记。
+- 后续 Core 10：schema v2 完整手工确认通过 10/10 正确性，确认 {v2['verified_improved_tasks']} 项提升、{v2['no_improvement_tasks']} 项无提升、{v2['inconclusive_tasks']} 项无法定论；9/10 题有稳定 PyTorch 方法。
+- Schema v2 PyTorch 对照：仅在 {v2['pytorch_comparable_tasks']}/10 个存在正确且稳定方法的可比任务上，严格结果相对最快稳定方法的几何平均为 {_f(v2['selected_vs_pytorch_best_geomean'])}；026 不进入该几何平均。
 
 {_evidence_links(context, chinese=True, prefix='../../')}"""
     return f"""**Last updated: {context['status']['updated_at']}**
 
 - Days 1–2: provider, recorder, suite validation, dry-run, and CPU tests are complete.
-- Days 3–7: WSL2/RTX 3080, container, compilation, correctness, and CUDA Events infrastructure are complete; Agent Pilot/Core 10 did not run because the API smoke returned 401.
+- Days 3–7: WSL2/RTX 3080, container, compilation, correctness, and CUDA Events infrastructure are complete; the historical API smoke returned 401 and the current credential has not been revalidated.
 - Days 8–10: RMSNorm V0–V3c is complete, with {_f(context['rmsnorm_deep_speedup'])} in the independent deep run and {_f(context['rmsnorm_unified_speedup'])} in the unified Core 10 rerun.
-- Core 10 follow-up: all nine new candidates are correct and {n9['verified']}/9 pass the strict gate; the full Core 10 strict score is {_f(a10['strict_upstream'])}.
-- PyTorch comparison: the strict full-ten ratio is {_f(a10['strict_pytorch'])}, effectively parity; unstable tasks remain explicitly labeled.
+- Core 10 follow-up: full manual schema v2 passed 10/10 correctness and produced {v2['verified_improved_tasks']} improvements, {v2['no_improvement_tasks']} no-improvement result, and {v2['inconclusive_tasks']} inconclusive results; 9/10 tasks have a stable PyTorch method.
+- Schema-v2 PyTorch comparison: across the {v2['pytorch_comparable_tasks']}/10 comparable tasks with a correct and stable method, the strict geometric mean versus the fastest stable method is {_f(v2['selected_vs_pytorch_best_geomean'])}; task 026 is excluded from that geometric mean.
 
 {_evidence_links(context, chinese=False, prefix='../../')}"""
 
 
-def _validation_block(context: dict[str, Any]) -> str:
+def _validation_block(context: dict[str, Any], *, chinese: bool) -> str:
     validation = context["status"]["validation"]
+    v2_source = context["sources"]["core10_validation_v2"]
+    if chinese:
+        return f"""| 门禁 | 当前状态 | 规范证据 |
+| --- | --- | --- |
+| Provider/Recorder/Suite CPU 测试 | 通过 — {_validation_labels(validation, chinese=True)['current_cpu_pytest']} | `tests/` |
+| 真实网关冒烟 | 未运行 — 历史 HTTP 401 尚未重新验证 | 历史 `artifacts/portfolio-v1.0/results/analysis_summary.json` |
+| RTX 3080 容器与 `sm_86` 构建 | 通过 | `artifacts/portfolio-v1.0/environment/environment.json` |
+| 官方候选正确性 | 历史 v1 通过 — 10/10；schema v2 完整 10/10 通过 | `{v2_source}` |
+| RMSNorm 边界正确性 | 通过 | 已提交的 `edge_driver.cpp` 与深度案例 artifacts |
+| CUDA Events 计时 | schema v2 完整确认：4 项提升；1 项无提升；5 项无法定论 | `{v2_source}` |
+| 同卡 PyTorch 对比 | schema v2 完整确认；9/10 题有稳定方法 | `{v2_source}` |
+| NCU 硬件计数器 | 阻塞 — `ERR_NVGPUCTRPERM` | 环境清单与历史验证报告 |
+| 跨 GPU 对比 | 未运行 — 延后至 Day 11–14 | 未发布性能声明 |
+
+历史手工跟进验证了全部十个候选，并在旧门槛下改进 {context['all10']['verified']}/10。相关声明作为不可变历史证据保留。schema v2 完整结果仍是手工候选确认，不能外推为 Agent 搜索结论。"""
     return f"""| Gate | Current status | Canonical evidence |
 | --- | --- | --- |
-| Provider/Recorder/Suite CPU tests | PASSED — {validation['published_cpu_pytest']} | `tests/` and the published validation report |
-| Real gateway smoke | BLOCKED — HTTP 401, no retry | `artifacts/portfolio-v1.0/results/analysis_summary.json` |
+| Provider/Recorder/Suite CPU tests | PASSED — {validation['current_cpu_pytest']} | `tests/` |
+| Real gateway smoke | NOT RUN — historical HTTP 401 has not been revalidated | historical `artifacts/portfolio-v1.0/results/analysis_summary.json` |
 | RTX 3080 container and `sm_86` build | PASSED | `artifacts/portfolio-v1.0/environment/environment.json` |
-| Official candidate correctness | PASSED — 10/10 | Core 10 comparison JSON and raw SHA256 manifest |
+| Official candidate correctness | HISTORICAL V1 PASSED — 10/10; schema-v2 full 10/10 passed | `{v2_source}` |
 | RMSNorm edge correctness | PASSED | committed `edge_driver.cpp` and deep-case artifacts |
-| CUDA Events timing | COMPLETED — 20/100/3 | Core 10 comparison JSON/CSV |
-| Same-GPU PyTorch comparison | COMPLETED | `pytorch_core10_rtx3080.csv` |
+| CUDA Events timing | schema-v2 full confirmation: 4 improved; 1 no improvement; 5 inconclusive | `{v2_source}` |
+| Same-GPU PyTorch comparison | schema-v2 full confirmation; 9/10 tasks have a stable method | `{v2_source}` |
 | NCU hardware counters | BLOCKED — `ERR_NVGPUCTRPERM` | environment manifest and historical validation report |
 | Cross-GPU comparison | NOT RUN — deferred Day 11–14 | no performance claim published |
 
-The manual follow-up validates all ten candidates and formally improves {context['all10']['verified']}/10 under the strict gate. Agent-driven rollout search remains separate and unexecuted because the one bounded live API request failed authentication."""
+The historical manual follow-up validated all ten candidates and improved {context['all10']['verified']}/10 under the old gate. Those claims remain immutable historical evidence. The full schema-v2 result still confirms manual candidates and must not be generalized to an Agent-search claim."""
 
 
-def _architecture_block(context: dict[str, Any]) -> str:
+def _architecture_block(context: dict[str, Any], *, chinese: bool) -> str:
+    full_v2 = context["core10_v2_summary"]
+    if chinese:
+        return f"""当前实测状态（{context['status']['updated_at']}）：
+
+- RTX 3080 / `{context['sm']}` CUDA 构建、正确性与 CUDA Events：**已完成**
+- 同卡 PyTorch eager/out/fused 对比：**已完成**
+- 历史 v1 手工 Core 10 严格验证提升：**{context['all10']['verified']}/10**
+- Schema v2 完整手工确认：**{full_v2['verified_improved_tasks']} 项提升、{full_v2['no_improvement_tasks']} 项无提升、{full_v2['inconclusive_tasks']} 项无法定论**
+- LLM 在线冒烟：**尚未重跑；历史结果为 HTTP 401**；没有 Agent Core 10 搜索声明
+- NCU 计数器归因：**受 `ERR_NVGPUCTRPERM` 阻塞**
+- 跨 GPU 对比：**未运行；延后至 Day 11–14**
+
+规范状态位于 `portfolio/status.json`；实测数值从已提交的对比 JSON 派生。`scripts/sync_portfolio_docs.py --check` 会拒绝过期的生成区块和失效的证据链接。"""
     return f"""Current measured state ({context['status']['updated_at']}):
 
 - RTX 3080 / `{context['sm']}` CUDA build, correctness, and CUDA Events: **completed**
 - Same-GPU PyTorch eager/out/fused comparison: **completed**
-- Manual Core 10 strict verified improvements: **{context['all10']['verified']}/10**
-- LLM live smoke: **blocked by HTTP 401**; no Agent Core 10 search claim
+- Historical v1 manual Core 10 strict verified improvements: **{context['all10']['verified']}/10**
+- Full manual schema-v2 confirmation: **{full_v2['verified_improved_tasks']} improved, {full_v2['no_improvement_tasks']} no improvement, {full_v2['inconclusive_tasks']} inconclusive**
+- LLM live smoke: **not rerun; historical result was HTTP 401**; no Agent Core 10 search claim
 - NCU counter attribution: **blocked by `ERR_NVGPUCTRPERM`**
 - Cross-GPU comparison: **not run; deferred Day 11–14**
 
 Canonical status lives in `portfolio/status.json`; measured values are derived from the checked-in comparison JSON. `scripts/sync_portfolio_docs.py --check` rejects stale generated blocks and broken evidence links."""
 
 
-def _rmsnorm_block(context: dict[str, Any]) -> str:
+def _rmsnorm_block(context: dict[str, Any], *, chinese: bool) -> str:
+    v2_rmsnorm = next(
+        row for row in context["targeted_v2_results"] if row["task_id"] == "036"
+    )
+    v2_speedup = float(v2_rmsnorm["performance_gate"]["median_speedup"])
+    full_v2_rmsnorm = next(
+        row for row in context["core10_v2_results"] if row["task_id"] == "036"
+    )
+    full_v2_speedup = float(full_v2_rmsnorm["attempted_speedup"])
+    if chinese:
+        return f"""当前状态：**已在 {context['gpu_name']}（{context['sm']}）上验证**。
+
+- V0–V3c 及基准规范化后的源码均通过官方 Driver。
+- V1–V3c 也通过 `edge_driver.cpp` 中的小尺寸、奇数空间尺寸、63/64/65 通道和边界用例。
+- 独立 V3c 深度测试相对配对 V0 测得 {_f(context['rmsnorm_deep_speedup'])}。
+- 后续统一 Core 10 复测测得 {_f(context['rmsnorm_unified_speedup'])}；该差异作为跨运行证据保留，不做静默平均。
+- Schema v2 的五 Session 定向确认测得配对中位加速 {_f(v2_speedup)}，并通过 bootstrap 与稳定性门槛。
+- Schema v2 完整 Core 10 复现测得 {_f(full_v2_speedup)}，同样通过正式门槛；两次结果分别保留。
+- NCU 硬件计数器归因仍受 `ERR_NVGPUCTRPERM` 阻塞；CUDA Events 与源码推导的映射证据分开报告。"""
     return f"""Current status: **validated on {context['gpu_name']} ({context['sm']})**.
 
 - V0–V3c and the benchmark-normalized sources pass the official Driver.
 - V1–V3c also pass the small, odd-spatial, 63/64/65-channel, and boundary cases in `edge_driver.cpp`.
 - The independent V3c deep run measured {_f(context['rmsnorm_deep_speedup'])} versus its paired V0.
 - The later unified Core 10 rerun measured {_f(context['rmsnorm_unified_speedup'])}; the difference is retained as run-to-run evidence, not silently averaged.
+- The targeted five-Session schema-v2 confirmation measured {_f(v2_speedup)} median paired speedup and passed the bootstrap and stability gates.
+- The full schema-v2 Core 10 rerun measured {_f(full_v2_speedup)} and also passed the formal gate; both runs remain separate.
 - NCU hardware-counter attribution remains blocked by `ERR_NVGPUCTRPERM`; CUDA Events and code-derived mapping evidence are reported separately."""
 
 
@@ -366,9 +497,12 @@ RENDERERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "root_zh": lambda context: _root_block(context, chinese=True),
     "index_en": lambda context: _index_block(context, chinese=False),
     "index_zh": lambda context: _index_block(context, chinese=True),
-    "validation": _validation_block,
-    "architecture": _architecture_block,
-    "rmsnorm": _rmsnorm_block,
+    "validation_en": lambda context: _validation_block(context, chinese=False),
+    "validation_zh": lambda context: _validation_block(context, chinese=True),
+    "architecture_en": lambda context: _architecture_block(context, chinese=False),
+    "architecture_zh": lambda context: _architecture_block(context, chinese=True),
+    "rmsnorm_en": lambda context: _rmsnorm_block(context, chinese=False),
+    "rmsnorm_zh": lambda context: _rmsnorm_block(context, chinese=True),
 }
 
 
@@ -419,18 +553,24 @@ def validate_links(root: Path, documents: dict[Path, str]) -> None:
 
 
 def validate_artifact_hashes(root: Path, context: dict[str, Any]) -> None:
-    manifest_path = root / context["sources"]["artifact_sha256"]
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
-    artifact_root = manifest_path.parent
     failures: list[str] = []
-    for relative, expected in manifest.items():
-        path = artifact_root / relative
-        if not path.is_file():
-            failures.append(f"missing:{relative}")
-            continue
-        actual = hashlib.sha256(path.read_bytes()).hexdigest()
-        if actual != expected:
-            failures.append(f"sha256:{relative}")
+    manifest_sources = {
+        name: value
+        for name, value in context["sources"].items()
+        if name.startswith("artifact_sha256")
+    }
+    for source_name, relative_manifest in manifest_sources.items():
+        manifest_path = root / relative_manifest
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+        artifact_root = manifest_path.parent
+        for relative, expected in manifest.items():
+            path = artifact_root / relative
+            if not path.is_file():
+                failures.append(f"{source_name}:missing:{relative}")
+                continue
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+            if actual != expected:
+                failures.append(f"{source_name}:sha256:{relative}")
     if failures:
         raise DocumentationSyncError(
             "Artifact SHA256 verification failed: " + ", ".join(failures[:10])

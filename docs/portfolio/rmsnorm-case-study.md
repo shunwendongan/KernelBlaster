@@ -1,5 +1,7 @@
 # RMSNorm optimization case study
 
+**English** | [简体中文](rmsnorm-case-study.zh-CN.md)
+
 <!-- RMSNORM_STATUS:START -->
 Current status: **validated on NVIDIA GeForce RTX 3080 (sm_86)**.
 
@@ -7,6 +9,8 @@ Current status: **validated on NVIDIA GeForce RTX 3080 (sm_86)**.
 - V1–V3c also pass the small, odd-spatial, 63/64/65-channel, and boundary cases in `edge_driver.cpp`.
 - The independent V3c deep run measured 49.348× versus its paired V0.
 - The later unified Core 10 rerun measured 52.772×; the difference is retained as run-to-run evidence, not silently averaged.
+- The targeted five-Session schema-v2 confirmation measured 56.332× median paired speedup and passed the bootstrap and stability gates.
+- The full schema-v2 Core 10 rerun measured 54.228× and also passed the formal gate; both runs remain separate.
 - NCU hardware-counter attribution remains blocked by `ERR_NVGPUCTRPERM`; CUDA Events and code-derived mapping evidence are reported separately.
 <!-- RMSNORM_STATUS:END -->
 
@@ -64,6 +68,7 @@ python scripts/benchmark_cuda.py \
   --candidate portfolio/case_studies/rmsnorm/best_rmsnorm_sm86.cu \
   --candidate-name v3c \
   --extra-correctness-driver portfolio/case_studies/rmsnorm/edge_driver.cpp \
-  --warmup 20 --repetitions 100 --sessions 3 \
+  --phase confirmation \
+  --warmup 20 --repetitions 100 --sessions 5 \
   --output-dir out/portfolio/deep-rmsnorm/<run-id>
 ```

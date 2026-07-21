@@ -16,7 +16,8 @@ from pathlib import Path
 from ...agents import FeedbackConfig
 from ...agents.opt_ncu_rl import RLNCUAgent
 from ..state import GraphState, save_state_to_json
-from ...config import config, GPUType
+from ...outcomes import RunOutcome, RunStatus
+from ...profiling import CudaEventsRunner, EventsProfilerBackend
 
 
 async def optimization_rl_ncu(state: GraphState):
@@ -67,7 +68,11 @@ async def optimization_rl_ncu(state: GraphState):
                 f"  - Run folder: {run_init_cu}\n"
                 f"Skipping problem {problem_name} - curated CUDA files are required."
             )
-            return {"rl_ncu_cuda_fp": None}
+            outcome = RunOutcome(
+                status=RunStatus.FAILED,
+                reason=f"Missing CUDA source for {problem_name}",
+            )
+            return {"rl_ncu_cuda_fp": None, "run_outcome": outcome.to_dict()}
 
     cuda_fp = Path(cuda_fp)
     
@@ -87,7 +92,11 @@ async def optimization_rl_ncu(state: GraphState):
                 f"  - Run folder: {run_driver_cpp}\n"
                 f"Skipping problem {problem_name} - curated driver.cpp is required."
             )
-            return {"rl_ncu_cuda_fp": None}
+            outcome = RunOutcome(
+                status=RunStatus.FAILED,
+                reason=f"Missing correctness driver for {problem_name}",
+            )
+            return {"rl_ncu_cuda_fp": None, "run_outcome": outcome.to_dict()}
     
     test_code_fp = Path(test_code_fp)
     
@@ -107,12 +116,21 @@ async def optimization_rl_ncu(state: GraphState):
     )
     
     # Get RL parameters from state (passed from workflow config)
-    database_path = base_folder.parent.parent.parent / "optimization_database.md"
+    database_path = base_folder / "optimization_database.md"
     max_rollout_steps = state.get("rl_rollout_steps", 5)
     replay_buffer_size = state.get("rl_buffer_size", 100)
     update_frequency = state.get("rl_update_frequency", 3)
     rl_iterations = state.get("rl_iterations", 10)
     
+    events_backend = EventsProfilerBackend(
+        CudaEventsRunner(
+            driver_path=test_code_fp,
+            gpu=state["gpu"],
+            logger=state["logger"],
+            work_dir=base_folder / "events",
+        )
+    )
+
     agent_rl_ncu = RLNCUAgent(
         fb_config=fb_config,
         code_to_optimize_fp=cuda_fp,
@@ -121,6 +139,7 @@ async def optimization_rl_ncu(state: GraphState):
         replay_buffer_size=replay_buffer_size,
         update_frequency=update_frequency,
         database=state.get("shared_optimization_database"),
+        profiler_backend=events_backend,
     )
     
     # Initialize and run RL optimization
@@ -133,21 +152,38 @@ async def optimization_rl_ncu(state: GraphState):
     agent_rl_ncu.num_rl_iterations = rl_iterations
     
     # Run the RL agent (it will handle multiple iterations internally)
-    best_filename = await agent_rl_ncu.run()
+    outcome = await agent_rl_ncu.run()
     
-    if best_filename is not None:
-        state["logger"].info(f"RL optimization completed successfully: {best_filename}")
+    if outcome.success:
+        state["logger"].info(
+            f"RL optimization completed successfully: {outcome.artifact_path}"
+        )
     else:
-        state["logger"].error("RL optimization failed to produce any valid results")
+        state["logger"].warning(
+            f"RL optimization ended with {outcome.status.value}: {outcome.reason}"
+        )
 
     # Save the best result
-    if best_filename is not None:
+    final_file = None
+    if outcome.success:
         final_file = base_folder / "final_rl_cuda_perf.cu"
-        final_file.write_text(best_filename.read_text())
+        final_file.write_text(outcome.artifact_path.read_text(), encoding="utf-8")
         state["logger"].info(f"RL optimization completed. Best result saved to {final_file}")
-    else:
-        state["logger"].error("RL optimization failed to produce any valid results")
+        outcome = RunOutcome(
+            status=outcome.status,
+            artifact_path=final_file,
+            reason=outcome.reason,
+            profiling_mode=outcome.profiling_mode,
+            metrics=outcome.metrics,
+        )
 
-    save_state_to_json({**state, "rl_ncu_cuda_fp": best_filename}, base_folder / "state.json")
+    save_state_to_json(
+        {
+            **state,
+            "rl_ncu_cuda_fp": final_file,
+            "run_outcome": outcome.to_dict(),
+        },
+        base_folder / "state.json",
+    )
 
-    return {"rl_ncu_cuda_fp": best_filename} 
+    return {"rl_ncu_cuda_fp": final_file, "run_outcome": outcome.to_dict()}

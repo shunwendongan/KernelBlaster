@@ -21,6 +21,7 @@ This module implements a two-LLM agent system:
 """
 from __future__ import annotations
 from pathlib import Path
+import os
 import shutil
 import re
 import json
@@ -191,7 +192,12 @@ class CompositeOptimization:
 class GPUOptimizationDatabase:
     """Enhanced database with LLM-powered qualitative state analysis."""
     
-    def __init__(self, optimization_db_path: Path, gpu_report_path: Path, llm_interface=None):
+    def __init__(
+        self,
+        optimization_db_path: Path,
+        gpu_report_path: Path | None,
+        llm_interface=None,
+    ):
         import os
         self.optimization_db_path = optimization_db_path
         self.optimization_db_header_path = optimization_db_path.with_name(f"{optimization_db_path.stem}_header{optimization_db_path.suffix}") 
@@ -272,12 +278,13 @@ class GPUOptimizationDatabase:
     def _log_llm_interaction(self, label: str, prompt: str, response: str):
         """Append a labelled prompt / response pair to the shared log file."""
         try:
-            with open(self._llm_log_fp, "a", encoding="utf-8") as f:
-                f.write(f"=== {label} | {datetime.now().isoformat()} ===\n")
-                f.write("--- PROMPT ---\n")
-                f.write(prompt.strip() + "\n")
-                f.write("--- RESPONSE ---\n")
-                f.write((response or "<empty response>").strip() + "\n\n")
+            with self._io_lock:
+                with open(self._llm_log_fp, "a", encoding="utf-8") as f:
+                    f.write(f"=== {label} | {datetime.now().isoformat()} ===\n")
+                    f.write("--- PROMPT ---\n")
+                    f.write(prompt.strip() + "\n")
+                    f.write("--- RESPONSE ---\n")
+                    f.write((response or "<empty response>").strip() + "\n\n")
         except Exception as e:
             # Logging failure should never crash the optimisation process
             if hasattr(self.llm_interface, 'logger') and self.llm_interface.logger:
@@ -320,8 +327,11 @@ class GPUOptimizationDatabase:
         """Dump the current in-memory database state to *self._persist_json_fp*."""
 
         print(f"_persist_database: Persisting database to {self._persist_json_fp}")
-        # log this
-        self.llm_interface.logger.info(f"_persist_database: Persisting database to {self._persist_json_fp}")
+        database_logger = getattr(self.llm_interface, "logger", None)
+        if database_logger is not None:
+            database_logger.info(
+                f"_persist_database: Persisting database to {self._persist_json_fp}"
+            )
         try:
             import json as _json
             from dataclasses import asdict as _asdict
@@ -344,6 +354,7 @@ class GPUOptimizationDatabase:
                 }
 
             data = {
+                "schema_version": "2.0",
                 "known_states": {k: _asdict(v) for k, v in self.known_states.items()},
                 "optimization_strategies": optimization_strategies,
                 "composite_optimizations": {
@@ -355,11 +366,23 @@ class GPUOptimizationDatabase:
             # Guard snapshot writes as well
             if hasattr(self, "_io_lock"):
                 with self._io_lock:
-                    with open(self._persist_json_fp, "w", encoding="utf-8") as fp:
+                    temporary = self._persist_json_fp.with_suffix(
+                        self._persist_json_fp.suffix + ".tmp"
+                    )
+                    with open(temporary, "w", encoding="utf-8") as fp:
                         _json.dump(data, fp, indent=2)
+                        fp.flush()
+                        os.fsync(fp.fileno())
+                    os.replace(temporary, self._persist_json_fp)
             else:
-                with open(self._persist_json_fp, "w", encoding="utf-8") as fp:
+                temporary = self._persist_json_fp.with_suffix(
+                    self._persist_json_fp.suffix + ".tmp"
+                )
+                with open(temporary, "w", encoding="utf-8") as fp:
                     _json.dump(data, fp, indent=2)
+                    fp.flush()
+                    os.fsync(fp.fileno())
+                os.replace(temporary, self._persist_json_fp)
         except Exception as e:
             # Fail-soft – we only warn if persistence fails.
             print(f"_persist_database: Failed to persist database JSON: {e}")
@@ -370,10 +393,10 @@ class GPUOptimizationDatabase:
         """Load optimization database and GPU optimization report."""
         print(f"Loading databases from {self.optimization_db_path} and {self.gpu_report_path}")
         # Load GPU optimization report as comprehensive knowledge base
-        if self.gpu_report_path.exists():
+        if self.gpu_report_path is not None and self.gpu_report_path.exists():
             self.gpu_optimization_knowledge = self.gpu_report_path.read_text()
             print(f"Loaded GPU optimization report: {len(self.gpu_optimization_knowledge)} characters")
-        else:
+        elif self.gpu_report_path is not None:
             print(f"Warning: GPU optimization report not found at {self.gpu_report_path}")
         
         # Get default location in data/kernelblaster for fallback
@@ -424,7 +447,8 @@ class GPUOptimizationDatabase:
             print(f"    - {self._persist_json_fp}")
             print(f"    - {self.optimization_db_path}")
             print(f"    - {default_json_path}")
-            print(f"    - {default_md_path}")
+            print(f"    - {default_header_path}")
+            print(f"    - {default_footer_path}")
         else:
             # Log database statistics
             num_states = len(self.optimization_strategies)
@@ -2321,4 +2345,4 @@ def _main():
 
 
 if __name__ == "__main__":
-    _main() 
+    _main()

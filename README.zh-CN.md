@@ -9,21 +9,21 @@
 
 | 验证项目 | 当前状态 |
 | --- | --- |
-| CPU 测试 | **52 项通过**（已发布实验批次） |
-| CUDA 编译与官方正确性 | **通过；10/10 个候选通过** |
-| CUDA Events 与同卡 PyTorch | **已完成；20 次预热 / 100 个样本 / 3 个独立进程 Session** |
-| 外部 LLM 冒烟测试 | **阻塞：HTTP 401 invalid_api_key；不重试** |
+| CPU 测试 | **100 项通过**（当前分支） |
+| CUDA 编译与官方正确性 | **历史 10/10；schema v2 完整验证 10/10 通过** |
+| CUDA Events 与同卡 PyTorch | **schema v2 完整验证：4 项提升、1 项无提升、5 项无法定论；9/10 题有稳定 PyTorch 方法** |
+| 外部 LLM 冒烟测试 | **未运行（历史记录为 HTTP 401；凭据尚未重新验证）** |
 | Nsight Compute 硬件计数器 | **阻塞：ERR_NVGPUCTRPERM** |
 | 跨 GPU 复测 | **未运行（Day 11–14 不在本阶段范围）** |
 
-| 实测范围 | 相对仓库原版（诊断 / 严格） | 相对 PyTorch 最快方法（诊断 / 严格） |
+| 历史 v1 实测范围 | 相对仓库原版（诊断 / 旧严格口径） | 相对 PyTorch 最快方法（诊断 / 旧严格口径） |
 | --- | ---: | ---: |
 | 本轮新增九题 | 5.020× / 3.302× | 1.415× / 0.931× |
 | 完整 Core 10（含 RMSNorm） | 6.351× / 4.356× | 1.447× / 0.992× |
 
-严格口径要求正确、跨 Session 稳定、每个 Session 不退化且提升至少 1.01×；未通过的任务按仓库原版 1.0 计入分母。九题有 3/9 个正式提升，完整 Core 10 有 4/10 个正式提升。LLM Agent 搜索仍因 401 未运行，这些结果来自可审计的手工候选，不与上游论文数据混用。
+上述严格值作为不可变的历史 v1 证据保留。独立的 schema v2 完整手工确认验证了 10/10 正确性，正式确认 004/007/036/040，将 088 标为无提升，并把 019/023/026/047/095 保持为无法定论。当前口径下，严格 Core 10 相对上游的几何平均为 4.381×；仅在 9/10 个存在正确且稳定 PyTorch 方法的可比任务上，严格结果相对最快稳定方法的几何平均为 1.053×。它仍不是 Agent 搜索结果。新口径还检查 p99/max 误差回归、NaN/Inf 和五次确定性。当前 Agent Pilot 与 Core 10 Agent 搜索均未运行。
 
-[中文完整报告](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [英文摘要](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [逐题 JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [对比图](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [原始文件哈希](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [候选清单](portfolio/case_studies/core10/candidates.json) · [Draft PR #5](https://github.com/shunwendongan/KernelBlaster/pull/5)
+[Schema v2 完整 Core 10 验证](artifacts/portfolio-v2.0/core10/core10-rtx3080-confirmation.zh-CN.md) · [Schema v2 完整结果 JSON](artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json) · [Schema v2 定向验证](artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.zh-CN.md) · [Schema v2 结果 JSON](artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json) · [中文完整报告](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [英文摘要](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [逐题 JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [对比图](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [原始文件哈希](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [候选清单](portfolio/case_studies/core10/candidates.json)
 <!-- PORTFOLIO_STATUS:END -->
 
 ### 复现 RTX 3080 正式对比
@@ -32,12 +32,12 @@
 
 ```bash
 python scripts/benchmark_candidates.py \
-  --warmup 20 --repetitions 100 --sessions 3 \
+  --warmup 20 --repetitions 100 --sessions 5 \
   --cooldown-seconds 60 \
   --output-dir out/portfolio/candidates/<run-id>
 
 python scripts/benchmark_pytorch.py \
-  --warmup 20 --repetitions 100 --sessions 3 \
+  --warmup 20 --repetitions 100 --sessions 5 \
   --output-dir out/portfolio/pytorch/<run-id>
 
 python scripts/analyze_core10_comparison.py \
@@ -119,9 +119,8 @@ docker build . -t kernelblaster -f docker/Dockerfile
 
 ```bash
 docker run --rm -it --name=kernelblaster \
-    --privileged --gpus all --cap-add=SYS_ADMIN --device /dev/fuse \
+    --gpus all \
     --ulimit memlock=-1 --ulimit stack=67108864 \
-    --ipc=host --net=host \
     -e USER_NAME=$(whoami) \
     -e USER_ID=$(id -u) \
     -e GROUP_ID=$(id -g) \
@@ -129,6 +128,13 @@ docker run --rm -it --name=kernelblaster \
     kernelblaster \
     dev
 ```
+
+普通 CUDA Events 路径不需要 host network、`--privileged` 或 `SYS_ADMIN`。
+如果本地 NCU 计数器仍不可用，运行会明确记录为 `events_only`；需要硬件计数器时应部署单独授权的 Profiler Worker，而不是提升控制容器权限。
+
+如需隔离 LLM 控制进程和不可信 CUDA 二进制，请生成新的
+`KERNELBLASTER_WORKER_TOKEN` 并使用 `docker/compose.worker.yml`。其中 GPU
+Worker 不接收 LLM Key，仅连接内部网络，根文件系统只读，并限制 tmpfs、能力、进程数和内存。
 
 ### 3. 设置 API Key 并运行默认示例
 
@@ -143,7 +149,12 @@ export RL_EXPERIMENT_NAME=${RL_EXPERIMENT_NAME:-kernelblaster}
 bash scripts/run_single_kernelblaster.sh
 ```
 
-默认情况下，`scripts/run_single_kernelblaster.sh` 会启动单个 KernelBench-CUDA RL 优化任务并启用性能分析；如有需要，它还会启动共享 GPU Server。运行输出保存在 `out/<dataset>/<precision>/<experiment>/` 下。
+如需执行有预算上限的研究验收顺序，请使用
+`python scripts/run_trusted_pilot.py`。脚本固定执行“运行环境 → 编译/正确性 →
+3 Session Events → NCU 权限探针 → 单次 64-token API 冒烟 → 2×2 RMSNorm
+Pilot”，任一必要门禁失败都会立即停止。
+
+默认情况下，`scripts/run_single_kernelblaster.sh` 会启动单个使用 CUDA Events 的 KernelBench-CUDA RL 优化任务；如有需要，它还会启动仅监听回环地址的共享 GPU Server。运行输出保存在 `out/<dataset>/<precision>/<experiment>/` 下。
 
 该示例默认运行 KernelBench-CUDA Level 1 的一个样本。可以通过 `--problem-numbers` 和 `--subset` 参数扩展到更多问题：
 

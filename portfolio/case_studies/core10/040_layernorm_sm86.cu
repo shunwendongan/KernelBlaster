@@ -110,6 +110,29 @@ __global__ void layernorm_apply_kernel(
     }
 }
 
+__global__ void layernorm_apply_scalar_kernel(
+    half* __restrict__ output,
+    const half* __restrict__ input,
+    const half* __restrict__ weight,
+    const half* __restrict__ bias,
+    const Statistics* __restrict__ statistics,
+    int64_t total_elements,
+    int64_t norm_size
+) {
+    for (int64_t index = static_cast<int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+         index < total_elements;
+         index += static_cast<int64_t>(gridDim.x) * blockDim.x) {
+        const int batch = static_cast<int>(index / norm_size);
+        const int64_t feature = index - static_cast<int64_t>(batch) * norm_size;
+        const Statistics stats = statistics[batch];
+        const float value = __half2float(input[index]);
+        output[index] = __float2half_rn(
+            (value - stats.mean) * stats.inverse_std * __half2float(weight[feature])
+            + __half2float(bias[feature])
+        );
+    }
+}
+
 void launch_gpu_implementation(
     void* output,
     void* input,
@@ -148,19 +171,35 @@ void launch_gpu_implementation(
         norm_size,
         tiles_per_batch
     );
-    const int64_t norm_pairs = norm_size / 2;
-    const int64_t total_pairs = batch_size * norm_pairs;
-    const int blocks = static_cast<int>(
-        std::min<int64_t>(4096, (total_pairs + threads - 1) / threads)
-    );
-    layernorm_apply_kernel<<<blocks, threads>>>(
-        static_cast<half2*>(output),
-        static_cast<const half2*>(input),
-        static_cast<const half2*>(weight),
-        static_cast<const half2*>(bias),
-        statistics,
-        total_pairs,
-        norm_pairs
-    );
+    if ((norm_size & 1) == 0) {
+        const int64_t norm_pairs = norm_size / 2;
+        const int64_t total_pairs = batch_size * norm_pairs;
+        const int blocks = static_cast<int>(
+            std::min<int64_t>(4096, (total_pairs + threads - 1) / threads)
+        );
+        layernorm_apply_kernel<<<blocks, threads>>>(
+            static_cast<half2*>(output),
+            static_cast<const half2*>(input),
+            static_cast<const half2*>(weight),
+            static_cast<const half2*>(bias),
+            statistics,
+            total_pairs,
+            norm_pairs
+        );
+    } else {
+        const int64_t total_elements = batch_size * norm_size;
+        const int blocks = static_cast<int>(
+            std::min<int64_t>(4096, (total_elements + threads - 1) / threads)
+        );
+        layernorm_apply_scalar_kernel<<<blocks, threads>>>(
+            static_cast<half*>(output),
+            static_cast<const half*>(input),
+            static_cast<const half*>(weight),
+            static_cast<const half*>(bias),
+            statistics,
+            total_elements,
+            norm_size
+        );
+    }
     cudaDeviceSynchronize();
 }

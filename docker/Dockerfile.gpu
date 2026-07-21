@@ -21,19 +21,17 @@ ENV PATH=/usr/local/cuda/bin:${PATH}
 ENV CUDA_HOME=/usr/local/cuda
 ENV CUDACXX=/usr/local/cuda/bin/nvcc
 
-# Install system packages as root
-RUN apt-get update && apt-get -y install sudo wget gpg
-
 # Verify CUDA installation
 RUN nvcc --version
 
-# Copy requirements and install Python dependencies
-COPY docker/requirements.txt /tmp/requirements.txt
+# Install only the dependencies used by the untrusted GPU worker. LLM and
+# local-model packages remain in the control image.
+COPY docker/requirements.gpu.txt /tmp/requirements.gpu.txt
 RUN python -m pip install --no-cache-dir -U pip && \
-    python -m pip install --no-cache-dir -r /tmp/requirements.txt
+    python -m pip install --no-cache-dir -r /tmp/requirements.gpu.txt
 
 # Create an unprivileged runtime user with a real home directory.
-RUN useradd --create-home --shell /bin/bash --groups sudo kernelblaster
+RUN useradd --create-home --shell /bin/bash kernelblaster
 
 # Copy the entire source code (filtered by .dockerignore)
 COPY --chown=kernelblaster:kernelblaster . /kernelblaster/
@@ -53,4 +51,4 @@ ENV NVIDIA_TF32_OVERRIDE=0
 EXPOSE 2002
 
 # Run the GPU server
-CMD ["python", "-m", "src.kernelblaster.servers.gpu", "--host", "0.0.0.0", "--port", "2002"]
+CMD ["python", "scripts/start_gpu_worker.py", "--host", "127.0.0.1", "--port", "2002"]

@@ -10,7 +10,7 @@ import statistics
 from typing import Any, Iterable
 
 
-BENCHMARK_SCHEMA_VERSION = "1.0"
+BENCHMARK_SCHEMA_VERSION = "2.0"
 BENCHMARK_MARKER = "KERNELBLASTER_BENCHMARK_JSON "
 
 

@@ -29,7 +29,7 @@ from typing import Any
 import uuid
 
 
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "2.0"
 _SENSITIVE_KEY_PARTS = (
     "api_key",
     "apikey",
@@ -118,12 +118,41 @@ def _git_commit(repo_root: Path) -> str | None:
         return None
 
 
+def _source_tree_sha256(repo_root: Path) -> str | None:
+    """Hash tracked working-tree content, including local modifications."""
+    try:
+        completed = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+        )
+        digest = hashlib.sha256()
+        for raw_path in completed.stdout.split(b"\0"):
+            if not raw_path:
+                continue
+            relative = raw_path.decode("utf-8", errors="surrogateescape")
+            path = repo_root / relative
+            if not path.is_file():
+                continue
+            digest.update(raw_path)
+            digest.update(b"\0")
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        return digest.hexdigest()
+    except (OSError, subprocess.SubprocessError, UnicodeError):
+        return None
+
+
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
+    with temporary.open("rb") as stream:
+        os.fsync(stream.fileno())
     os.replace(temporary, path)
 
 
@@ -175,6 +204,12 @@ class RunRecorder:
                 "validation_status": "NOT RUN",
                 "performance_results": "pending",
             },
+            "tasks": {
+                "total": 0,
+                "by_outcome": {},
+                "profiling_modes": {},
+                "results": [],
+            },
             "errors": 0,
         }
 
@@ -184,7 +219,10 @@ class RunRecorder:
             "run_id": self.run_id,
             "created_at": self._started_at,
             "status": "dry_run" if dry_run else "running",
-            "git": {"commit": _git_commit(root)},
+            "source": {
+                "git_commit": _git_commit(root),
+                "tree_sha256": _source_tree_sha256(root),
+            },
             "model": model,
             "provider": redact_secrets(provider_config),
             "suite": redact_secrets(suite or {}),
@@ -199,7 +237,35 @@ class RunRecorder:
                 "cuda": "NOT RUN",
                 "llm_smoke_test": "NOT RUN",
                 "performance_results": "pending",
+                "gates": {
+                    "environment": "NOT RUN",
+                    "compile": "NOT RUN",
+                    "correctness": "NOT RUN",
+                    "events_stability": "NOT RUN",
+                    "ncu_permission": "NOT RUN",
+                    "api_smoke": "NOT RUN",
+                },
             },
+            "budget": {
+                "limits": {
+                    key: provider_config.get(key)
+                    for key in (
+                        "max_requests",
+                        "max_total_tokens",
+                        "max_completion_tokens",
+                        "max_concurrency",
+                    )
+                },
+                "consumed": {
+                    "requests": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                },
+            },
+            "outcomes": [],
+            "profiling_modes": [],
+            "failure_classification": {},
         }
         _atomic_json_write(self.manifest_path, manifest)
         self.events_path.touch(exist_ok=True)
@@ -271,6 +337,31 @@ class RunRecorder:
                 manifest["validation"][
                     "performance_results"
                 ] = "collected_pending_analysis"
+            tasks = self._summary["tasks"]
+            manifest["outcomes"] = tasks["results"]
+            manifest["profiling_modes"] = sorted(tasks["profiling_modes"])
+            manifest["failure_classification"] = {
+                status: count
+                for status, count in tasks["by_outcome"].items()
+                if status in {"failed", "timeout", "blocked"}
+            }
+            manifest["budget"]["consumed"] = {
+                "requests": self._summary["llm"]["requests_completed"],
+                "prompt_tokens": self._summary["llm"]["prompt_tokens"],
+                "completion_tokens": self._summary["llm"]["completion_tokens"],
+                "total_tokens": self._summary["llm"]["total_tokens"],
+            }
+            gates = manifest["validation"]["gates"]
+            if cuda_summary["compilations"]:
+                gates["compile"] = "RUN"
+            if cuda_summary["correctness_checks"]:
+                gates["correctness"] = "RUN"
+            if "events_only" in tasks["profiling_modes"]:
+                gates["events_stability"] = "RUN"
+            if "ncu" in tasks["profiling_modes"]:
+                gates["ncu_permission"] = "RUN"
+            if self._summary["llm"]["requests_completed"]:
+                gates["api_smoke"] = "RUN"
             _atomic_json_write(self.manifest_path, manifest)
 
     def _update_summary(
@@ -298,6 +389,24 @@ class RunRecorder:
             self._summary["cuda"]["correctness_checks"] += 1
         elif event_type == "cuda_profile_completed":
             self._summary["cuda"]["profiles"] += 1
+        elif event_type == "task_outcome":
+            tasks = self._summary["tasks"]
+            outcome = str(data.get("outcome", "failed"))
+            profiling_mode = str(data.get("profiling_mode", "unknown"))
+            tasks["total"] += 1
+            tasks["by_outcome"][outcome] = tasks["by_outcome"].get(outcome, 0) + 1
+            tasks["profiling_modes"][profiling_mode] = (
+                tasks["profiling_modes"].get(profiling_mode, 0) + 1
+            )
+            tasks["results"].append(
+                {
+                    "task_id": data.get("task_id"),
+                    "outcome": outcome,
+                    "profiling_mode": profiling_mode,
+                    "reason": data.get("reason"),
+                    "metrics": data.get("metrics", {}),
+                }
+            )
 
         if status == "error":
             self._summary["errors"] += 1

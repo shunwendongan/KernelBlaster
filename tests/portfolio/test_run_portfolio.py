@@ -55,7 +55,7 @@ def test_dry_run_writes_parseable_artifacts_without_external_calls(tmp_path):
         for line in (output_dir / "events.jsonl").read_text().splitlines()
     ]
     summary = json.loads((output_dir / "summary.json").read_text())
-    assert manifest["schema_version"] == "1.0"
+    assert manifest["schema_version"] == "2.0"
     assert manifest["validation"]["cuda"] == "NOT RUN"
     assert manifest["validation"]["llm_smoke_test"] == "NOT RUN"
     assert events[0]["data"]["network_calls"] == 0

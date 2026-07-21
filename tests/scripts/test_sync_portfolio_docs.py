@@ -39,6 +39,10 @@ def test_context_derives_published_nine_and_ten_task_metrics():
     assert context["new9"]["strict_pytorch"] == pytest.approx(0.9309749235)
     assert context["new9"]["verified"] == 3
     assert context["all10"]["verified"] == 4
+    assert context["core10_v2_summary"]["verified_improved_tasks"] == 4
+    assert context["core10_v2_summary"]["no_improvement_tasks"] == 1
+    assert context["core10_v2_summary"]["inconclusive_tasks"] == 5
+    assert context["core10_v2_summary"]["pytorch_comparable_tasks"] == 9
 
 
 def test_sync_is_idempotent(tmp_path):
@@ -60,14 +64,47 @@ def test_generated_status_blocks_are_localized_and_evidence_is_labeled():
     context = MODULE.load_context(ROOT)
     chinese = MODULE._root_block(context, chinese=True)
     english = MODULE._root_block(context, chinese=False)
+    index_chinese = MODULE._index_block(context, chinese=True)
+    index_english = MODULE._index_block(context, chinese=False)
 
-    assert "52 项通过" in chinese
-    assert "10/10 个候选通过" in chinese
-    assert "阻塞：HTTP 401 invalid_api_key；不重试" in chinese
+    assert "100 项通过" in chinese
+    assert "历史 10/10；schema v2 完整验证 10/10 通过" in chinese
+    assert "未运行（历史记录为 HTTP 401；凭据尚未重新验证）" in chinese
     assert "未运行（Day 11–14 不在本阶段范围）" in chinese
     assert "10/10 candidates passed" not in chinese
+    assert "Schema v2 定向验证" in chinese
+    assert "Schema v2 完整 Core 10 验证" in chinese
+    assert "Schema-v2 targeted validation" in english
+    assert "Schema-v2 full Core 10 validation" in english
     assert "Full Chinese report" in english
     assert "English full report" not in english
+    assert "9/10" in index_chinese
+    assert "1.053×" in index_chinese
+    assert "9/10" in index_english
+    assert "1.053×" in index_english
+    assert "strict full-ten ratio is 0.992×" not in index_english
+
+
+def test_readme_confirmation_commands_use_five_sessions():
+    for name in ("README.md", "README.zh-CN.md"):
+        readme = (ROOT / name).read_text(encoding="utf-8")
+        confirmation = readme.split("### ", 2)[1]
+        assert confirmation.count("--sessions 5") == 2
+        assert "--sessions 3" not in confirmation
+
+
+def test_docs_markdown_explanations_have_chinese_and_english_pairs():
+    english_documents = [
+        path for path in (ROOT / "docs").rglob("*.md") if not path.name.endswith(".zh-CN.md")
+    ]
+    chinese_documents = list((ROOT / "docs").rglob("*.zh-CN.md"))
+    assert english_documents
+    assert len(english_documents) == len(chinese_documents)
+    for english in english_documents:
+        chinese = english.with_name(f"{english.stem}.zh-CN.md")
+        assert chinese.is_file(), f"Missing Chinese documentation pair for {english}"
+        assert chinese.name in english.read_text(encoding="utf-8")
+        assert english.name in chinese.read_text(encoding="utf-8")
 
 
 def test_replace_block_rejects_missing_markers():

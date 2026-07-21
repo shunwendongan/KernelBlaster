@@ -15,9 +15,11 @@
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
+from enum import Enum
 import os
+import shlex
 import psutil
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import Depends, FastAPI, HTTPException, File, UploadFile, Form
 import logging
 from pydantic import BaseModel
 from pathlib import Path
@@ -29,6 +31,8 @@ from typing import Optional
 
 from .server_logging import get_log_config
 from .utils import safe_kill_process
+from .auth import require_worker_token
+from ..config import config
 
 env = None
 
@@ -41,6 +45,97 @@ WORKING_DIR = None
 
 # Multi-GPU worker configuration (populated at startup)
 GPU_IDS: list[str] | None = None
+
+ALLOWED_ENVIRONMENT_KEYS = {
+    "CUDA_VISIBLE_DEVICES",
+    "NVIDIA_TF32_OVERRIDE",
+    "CUDA_LAUNCH_BLOCKING",
+    "OMP_NUM_THREADS",
+}
+class Profiler(str, Enum):
+    NCU = "ncu"
+    NSYS = "nsys"
+
+
+ALLOWED_PROFILERS = {profiler.value for profiler in Profiler}
+FORBIDDEN_ARGUMENT_TOKENS = {";", "|", "||", "&&", ">", ">>", "<", "2>", "2>&1"}
+SECRET_ENVIRONMENT_MARKERS = (
+    "API_KEY",
+    "AUTHORIZATION",
+    "CREDENTIAL",
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
+)
+
+
+def sanitized_worker_environment(
+    source: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    """Build the untrusted worker environment without control-plane secrets."""
+    source = source or os.environ
+    return {
+        str(key): str(value)
+        for key, value in source.items()
+        if not any(marker in str(key).upper() for marker in SECRET_ENVIRONMENT_MARKERS)
+    }
+
+
+async def read_upload_with_limit(upload: UploadFile, limit: int) -> bytes:
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        chunk = await upload.read(min(1024 * 1024, limit + 1 - size))
+        if not chunk:
+            break
+        size += len(chunk)
+        if size > limit:
+            raise HTTPException(status_code=413, detail="Binary upload exceeds size limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def validated_environment(values: Optional[dict]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw_key, raw_value in (values or {}).items():
+        key = str(raw_key)
+        value = str(raw_value)
+        if key not in ALLOWED_ENVIRONMENT_KEYS:
+            raise ValueError(f"Environment key is not allowed: {key}")
+        if "\x00" in value:
+            raise ValueError(f"Environment value contains NUL: {key}")
+        result[key] = value
+    return result
+
+
+def build_execution_argv(
+    binary_path: str,
+    args: str = "",
+    prefix_command: Optional[str | list[str]] = None,
+) -> tuple[list[str], dict[str, str]]:
+    """Build an argv vector without invoking a shell."""
+
+    prefix = (
+        [str(value) for value in prefix_command]
+        if isinstance(prefix_command, list)
+        else shlex.split(prefix_command or "")
+    )
+    prefix_environment: dict[str, str] = {}
+    while prefix and "=" in prefix[0] and not prefix[0].startswith("-"):
+        key, value = prefix.pop(0).split("=", 1)
+        if key != "NVIDIA_TF32_OVERRIDE":
+            raise ValueError(f"Profiler environment assignment is not allowed: {key}")
+        prefix_environment[key] = value
+
+    if prefix:
+        profiler = Path(prefix[0]).name
+        if profiler not in ALLOWED_PROFILERS:
+            raise ValueError(f"Profiler is not allowed: {profiler}")
+        for value in prefix[1:]:
+            if value in FORBIDDEN_ARGUMENT_TOKENS or "\x00" in value:
+                raise ValueError(f"Profiler argument is not allowed: {value!r}")
+
+    return [*prefix, binary_path, *shlex.split(args or "")], prefix_environment
 
 
 def get_temp_dir():
@@ -58,7 +153,7 @@ async def lifespan(app):
 
     # Base environment for subprocesses launched by this server.
     # NOTE: per-worker GPU pinning is applied at execution time via env vars.
-    env = os.environ.copy()
+    env = sanitized_worker_environment()
     env.setdefault("NVIDIA_TF32_OVERRIDE", "0")
 
     # Determine which GPUs (and how many workers) to use.
@@ -185,7 +280,7 @@ async def check_gpu_processes():
 
 
 async def exec_command(
-    cmd: str,
+    cmd: str | list[str],
     timeout=3600,
     env_vars: Optional[dict] = None,
     n_runs: Optional[int] = 1,
@@ -193,8 +288,10 @@ async def exec_command(
     """Execute a shell command"""
     # Prepare environment
     process_env = env.copy() if env else os.environ.copy()
-    if env_vars:
-        process_env.update(env_vars)
+    process_env.update(validated_environment(env_vars))
+    argv = shlex.split(cmd) if isinstance(cmd, str) else [str(item) for item in cmd]
+    if not argv:
+        raise GpuCommandError("No command was provided")
 
     # Use common temp directory as working directory
     working_dir = get_temp_dir()
@@ -203,8 +300,8 @@ async def exec_command(
     stderr_list = []
 
     for _ in range(n_runs):
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=process_env,
@@ -222,7 +319,7 @@ async def exec_command(
                 )
         except asyncio.TimeoutError:
             # Kill the process if it times out
-            logger.error(f"TIMEOUT: {cmd}")
+            logger.error(f"TIMEOUT: {argv[0]}")
             await safe_kill_process(proc, logger)
             raise GpuCommandError(
                 f"Timeout: Execution timed out after {timeout} seconds"
@@ -243,12 +340,14 @@ async def exec_binary(
     n_runs: Optional[int] = 1,
 ) -> tuple[list[str], list[str]] | tuple[str, str]:
     """Execute a binary file with optional arguments, environment variables, and prefix command"""
-    if prefix_command:
-        cmd = f"{prefix_command} {binary_path} {args}".strip()
-    else:
-        cmd = f"{binary_path} {args}".strip()
-
-    return await exec_command(cmd, timeout, env_vars, n_runs)
+    argv, prefix_environment = build_execution_argv(
+        binary_path,
+        args,
+        prefix_command,
+    )
+    effective_environment = validated_environment(env_vars)
+    effective_environment.update(prefix_environment)
+    return await exec_command(argv, timeout, effective_environment, n_runs)
 
 
 def save_binary_to_temp(binary_data: bytes, filename: str = "gpu_executable") -> str:
@@ -293,6 +392,12 @@ def cleanup_temp_file(binary_path: str):
             os.remove(binary_path)
     except Exception as e:
         logger.warning(f"Failed to cleanup temporary file: {e}")
+
+
+def complete_future(completion_future: asyncio.Future, result: GpuCommandResult) -> None:
+    """Do not crash a worker when the HTTP client has already disconnected."""
+    if not completion_future.done():
+        completion_future.set_result(result)
 
 
 async def gpu_worker(worker_id: int) -> GpuCommandResult:
@@ -345,24 +450,16 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
                 # Clean up temporary binary file
                 cleanup_temp_file(binary_path)
 
-            elif len(queue_item) == 2:
-                # CLI command execution: (command, completion_future)
-                command, _ = queue_item
-                logger.info(f"[Worker {worker_id}]: Executing CLI command: {command}")
-                stdout_list, stderr_list = await exec_command(command)
-                logger.info(
-                    f"[Worker {worker_id}]: Successfully executed CLI command: {command}"
-                )
-
             else:
                 raise ValueError(f"Invalid queue item format: {len(queue_item)} items")
 
-            completion_future.set_result(
-                GpuCommandResult(success=True, stdout=stdout_list, stderr=stderr_list)
+            complete_future(
+                completion_future,
+                GpuCommandResult(success=True, stdout=stdout_list, stderr=stderr_list),
             )
 
         except GpuCommandError as e:
-            if len(queue_item) == 6:
+            if len(queue_item) in (6, 7):
                 binary_path = queue_item[0]
                 # Best-effort GPU attribution for failures too
                 gpu_visible = None
@@ -376,14 +473,9 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
                 )
                 # Clean up on error too
                 cleanup_temp_file(binary_path)
-            else:
-                command = queue_item[0]
-                logger.error(
-                    f"[Worker {worker_id}]: Error executing CLI command {command}: {e.error_message}"
-                )
-
-            completion_future.set_result(
-                GpuCommandResult(success=False, message=e.error_message)
+            complete_future(
+                completion_future,
+                GpuCommandResult(success=False, message=e.error_message),
             )
         except Exception as e:
             logger.error(f"[Worker {worker_id}]: Unexpected error: {str(e)}")
@@ -392,8 +484,12 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
             if len(queue_item) >= 4:
                 cleanup_temp_file(queue_item[0])
 
-            completion_future.set_result(
-                GpuCommandResult(success=False, message=f"Internal error: {str(e)}")
+            complete_future(
+                completion_future,
+                GpuCommandResult(
+                    success=False,
+                    message=f"Internal error: {str(e)}",
+                ),
             )
         finally:
             QUEUE.task_done()
@@ -414,7 +510,15 @@ async def execute_gpu_binary(
     ),
     prefix_command: Optional[str] = Form(
         None,
-        description="Command to prefix before the binary (e.g., 'ncu', 'nsys profile')",
+        description="Deprecated string profiler prefix; use profiler/profiler_args.",
+    ),
+    profiler: Optional[Profiler] = Form(
+        None,
+        description="Enumerated profiler executable.",
+    ),
+    profiler_args: Optional[str] = Form(
+        None,
+        description="JSON list of profiler arguments.",
     ),
     n_runs: Optional[int] = Form(
         1,
@@ -424,26 +528,51 @@ async def execute_gpu_binary(
         3600,
         description="Timeout in seconds for command execution",
     ),
+    _authorized: None = Depends(require_worker_token),
 ):
     """Execute a binary file on the GPU server"""
 
     logger.info(
-        f"/gpu/binary - Binary: {binary.filename}, Args: {args}, Env vars: {env_vars}, Prefix: {prefix_command}, Timeout: {timeout}s, Queue backlog: {QUEUE.qsize()}"
+        f"/gpu/binary - Binary: {binary.filename}, Prefix: {prefix_command}, "
+        f"Timeout: {timeout}s, Queue backlog: {QUEUE.qsize()}"
     )
 
     try:
         # Read binary data
-        binary_data = await binary.read()
+        binary_data = await read_upload_with_limit(
+            binary,
+            config.MAX_GPU_BINARY_BYTES,
+        )
         if not binary_data:
             raise HTTPException(status_code=400, detail="Empty binary file provided")
+        if n_runs is None or not 1 <= n_runs <= 100:
+            raise HTTPException(status_code=400, detail="n_runs must be between 1 and 100")
+        if timeout is None or not 0 < timeout <= 3600:
+            raise HTTPException(status_code=400, detail="timeout must be in (0, 3600]")
+
+        try:
+            if profiler is not None and prefix_command:
+                raise ValueError("Use either profiler or deprecated prefix_command, not both")
+            effective_prefix: str | list[str] | None = prefix_command
+            if profiler is not None:
+                decoded_profiler_args = json.loads(profiler_args or "[]")
+                if not isinstance(decoded_profiler_args, list) or not all(
+                    isinstance(value, str) for value in decoded_profiler_args
+                ):
+                    raise ValueError("profiler_args must be a JSON list of strings")
+                effective_prefix = [profiler.value, *decoded_profiler_args]
+            build_execution_argv("/tmp/probe", args or "", effective_prefix)
+        except (json.JSONDecodeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
         # Parse environment variables if provided
         parsed_env_vars = None
         if env_vars:
             try:
-                parsed_env_vars = json.loads(env_vars)
-                if not isinstance(parsed_env_vars, dict):
+                decoded_env_vars = json.loads(env_vars)
+                if not isinstance(decoded_env_vars, dict):
                     raise ValueError("Environment variables must be a JSON object")
+                parsed_env_vars = validated_environment(decoded_env_vars)
             except (json.JSONDecodeError, ValueError) as e:
                 raise HTTPException(
                     status_code=400,
@@ -464,7 +593,7 @@ async def execute_gpu_binary(
                 binary_path,
                 args,
                 parsed_env_vars,
-                prefix_command,
+                effective_prefix,
                 n_runs,
                 timeout,
                 completion_future,
@@ -478,29 +607,11 @@ async def execute_gpu_binary(
     except asyncio.CancelledError:
         logger.info(f"Request for binary {binary.filename} was cancelled")
         raise HTTPException(status_code=500, detail="Request was cancelled")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error processing binary execution request: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-# Keep the old endpoint for backward compatibility (deprecated)
-@APP.get("/gpu/cmd", response_model=GpuCommandResult)
-async def process_command_request(command: str):
-    """Execute a CLI command on the GPU server"""
-    logger.info(f"/gpu/cmd - Command: {command}, Queue backlog: {QUEUE.qsize()}")
-
-    # Create a future to track completion
-    completion_future = asyncio.Future()
-
-    # Add CLI command to the queue (2-item tuple format)
-    await QUEUE.put((command, completion_future))
-
-    try:
-        await completion_future
-        return completion_future.result()
-    except asyncio.CancelledError:
-        logger.info(f"Request {command} was cancelled")
-        raise HTTPException(status_code=500, detail="Request was cancelled")
 
 
 def run_server(host: str, port: int, log_filepath: str = None):
@@ -536,7 +647,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2002)
     parser.add_argument(
         "--log_path", type=Path, default=Path("/tmp/kernelblaster/gpu_server.log")
@@ -545,7 +656,7 @@ if __name__ == "__main__":
 
     # Define base environment variables for GPU subprocesses.
     # Per-worker CUDA_VISIBLE_DEVICES pinning is applied in gpu_worker().
-    env = os.environ.copy()
+    env = sanitized_worker_environment()
     env.setdefault("NVIDIA_TF32_OVERRIDE", "0")
 
     main(args)

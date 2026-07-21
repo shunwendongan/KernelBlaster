@@ -75,16 +75,29 @@ def main() -> int:
     parser.add_argument("--task-id", action="append", default=[])
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--repetitions", type=int, default=100)
-    parser.add_argument("--sessions", type=int, default=3)
+    parser.add_argument(
+        "--phase",
+        choices=("discovery", "confirmation"),
+        default="confirmation",
+        help="Discovery uses 3 sessions; formal confirmation uses 5.",
+    )
+    parser.add_argument("--sessions", type=int, default=None)
     parser.add_argument("--cooldown-seconds", type=float, default=60.0)
     parser.add_argument("--max-session-spread-percent", type=float, default=5.0)
     parser.add_argument("--ncu", action="store_true")
+    parser.add_argument(
+        "--correctness-only",
+        action="store_true",
+        help="Run compile/correctness gates without CUDA Events timing.",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=ROOT_DIR / "out" / "portfolio" / "candidates" / _timestamp(),
     )
     args = parser.parse_args()
+    if args.sessions is None:
+        args.sessions = 3 if args.phase == "discovery" else 5
 
     suite = load_suite(args.suite, ROOT_DIR)
     manifest_path = args.manifest.resolve()
@@ -129,6 +142,8 @@ def main() -> int:
             str(args.repetitions),
             "--sessions",
             str(args.sessions),
+            "--phase",
+            args.phase,
             "--cooldown-seconds",
             str(args.cooldown_seconds),
             "--max-session-spread-percent",
@@ -140,6 +155,8 @@ def main() -> int:
             command.extend(["--extra-correctness-driver", str(extra_driver)])
         if args.ncu:
             command.append("--ncu")
+        if args.correctness_only:
+            command.append("--correctness-only")
         completed = subprocess.run(
             command,
             cwd=ROOT_DIR,
@@ -165,6 +182,21 @@ def main() -> int:
             else None
         )
         comparison = summary.get("comparison") if summary else None
+        if completed.returncode == 0:
+            status = "completed"
+        elif completed.returncode == 3:
+            status = (
+                "no_improvement"
+                if summary
+                and summary.get("stable")
+                and comparison
+                and comparison.get("formal_valid")
+                else "inconclusive"
+            )
+        elif completed.returncode == 4:
+            status = "blocked"
+        else:
+            status = "failed"
         rows.append(
             {
                 "task_id": task_id,
@@ -172,10 +204,17 @@ def main() -> int:
                 "candidate": candidate["name"],
                 "source": candidate["source"],
                 "returncode": completed.returncode,
-                "status": "completed" if completed.returncode == 0 else "failed",
+                "status": status,
                 # benchmark_cuda emits summary only after every original and
                 # normalized correctness executable has passed.
-                "correct": bool(summary and comparison),
+                "correct": bool(
+                    summary
+                    and (
+                        comparison
+                        or summary.get("validation_gates", {}).get("correctness")
+                        == "passed"
+                    )
+                ),
                 "stable": summary.get("stable") if summary else None,
                 "performance_claim_allowed": summary.get(
                     "performance_claim_allowed"
@@ -206,7 +245,7 @@ def main() -> int:
         _atomic_json(
             output_dir / "suite_summary.json",
             {
-                "schema_version": "1.0",
+                "schema_version": "2.0",
                 "suite": suite.name,
                 "complete": False,
                 "results": rows,
@@ -214,26 +253,37 @@ def main() -> int:
         )
 
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "suite": suite.name,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "manifest": str(manifest_path.relative_to(ROOT_DIR)),
         "protocol": {
+            "phase": args.phase,
             "warmup": args.warmup,
             "repetitions": args.repetitions,
             "sessions": args.sessions,
             "cooldown_seconds": args.cooldown_seconds,
             "max_session_spread_percent": args.max_session_spread_percent,
             "ncu": args.ncu,
+            "correctness_only": args.correctness_only,
         },
         "results": rows,
         "complete": len(rows) == len(selected_ids),
         "completed_tasks": sum(row["status"] == "completed" for row in rows),
+        "inconclusive_tasks": sum(row["status"] == "inconclusive" for row in rows),
+        "no_improvement_tasks": sum(row["status"] == "no_improvement" for row in rows),
+        "blocked_tasks": sum(row["status"] == "blocked" for row in rows),
         "failed_tasks": sum(row["status"] == "failed" for row in rows),
     }
     _atomic_json(output_dir / "suite_summary.json", payload)
     print(json.dumps(payload, indent=2, sort_keys=True))
-    return 0 if not payload["failed_tasks"] else 2
+    if payload["failed_tasks"]:
+        return 2
+    if payload["blocked_tasks"]:
+        return 4
+    if payload["inconclusive_tasks"]:
+        return 3
+    return 0
 
 
 if __name__ == "__main__":

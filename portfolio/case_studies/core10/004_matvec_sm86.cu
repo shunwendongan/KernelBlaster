@@ -22,22 +22,28 @@ __global__ void matvec_row_block_kernel(
         return;
     }
 
-    const half2* matrix2 = reinterpret_cast<const half2*>(matrix + row * columns);
-    const half2* vector2 = reinterpret_cast<const half2*>(vector);
-    const int pairs = columns / 2;
     float local = 0.0f;
-    for (int pair = threadIdx.x; pair < pairs; pair += blockDim.x) {
-        const float2 a = __half22float2(matrix2[pair]);
-        const float2 b = __half22float2(vector2[pair]);
-        local = fmaf(a.x, b.x, local);
-        local = fmaf(a.y, b.y, local);
-    }
-    if ((columns & 1) && threadIdx.x == 0) {
-        local = fmaf(
-            __half2float(matrix[row * columns + columns - 1]),
-            __half2float(vector[columns - 1]),
-            local
-        );
+    if ((columns & 1) == 0) {
+        const half2* matrix2 = reinterpret_cast<const half2*>(matrix + row * columns);
+        const half2* vector2 = reinterpret_cast<const half2*>(vector);
+        const int pairs = columns / 2;
+        for (int pair = threadIdx.x; pair < pairs; pair += blockDim.x) {
+            const float2 a = __half22float2(matrix2[pair]);
+            const float2 b = __half22float2(vector2[pair]);
+            local = fmaf(a.x, b.x, local);
+            local = fmaf(a.y, b.y, local);
+        }
+    } else {
+        // An odd row stride makes every second row unsuitable for half2 loads.
+        // Keep a scalar path for odd and boundary K without changing the
+        // published even-K fast path.
+        for (int column = threadIdx.x; column < columns; column += blockDim.x) {
+            local = fmaf(
+                __half2float(matrix[row * columns + column]),
+                __half2float(vector[column]),
+                local
+            );
+        }
     }
 
     local = warp_sum(local);

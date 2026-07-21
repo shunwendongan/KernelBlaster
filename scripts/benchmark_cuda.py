@@ -31,6 +31,7 @@ from src.kernelblaster.benchmarking import (  # noqa: E402
     sha256_text,
     write_compilation_units,
 )
+from src.kernelblaster.profiling import evaluate_performance_gate  # noqa: E402
 
 
 NCU_SECTIONS = (
@@ -40,6 +41,10 @@ NCU_SECTIONS = (
     "SchedulerStats",
     "LaunchStats",
 )
+CORRECTNESS_MARKER = "KERNELBLASTER_CORRECTNESS_JSON "
+CORRECTNESS_ERROR_METRICS = ("p99_abs_error", "max_abs_error")
+CORRECTNESS_ERROR_RELATIVE_ALLOWANCE = 1.10
+CORRECTNESS_ERROR_ABSOLUTE_ALLOWANCE = 1e-4
 
 
 def _timestamp() -> str:
@@ -166,12 +171,126 @@ def _run_correctness(
         log_path=output_dir / f"correctness-{label}-{mode}.log",
         check=False,
     )
+    marker_lines = [
+        line
+        for line in completed.stdout.splitlines()
+        if line.startswith(CORRECTNESS_MARKER)
+    ]
+    if len(marker_lines) > 1:
+        raise RuntimeError(
+            "Correctness output contained more than one result marker."
+        )
+    metrics: dict[str, Any] | None = None
+    if marker_lines:
+        try:
+            metrics = json.loads(marker_lines[0][len(CORRECTNESS_MARKER) :])
+        except (json.JSONDecodeError, TypeError) as error:
+            raise RuntimeError("Correctness result marker is not valid JSON.") from error
+        for key in CORRECTNESS_ERROR_METRICS:
+            value = metrics.get(key)
+            if not isinstance(value, (int, float)) or not 0 <= float(value) < float(
+                "inf"
+            ):
+                raise RuntimeError(
+                    f"Correctness result marker has invalid {key}: {value!r}."
+                )
+        if metrics.get("finite") is not True or metrics.get("deterministic") is not True:
+            raise RuntimeError(
+                "Correctness metrics reported NaN/Inf or non-deterministic output."
+            )
+
     passed = completed.returncode == 0 and "passed" in completed.stdout.lower()
-    return {
+    result = {
         "mode": mode,
         "returncode": completed.returncode,
         "passed": passed,
     }
+    if metrics is not None:
+        result["metrics"] = metrics
+    return result
+
+
+def _validate_correctness_error_regression(
+    variants: dict[str, Any],
+    *,
+    candidate_label: str | None,
+    required_drivers: set[str] | None = None,
+) -> dict[str, Any]:
+    """Compare normalized extra-driver errors against the upstream baseline."""
+    if candidate_label is None:
+        return {"status": "not_applicable", "comparisons": []}
+
+    def indexed_metrics(label: str) -> dict[str, dict[str, float]]:
+        indexed: dict[str, dict[str, float]] = {}
+        for result in variants[label]["correctness"]:
+            driver = str(result["driver"])
+            if driver == "official" or not str(result["mode"]).startswith(
+                "normalized-"
+            ):
+                continue
+            metrics = result.get("metrics")
+            if metrics is None:
+                continue
+            indexed[driver] = {
+                key: float(metrics[key]) for key in CORRECTNESS_ERROR_METRICS
+            }
+        return indexed
+
+    baseline = indexed_metrics("baseline")
+    candidate = indexed_metrics(candidate_label)
+    if required_drivers is not None and set(baseline) != required_drivers:
+        missing = sorted(required_drivers - set(baseline))
+        raise RuntimeError(
+            "Extra correctness drivers did not emit required metrics: "
+            + ", ".join(missing)
+        )
+    if set(baseline) != set(candidate):
+        raise RuntimeError(
+            "Candidate and baseline did not emit matching extra-driver correctness metrics."
+        )
+
+    comparisons: list[dict[str, Any]] = []
+    failures: list[str] = []
+    for driver in sorted(baseline):
+        metric_results: dict[str, Any] = {}
+        for metric in CORRECTNESS_ERROR_METRICS:
+            baseline_value = baseline[driver][metric]
+            candidate_value = candidate[driver][metric]
+            allowed = (
+                baseline_value * CORRECTNESS_ERROR_RELATIVE_ALLOWANCE
+                + CORRECTNESS_ERROR_ABSOLUTE_ALLOWANCE
+            )
+            passed = candidate_value <= allowed
+            metric_results[metric] = {
+                "baseline": baseline_value,
+                "candidate": candidate_value,
+                "allowed": allowed,
+                "passed": passed,
+            }
+            if not passed:
+                failures.append(
+                    f"{driver}:{metric} candidate={candidate_value:.8g} "
+                    f"allowed={allowed:.8g}"
+                )
+        comparisons.append(
+            {"driver": driver, "metrics": metric_results, "passed": not any(
+                not item["passed"] for item in metric_results.values()
+            )}
+        )
+
+    status = "passed" if not failures else "failed"
+    gate = {
+        "status": status,
+        "relative_allowance": CORRECTNESS_ERROR_RELATIVE_ALLOWANCE,
+        "absolute_allowance": CORRECTNESS_ERROR_ABSOLUTE_ALLOWANCE,
+        "comparisons": comparisons,
+    }
+    if failures:
+        raise RuntimeError(
+            "Candidate correctness error regressed beyond the 10% gate: "
+            + "; ".join(failures)
+        )
+    return gate
 
 
 def _gpu_telemetry() -> dict[str, Any]:
@@ -328,6 +447,48 @@ def _summarize_records(
     return summaries
 
 
+def _validate_session_protocol(
+    phase: str, sessions: int, *, correctness_only: bool = False
+) -> None:
+    if correctness_only:
+        return
+    minimum = 3 if phase == "discovery" else 5
+    if sessions < minimum:
+        raise ValueError(
+            f"{phase.capitalize()} requires at least {minimum} independent process sessions."
+        )
+
+
+def _classify_benchmark_result(
+    *, phase: str, stable: bool, comparison: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Classify evidence without turning diagnostic timing into a formal claim."""
+    formally_comparable = comparison is None or bool(comparison.get("formal_valid"))
+    execution_valid = stable and formally_comparable
+    if not execution_valid:
+        return {
+            "outcome": "inconclusive",
+            "execution_valid": False,
+            "performance_claim_allowed": False,
+        }
+    if comparison is None or phase == "discovery":
+        return {
+            "outcome": "completed",
+            "execution_valid": True,
+            "performance_claim_allowed": False,
+        }
+
+    performance_claim_allowed = bool(
+        comparison.get("all_sessions_not_slower")
+        and comparison.get("performance_gate", {}).get("passed")
+    )
+    return {
+        "outcome": "improved" if performance_claim_allowed else "no_improvement",
+        "execution_valid": True,
+        "performance_claim_allowed": performance_claim_allowed,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Correctness-first CUDA Events benchmark for KernelBench-CUDA."
@@ -359,6 +520,11 @@ def main() -> int:
         help="Zero enables calibration to approximately one millisecond per sample.",
     )
     parser.add_argument("--sessions", type=int, default=3)
+    parser.add_argument(
+        "--phase",
+        choices=("discovery", "confirmation"),
+        default="discovery",
+    )
     parser.add_argument("--max-session-spread-percent", type=float, default=5.0)
     parser.add_argument(
         "--cooldown-seconds",
@@ -368,6 +534,11 @@ def main() -> int:
     )
     parser.add_argument("--timeout-seconds", type=float, default=1200)
     parser.add_argument("--ncu", action="store_true")
+    parser.add_argument(
+        "--correctness-only",
+        action="store_true",
+        help="Compile and run all correctness gates without CUDA Events timing.",
+    )
     parser.add_argument("--output-dir", type=Path, default=_default_output_dir())
     args = parser.parse_args()
 
@@ -387,6 +558,14 @@ def main() -> int:
             parser.error(f"Extra correctness Driver does not exist: {path}")
     if min(args.warmup, args.repetitions, args.sessions) < 1:
         parser.error("Warmup, repetitions, and sessions must be positive.")
+    try:
+        _validate_session_protocol(
+            args.phase,
+            args.sessions,
+            correctness_only=args.correctness_only,
+        )
+    except ValueError as error:
+        parser.error(str(error))
     if args.max_session_spread_percent <= 0 or args.cooldown_seconds < 0:
         parser.error("Session spread must be positive and cooldown non-negative.")
 
@@ -424,6 +603,7 @@ def main() -> int:
         "warmup": args.warmup,
         "repetitions": args.repetitions,
         "sessions": args.sessions,
+        "phase": args.phase,
         "max_session_spread_percent": args.max_session_spread_percent,
         "cooldown_seconds": args.cooldown_seconds,
         "container_image": os.getenv("KERNELBLASTER_CONTAINER_IMAGE"),
@@ -519,7 +699,58 @@ def main() -> int:
                 label=label,
                 timeout=args.timeout_seconds,
             )
+    manifest["correctness_error_regression"] = _validate_correctness_error_regression(
+        manifest["variants"],
+        candidate_label=args.candidate_name if candidate_path is not None else None,
+        required_drivers={
+            f"extra-{index}-{path.stem}"
+            for index, path in enumerate(extra_driver_paths)
+        },
+    )
+    _atomic_json(output_dir / "run_manifest.json", manifest)
+
+    if args.correctness_only:
+        ncu_attribution_valid = None
+        if args.ncu:
+            ncu_attribution_valid = all(
+                variant.get("ncu", {}).get("status") == "completed"
+                and bool(variant.get("ncu", {}).get("metric_names"))
+                for variant in manifest["variants"].values()
+            )
+        blocked = args.ncu and not ncu_attribution_valid
+        manifest["profiling_mode"] = (
+            "ncu" if args.ncu and ncu_attribution_valid else "events_only"
+        )
+        manifest["outcome"] = "blocked" if blocked else "completed"
+        manifest["failure_classification"] = (
+            "ncu_attribution_unavailable" if blocked else None
+        )
+        manifest["budget"] = {"api_requests": 0, "tokens": 0}
+        manifest["validation_gates"] = {
+            "correctness": "passed",
+            "correctness_error_regression": manifest[
+                "correctness_error_regression"
+            ]["status"],
+            "events_stability": None,
+            "performance": None,
+            "ncu_attribution": ncu_attribution_valid,
+        }
+        summary = {
+            "schema_version": BENCHMARK_SCHEMA_VERSION,
+            "run_id": output_dir.name,
+            "task_id": args.task_id,
+            "kernel": args.kernel,
+            "phase": "correctness_only",
+            "stable": None,
+            "comparison": None,
+            "ncu_attribution_valid": ncu_attribution_valid,
+            "performance_claim_allowed": False,
+            "validation_gates": manifest["validation_gates"],
+        }
+        _atomic_json(output_dir / "summary.json", summary)
         _atomic_json(output_dir / "run_manifest.json", manifest)
+        print(json.dumps(summary, indent=2, sort_keys=True))
+        return 4 if blocked else 0
 
     records: list[dict[str, Any]] = []
     jsonl_path = output_dir / "measurements.jsonl"
@@ -641,6 +872,18 @@ def main() -> int:
                 max_session_spread_percent=args.max_session_spread_percent,
             )
         )
+        if args.phase == "confirmation":
+            performance_gate = evaluate_performance_gate(
+                summaries["baseline"]["session_medians"],
+                summaries[candidate_label]["session_medians"],
+            ).to_dict()
+        else:
+            performance_gate = {
+                "passed": False,
+                "reason": "Discovery phase does not produce a formal performance claim.",
+                "session_speedups": session_speedups,
+            }
+        comparison["performance_gate"] = performance_gate
         with (output_dir / "comparison.csv").open(
             "w", newline="", encoding="utf-8"
         ) as stream:
@@ -663,9 +906,13 @@ def main() -> int:
             and bool(variant.get("ncu", {}).get("metric_names"))
             for variant in manifest["variants"].values()
         )
-    performance_claim_allowed = stable and (
-        comparison is None or comparison["formal_valid"]
+    classification = _classify_benchmark_result(
+        phase=args.phase,
+        stable=stable,
+        comparison=comparison,
     )
+    execution_valid = classification["execution_valid"]
+    performance_claim_allowed = classification["performance_claim_allowed"]
 
     summary = {
         "schema_version": BENCHMARK_SCHEMA_VERSION,
@@ -680,13 +927,37 @@ def main() -> int:
         "comparison": comparison,
         "ncu_attribution_valid": ncu_attribution_valid,
         "performance_claim_allowed": performance_claim_allowed,
+        "phase": args.phase,
+    }
+    manifest["profiling_mode"] = (
+        "ncu" if args.ncu and ncu_attribution_valid else "events_only"
+    )
+    manifest["outcome"] = classification["outcome"]
+    manifest["failure_classification"] = (
+        None if execution_valid else "unstable_or_invalid_comparison"
+    )
+    manifest["budget"] = {"api_requests": 0, "tokens": 0}
+    manifest["validation_gates"] = {
+        "correctness": "passed",
+        "correctness_error_regression": manifest[
+            "correctness_error_regression"
+        ]["status"],
+        "events_stability": "passed" if stable else "failed",
+        "performance": (
+            comparison.get("performance_gate", {}).get("passed")
+            if comparison is not None
+            else None
+        ),
+        "ncu_attribution": ncu_attribution_valid,
     }
     _atomic_json(output_dir / "summary.json", summary)
     _atomic_json(output_dir / "run_manifest.json", manifest)
     print(json.dumps(summary, indent=2, sort_keys=True))
     if args.ncu and not ncu_attribution_valid:
         return 4
-    if not performance_claim_allowed:
+    if classification["outcome"] == "inconclusive":
+        return 3
+    if classification["outcome"] == "no_improvement":
         return 3
     return 0
 

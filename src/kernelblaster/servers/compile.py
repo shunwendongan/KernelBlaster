@@ -16,7 +16,7 @@ import argparse
 import asyncio
 from contextlib import asynccontextmanager
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from pathlib import Path
 from pydantic import BaseModel
 import logging
@@ -31,6 +31,8 @@ from torch.utils import cmake_prefix_path
 
 from .server_logging import get_log_config
 from .utils.process_management import safe_kill_process
+from .auth import require_worker_token
+from .security import allowed_source_path
 from ..agents.utils import find_kernel_launch_header
 
 logger = logging.getLogger("uvicorn")
@@ -42,6 +44,10 @@ CUDA_ENV_PATH = Path(__file__).parent / "cuda_env"
 ENV_VARS = os.environ.copy()
 # Module-level variables (will be set during server startup)
 _ARTIFACTS_DIR = None
+
+
+def _allowed_source(path: str) -> Path:
+    return allowed_source_path(path)
 
 
 def get_cmake_prefix_path() -> str:
@@ -56,9 +62,12 @@ def get_cuda_env_template_path() -> Path:
 
 def extract_arch_version(sm_version: str) -> str:
     """Extract architecture version from SM version string"""
-    assert "sm" in sm_version, f"Invalid sm version format: {sm_version}"
-    arch_version = sm_version.split("sm_")[1]
-    assert int(arch_version) >= 50, f"Invalid sm version: {sm_version}"
+    match = re.fullmatch(r"sm_(\d{2,3})", sm_version)
+    if match is None:
+        raise ValueError(f"Invalid sm version format: {sm_version}")
+    arch_version = match.group(1)
+    if int(arch_version) < 50:
+        raise ValueError(f"Invalid sm version: {sm_version}")
     return arch_version
 
 
@@ -90,15 +99,15 @@ def build_cmake_command(
     sm_build_dir: Path,
     arch_version: str,
     build_type: str = "Release",
-) -> str:
+) -> list[str]:
     """Build the cmake configuration command"""
-    return (
-        f"mkdir -p {sm_build_dir} && cd {sm_build_dir} && "
-        f"cmake -DCMAKE_PREFIX_PATH={get_cmake_prefix_path()} "
-        f"-DCMAKE_BUILD_TYPE={build_type} "
-        f'-DGPU_ARCH_VERSION="{arch_version}" '
-        ".."
-    )
+    return [
+        "cmake",
+        f"-DCMAKE_PREFIX_PATH={cmake_prefix_path};{sysconfig.get_path('include')}",
+        f"-DCMAKE_BUILD_TYPE={build_type}",
+        f"-DGPU_ARCH_VERSION={arch_version}",
+        "..",
+    ]
 
 
 # Start worker tasks in the background
@@ -225,6 +234,20 @@ class CompilationError(Exception):
         super().__init__(self.message)
 
 
+def complete_compilation_future(
+    completion_future: asyncio.Future,
+    *,
+    result: bool | None = None,
+    error: Exception | None = None,
+) -> None:
+    if completion_future.done():
+        return
+    if error is not None:
+        completion_future.set_exception(error)
+    else:
+        completion_future.set_result(result)
+
+
 async def exec_compilation(
     job_name: str,
     main_file: str,
@@ -264,25 +287,28 @@ async def exec_compilation(
     sm_build_dir = work_dir / f"build_{sm_version}"
     if not sm_build_dir.exists():
         build_type = "Release"
+        sm_build_dir.mkdir(parents=True, exist_ok=False)
         cmd = build_cmake_command(
             sm_build_dir,
             arch_version,
             build_type,
         )
-        logger.info(f"Running cmake command: {cmd}")
-        proc = await asyncio.subprocess.create_subprocess_shell(
-            cmd,
+        logger.info(f"Running cmake command: {cmd[0]}")
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            cwd=work_dir,
+            cwd=sm_build_dir,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        assert (
-            proc.returncode == 0
-        ), f"Failed to run cmake config for {work_dir}: stderr:\n{stderr.decode()}"
+        if proc.returncode != 0:
+            raise CompilationError(
+                f"Failed to run cmake config for {work_dir}: stderr:\n{stderr.decode()}"
+            )
 
-    proc = await asyncio.create_subprocess_shell(
-        "make -j8",
+    proc = await asyncio.create_subprocess_exec(
+        "make",
+        "-j8",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         cwd=sm_build_dir,
@@ -340,18 +366,21 @@ async def compilation_worker(worker_id: int, debug: bool = False):
             logger.info(
                 f"[Worker {worker_id}]: Successfully compiled {job_name} and saved to {output_path}"
             )
-            completion_future.set_result(True)
+            complete_compilation_future(completion_future, result=True)
         except CompilationError as e:
             logger.info(f"[Worker {worker_id}]: Error compiling {job_name}")
-            completion_future.set_exception(e)
+            complete_compilation_future(completion_future, error=e)
         except FileNotFoundError as e:
             logger.error(f"[Worker {worker_id}]: File not found: {e}")
-            completion_future.set_exception(e)
+            complete_compilation_future(completion_future, error=e)
         except Exception as e:
             error_msg = f"[Worker {worker_id}]: Unhandled exception compiling {job_name}: {str(e)}"
             logger.error(error_msg, exc_info=True)
             # Wrap in CompilationError so it's handled properly
-            completion_future.set_exception(CompilationError(error_msg))
+            complete_compilation_future(
+                completion_future,
+                error=CompilationError(error_msg),
+            )
             # Don't re-raise - let the worker continue processing other jobs
         finally:
             QUEUE.task_done()
@@ -370,11 +399,15 @@ async def process_compilation_request(
     cuda_file: str,
     sm_version: str,
     persistent_artifacts: int = 0,
+    _authorized: None = Depends(require_worker_token),
 ):
     logger.info(f"/compile request received: job_name={job_name}, main_file={main_file}, cuda_file={cuda_file}, sm_version={sm_version}, backlog: {QUEUE.qsize()}")
     
     try:
-        if not Path(main_file).exists():
+        main_path = _allowed_source(main_file)
+        cuda_path = _allowed_source(cuda_file) if cuda_file else None
+
+        if not main_path.exists():
             error_msg = f"File {main_file} not found"
             logger.error(f"/compile error: {error_msg}")
             return CompilationResult(
@@ -385,7 +418,7 @@ async def process_compilation_request(
                 message=error_msg,
             )
 
-        if cuda_file and not Path(cuda_file).exists():
+        if cuda_path is not None and not cuda_path.exists():
             error_msg = f"File {cuda_file} not found"
             logger.error(f"/compile error: {error_msg}")
             return CompilationResult(
@@ -409,8 +442,8 @@ async def process_compilation_request(
         await QUEUE.put(
             (
                 job_name,
-                main_file,
-                cuda_file,
+                str(main_path),
+                str(cuda_path) if cuda_path is not None else "",
                 sm_version,
                 bool(persistent_artifacts),
                 output_path,
@@ -464,6 +497,8 @@ async def process_compilation_request(
             error_msg = f"Unexpected error during compilation: {str(e)}"
             logger.error(f"/compile unexpected error for {job_name}: {error_msg}", exc_info=True)
             raise HTTPException(status_code=500, detail=error_msg)
+    except HTTPException:
+        raise
     except Exception as e:
         error_msg = f"Error processing compilation request: {str(e)}"
         logger.error(f"/compile request processing error for {job_name}: {error_msg}", exc_info=True)
@@ -512,7 +547,7 @@ def main():
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--host", type=str, default="0.0.0.0")
+    parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2001)
     parser.add_argument("--num-workers", type=int, default=8)
     parser.add_argument("--compile-debug", action="store_true")

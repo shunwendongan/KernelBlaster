@@ -93,7 +93,7 @@ async def _run(args: argparse.Namespace) -> int:
         )
         content = response.response
         result = {
-            "schema_version": "1.0",
+            "schema_version": "2.0",
             "requested_model": args.model,
             "response_models": response.response_models,
             "provider": response.provider,
@@ -148,7 +148,7 @@ def main() -> int:
         ),
     )
     parser.add_argument("--reasoning-effort", default="low")
-    parser.add_argument("--max-completion-tokens", type=int, default=512)
+    parser.add_argument("--max-completion-tokens", type=int, default=64)
     parser.add_argument("--max-total-tokens", type=int, default=10_000)
     parser.add_argument("--timeout-seconds", type=float, default=180.0)
     parser.add_argument("--output-dir", type=Path, default=_default_output_dir())

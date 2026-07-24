@@ -183,6 +183,12 @@ async def optimization_rl_ncu(state: GraphState):
             artifact_path=final_file,
             reason=outcome.reason,
             profiling_mode=outcome.profiling_mode,
+            measurement=outcome.measurement,
+            execution_status=outcome.execution_status,
+            correctness_status=outcome.correctness_status,
+            timing_status=outcome.timing_status,
+            diagnostic_status=outcome.diagnostic_status,
+            reason_code=outcome.reason_code,
             metrics=outcome.metrics,
         )
 

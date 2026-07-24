@@ -17,7 +17,10 @@
 
 from copy import deepcopy
 from typing import List, Tuple
-import openai
+try:
+    import openai
+except ModuleNotFoundError:  # The client is an optional runtime dependency.
+    openai = None
 import os
 import re
 import time
@@ -49,7 +52,7 @@ MAX_CHARACTERS_TOTAL = 340_000
 
 # 通过 PERFLAB_KEY 配置的 Perflab 客户端（后备选项）。
 perflab_client = None
-if os.getenv("PERFLAB_KEY"):
+if os.getenv("PERFLAB_KEY") and openai is not None:
     perflab_client = openai.AsyncAzureOpenAI(
         azure_endpoint="https://llm-proxy.perflab.nvidia.com",
         api_version="2024-12-01-preview",

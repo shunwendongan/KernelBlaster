@@ -13,6 +13,13 @@ import random
 import statistics
 from typing import Any, Protocol
 
+from .measurements import (
+    Measurement,
+    MeasurementSource,
+    MeasurementUnit,
+    hardware_fingerprint,
+)
+
 
 class ProfilingMode(str, Enum):
     """封装 `ProfilingMode` 对应的领域状态与操作。"""
@@ -25,6 +32,9 @@ class ProfilingMode(str, Enum):
 class ProfilingResult:
     """保存一次操作的标准化结果及其诊断信息。"""
     mode: ProfilingMode
+    measurement: Measurement | None = None
+    # Temporary read compatibility for third-party profiler backends. New
+    # backends must populate ``measurement`` instead.
     elapsed_cycles: int | None = None
     elapsed_us: float | None = None
     annotated_source: str = ""
@@ -32,6 +42,36 @@ class ProfilingResult:
     stderr: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.measurement is not None:
+            return
+        if self.elapsed_cycles is not None:
+            object.__setattr__(
+                self,
+                "measurement",
+                Measurement(
+                    value=self.elapsed_cycles,
+                    unit=MeasurementUnit.CYCLES,
+                    source=MeasurementSource.NCU,
+                    protocol_id="legacy-profiler-result",
+                    hardware_fingerprint="legacy-unknown",
+                    legacy_inferred_unit=True,
+                ),
+            )
+        elif self.elapsed_us is not None:
+            object.__setattr__(
+                self,
+                "measurement",
+                Measurement(
+                    value=self.elapsed_us,
+                    unit=MeasurementUnit.MICROSECONDS,
+                    source=MeasurementSource.CUDA_EVENTS,
+                    protocol_id="legacy-profiler-result",
+                    hardware_fingerprint="legacy-unknown",
+                    legacy_inferred_unit=True,
+                ),
+            )
 
     @property
     def available(self) -> bool:
@@ -41,9 +81,7 @@ class ProfilingResult:
         返回:
         当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
-        return self.error is None and (
-            self.elapsed_cycles is not None or self.elapsed_us is not None
-        )
+        return self.error is None and self.measurement is not None
 
 
 class ProfilerBackend(Protocol):
@@ -235,6 +273,8 @@ class EventsProfilerBackend:
         *,
         discovery_sessions: int = 3,
         confirmation_sessions: int = 5,
+        gpu: Any = None,
+        protocol_id: str | None = None,
     ) -> None:
         """
         初始化 EventsProfilerBackend 实例，并保存后续流程所需的配置与依赖。
@@ -247,6 +287,12 @@ class EventsProfilerBackend:
         self.runner = runner
         self.discovery_sessions = discovery_sessions
         self.confirmation_sessions = confirmation_sessions
+        self._hardware_fingerprint = hardware_fingerprint(gpu)
+        self.protocol_id = protocol_id or (
+            f"cuda-events:warmup={getattr(runner, 'warmup', 'unknown')}:"
+            f"repetitions={getattr(runner, 'repetitions', 'unknown')}:"
+            f"discovery_sessions={discovery_sessions}"
+        )
 
     async def profile(self, filepath: Path) -> ProfilingResult:
         """
@@ -267,6 +313,14 @@ class EventsProfilerBackend:
         median_us = statistics.median(samples)
         return ProfilingResult(
             mode=self.mode,
+            measurement=Measurement(
+                value=median_us,
+                unit=MeasurementUnit.MICROSECONDS,
+                source=MeasurementSource.CUDA_EVENTS,
+                samples=tuple(samples),
+                protocol_id=self.protocol_id,
+                hardware_fingerprint=self._hardware_fingerprint,
+            ),
             elapsed_us=median_us,
             metrics={"session_medians_us": samples, "phase": "discovery"},
         )

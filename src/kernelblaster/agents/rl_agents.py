@@ -27,6 +27,7 @@ import statistics
 from .database import OptimizationDatabase, OptimizationEntry, CompositeOptimization
 from .utils import generate_code_retry, LLMResponse
 from ..config import config
+from ..measurements import Measurement, MeasurementComparisonError
 
 
 @dataclass
@@ -35,10 +36,17 @@ class TrajectoryStep:
     state: str
     action: str  # 优化技术
     code: str
-    cycles: int
+    measurement: Measurement
     predicted_improvement: float
     actual_improvement: float
     reward: float
+
+    @property
+    def cycles(self) -> int | None:
+        """Deprecated compatibility accessor; never relabel event time as cycles."""
+        if self.measurement.unit.value != "cycles":
+            return None
+        return int(self.measurement.value)
 
 
 @dataclass
@@ -46,8 +54,8 @@ class Trajectory:
     """代表一个完整的优化轨迹。"""
     steps: List[TrajectoryStep] = field(default_factory=list)
     total_reward: float = 0.0
-    initial_cycles: int = 0
-    final_cycles: int = 0
+    initial_measurement: Measurement | None = None
+    final_measurement: Measurement | None = None
     
     def add_step(self, step: TrajectoryStep):
         """
@@ -59,8 +67,20 @@ class Trajectory:
         self.steps.append(step)
         self.total_reward += step.reward
         if len(self.steps) == 1:
-            self.initial_cycles = step.cycles
-        self.final_cycles = step.cycles
+            self.initial_measurement = step.measurement
+        self.final_measurement = step.measurement
+
+    @property
+    def initial_cycles(self) -> int | None:
+        if self.initial_measurement is None or self.initial_measurement.unit.value != "cycles":
+            return None
+        return int(self.initial_measurement.value)
+
+    @property
+    def final_cycles(self) -> int | None:
+        if self.final_measurement is None or self.final_measurement.unit.value != "cycles":
+            return None
+        return int(self.final_measurement.value)
 
 
 class ReplayBuffer:
@@ -113,8 +133,16 @@ class ReplayBuffer:
             return {}
         
         rewards = [t.total_reward for t in self.trajectories]
-        improvements = [(t.initial_cycles - t.final_cycles) / t.initial_cycles * 100 
-                       for t in self.trajectories if t.initial_cycles > 0]
+        improvements = []
+        for trajectory in self.trajectories:
+            if trajectory.initial_measurement is None or trajectory.final_measurement is None:
+                continue
+            try:
+                improvements.append((trajectory.final_measurement.speedup_over(
+                    trajectory.initial_measurement
+                ) - 1.0) * 100.0)
+            except MeasurementComparisonError:
+                continue
         
         return {
             'num_trajectories': len(self.trajectories),
@@ -177,7 +205,7 @@ Focus on actionable insights that can improve future optimization predictions.""
                     'technique': step.action,
                     'predicted_improvement': step.predicted_improvement,
                     'actual_improvement': step.actual_improvement,
-                    'cycles': step.cycles,
+                    'measurement': step.measurement.to_dict(),
                     'reward': step.reward
                 })
         
@@ -259,7 +287,7 @@ Provide specific, technical insights about why certain optimizations succeeded o
                 'predicted_improvement': step.predicted_improvement,
                 'actual_improvement': step.actual_improvement,
                 'performance_gap': gap,
-                'cycles': step.cycles
+                'measurement': step.measurement.to_dict(),
             })
         
         prompt = f"""POLICY EVALUATION RESULTS:

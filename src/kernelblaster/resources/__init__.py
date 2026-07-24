@@ -16,6 +16,13 @@
 """导出编译与 GPU 资源客户端和受管服务包装器。"""
 
 from .client import TCPClient
-from .servers import CompileServer, GPUServer
 
 __all__ = ["TCPClient", "CompileServer", "GPUServer"]
+
+
+def __getattr__(name: str):
+    if name in {"CompileServer", "GPUServer"}:
+        from .servers import CompileServer, GPUServer
+
+        return {"CompileServer": CompileServer, "GPUServer": GPUServer}[name]
+    raise AttributeError(name)

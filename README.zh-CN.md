@@ -26,6 +26,15 @@
 [Schema v2 完整 Core 10 验证](artifacts/portfolio-v2.0/core10/core10-rtx3080-confirmation.zh-CN.md) · [Schema v2 完整结果 JSON](artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json) · [Schema v2 定向验证](artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.zh-CN.md) · [Schema v2 结果 JSON](artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json) · [中文完整报告](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [英文摘要](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [逐题 JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [对比图](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [原始文件哈希](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [候选清单](portfolio/case_studies/core10/candidates.json)
 <!-- PORTFOLIO_STATUS:END -->
 
+### Portfolio v2.1 证据
+
+v2.1 发布内容加固了 Issue #10 涉及的五个 CUDA 候选，但没有扩大其生产可用性声明。稳定能力契约仅接受已经审核的 `sm_86`、FP16、连续 row-major、legacy default stream、单 stream、仅 forward、非 graph capture 和 manifest 白名单场景；不支持的请求会返回明确 reason code，且 `production_ready` 仍为 `false`。
+
+- [证据索引与 SHA-256 清单](artifacts/portfolio-v2.1/SHA256SUMS.json)
+- [五任务正确性与资源生命周期汇总](artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json)
+- [Issue #7 API/Pilot 状态](artifacts/portfolio-v2.1/issue-7/rtx3080/trusted-pilot-summary.json)：HTTP 401，Pilot 未运行
+- [Issue #8 Profiler 状态](artifacts/portfolio-v2.1/issue-8/rtx3080/ncu-preflight-summary.json)：已发布 Windows 原生 NCU/NSYS 证据；WSL counters 与跨 GPU 复测仍未完成
+
 ### 复现 RTX 3080 正式对比
 
 以下命令应在固定的 NGC 25.01 容器和 `sm_86` GPU 中执行。原始输出保存在被忽略的 `out/portfolio/`，审核后的结果单独提交。

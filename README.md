@@ -26,6 +26,20 @@ These immutable strict values remain historical v1 evidence. A separate full man
 [Schema-v2 full Core 10 validation](artifacts/portfolio-v2.0/core10/core10-rtx3080-confirmation.en.md) · [Schema-v2 full result JSON](artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json) · [Schema-v2 targeted validation](artifacts/portfolio-v2.0/reports/rtx3080-targeted-validation.en.md) · [Schema-v2 result JSON](artifacts/portfolio-v2.0/results/rtx3080_targeted_validation.json) · [Full Chinese report](artifacts/portfolio-v1.0/reports/core10-rtx3080-comparison.zh-CN.md) · [English summary](artifacts/portfolio-v1.0/reports/core10-rtx3080-summary.en.md) · [Per-task JSON](artifacts/portfolio-v1.0/results/core10_rtx3080_comparison.json) · [Comparison figure](artifacts/portfolio-v1.0/figures/core10_rtx3080_comparison.svg) · [Raw-file hashes](artifacts/portfolio-v1.0/manifests/core10_rtx3080_raw_sha256.csv) · [Candidate manifest](portfolio/case_studies/core10/candidates.json)
 <!-- PORTFOLIO_STATUS:END -->
 
+### Portfolio v2.1 evidence
+
+The v2.1 publication hardens the five Issue #10 CUDA candidates without
+expanding their production claim. The stable capability contract accepts only
+the reviewed `sm_86`, FP16, contiguous row-major, legacy-default-stream,
+single-stream, forward-only, non-graph-capture, manifest-approved cases;
+unsupported requests return an explicit reason code and
+`production_ready` remains `false`.
+
+- [Evidence index and SHA-256 manifest](artifacts/portfolio-v2.1/SHA256SUMS.json)
+- [Five-task correctness and lifecycle summary](artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json)
+- [Issue #7 API/Pilot status](artifacts/portfolio-v2.1/issue-7/rtx3080/trusted-pilot-summary.json) — HTTP 401; Pilot not run
+- [Issue #8 profiler status](artifacts/portfolio-v2.1/issue-8/rtx3080/ncu-preflight-summary.json) — Windows-native NCU/NSYS evidence published; WSL counters and cross-GPU runs remain open
+
 ### Reproduce the validated RTX 3080 comparison
 
 Run these commands inside the pinned NGC 25.01 container on an `sm_86` GPU. Raw outputs remain below ignored `out/portfolio/` paths; reviewed artifacts are checked in separately.

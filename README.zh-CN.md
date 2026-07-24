@@ -109,13 +109,54 @@ KernelBlaster 从 KernelBench-CUDA 的初始输入产物开始工作。每个问
 
 ## 快速开始
 
-### 1. 构建容器
+### 推荐方式：Docker Desktop + WSL2
+
+仓库源码和活动实验数据保存在 Ubuntu ext4 文件系统中。Windows 负责 NVIDIA 驱动、WSL、Docker Desktop 和编辑器；项目容器负责 CUDA 12.8、`nvcc`、PyTorch 与 Python 依赖。不要在 Ubuntu 中再安装一套 Docker Engine，也不要在 WSL 内安装 Linux NVIDIA 显示驱动。
+
+在 `~/workspace/KernelBlaster` 这样的常规克隆目录中，先准备容器外部的持久化目录和本地密钥文件：
+
+```bash
+mkdir -p ../../{datasets,checkpoints,runs}/KernelBlaster
+mkdir -p ../../caches/{huggingface,torch,triton} ../../secrets
+cp -n .env.example ../../secrets/KernelBlaster.env
+# 仅在本机编辑 ../../secrets/KernelBlaster.env，绝不能提交到 Git。
+```
+
+构建并运行 RTX 3080 本地工作流：
+
+```bash
+./scripts/container.sh build dev
+./scripts/container.sh --profile distributed build gpu-worker
+./scripts/container.sh --profile test run --rm smoke
+
+# 交互式开发 Shell
+./scripts/container.sh run --rm dev
+
+# 示例：将运行元数据与日志持久化到 /runs
+./scripts/container.sh run --rm dev \
+  bash scripts/run-with-metadata.sh python -m pytest -q
+```
+
+| Ubuntu 路径 | 容器路径 | 默认权限 |
+| --- | --- | --- |
+| 仓库目录 | `/workspace` | 读写 |
+| `~/datasets/KernelBlaster` | `/data` | 只读 |
+| `~/checkpoints/KernelBlaster` | `/checkpoints` | 读写 |
+| `~/runs/KernelBlaster` | `/runs` | 读写 |
+| `~/caches/{huggingface,torch,triton}` | `/cache/...` | 读写 |
+| `~/secrets/KernelBlaster.env` | 仅注入环境变量 | 永不复制进镜像 |
+
+`gpu-worker` target 使用 UID 10001、只读根文件系统、删除全部 Linux capabilities、启用 `no-new-privileges`，并限制内存、PID 和内部 worker 网络。`dev` 容器用于 `nvcc`、测试和交互式调试。
+
+### 旧版手工容器方式
+
+#### 1. 构建容器
 
 ```bash
 docker build . -t kernelblaster -f docker/Dockerfile
 ```
 
-### 2. 启动容器
+#### 2. 启动容器
 
 ```bash
 docker run --rm -it --name=kernelblaster \
@@ -136,7 +177,7 @@ docker run --rm -it --name=kernelblaster \
 `KERNELBLASTER_WORKER_TOKEN` 并使用 `docker/compose.worker.yml`。其中 GPU
 Worker 不接收 LLM Key，仅连接内部网络，根文件系统只读，并限制 tmpfs、能力、进程数和内存。
 
-### 3. 设置 API Key 并运行默认示例
+#### 3. 设置 API Key 并运行默认示例
 
 ```bash
 export OPENAI_API_KEY=<your_api_key>
@@ -162,7 +203,7 @@ Pilot”，任一必要门禁失败都会立即停止。
 bash scripts/run_single_kernelblaster.sh --problem-numbers 1-10 --subset level2
 ```
 
-### 4. 运行产物
+#### 4. 运行产物
 
 - 输入 Kernel 来自 `data/kernelbench-cuda/`。
 - 默认脚本运行一个 Level 1 问题，并执行基于 RL 的 CUDA 优化。
@@ -170,7 +211,7 @@ bash scripts/run_single_kernelblaster.sh --problem-numbers 1-10 --subset level2
 - 最佳优化 Kernel 写入 `final_rl_cuda_perf.cu`。
 - 经 rollout 搜索更新的优化数据库写入运行目录中的 `optimization_database.json`。
 
-### 5. 复现 PyTorch 基线
+#### 5. 复现 PyTorch 基线
 
 如需比较或复现上游 KernelBlaster 的加速效果，可在 Benchmark 问题上运行 `scripts/run_baselines.py`（Torch Eager）和 `scripts/run_baselines_compile.py`（Torch Compile）。
 
@@ -197,6 +238,7 @@ python scripts/run_baselines.py --root data/KernelBench/KernelBench/level1 --dev
 
 ```text
 KernelBlaster/
+|-- compose.yaml
 |-- data/
 |   |-- kernelbench-cuda/
 |   |   |-- level1/
@@ -217,6 +259,8 @@ KernelBlaster/
 |-- artifacts/
 |   `-- portfolio-v1.0/
 |-- scripts/
+|   |-- container.sh
+|   |-- run-with-metadata.sh
 |   |-- benchmark_cuda.py
 |   |-- benchmark_candidates.py
 |   |-- benchmark_pytorch.py

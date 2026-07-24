@@ -1,49 +1,56 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-FROM nvcr.io/nvidia/pytorch:25.01-py3
 
-# Create /kernelblaster directory with proper permissions
-RUN mkdir -p /kernelblaster && chmod 777 /kernelblaster
+ARG BASE_IMAGE=nvcr.io/nvidia/pytorch:25.01-py3@sha256:0981807f1a51a156563e28b59dc2e7a9b5c1c7d85d1169d4965c5fd91fa38bcb
+FROM ${BASE_IMAGE} AS cuda-base
 
-# Set WORKDIR to /workspace to avoid permission issues during container init
-# The entrypoint script will handle changing to /kernelblaster after fixing permissions
+ENV DEBIAN_FRONTEND=noninteractive \
+    CUDA_HOME=/usr/local/cuda \
+    CUDACXX=/usr/local/cuda/bin/nvcc \
+    PATH=/usr/local/cuda/bin:${PATH} \
+    TORCH_CUDA_ARCH_LIST=8.6 \
+    CMAKE_CUDA_ARCHITECTURES=86 \
+    CUDAARCHS=86 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential ccache cmake git ninja-build sudo \
+    && rm -rf /var/lib/apt/lists/* \
+    && nvcc --version
+
 WORKDIR /workspace
 
-# Add CUDA to PATH and set environment variables
-ENV PATH=/usr/local/cuda/bin:${PATH}
-ENV CUDA_HOME=/usr/local/cuda
-ENV CUDACXX=/usr/local/cuda/bin/nvcc
+FROM cuda-base AS dev
+COPY . /opt/kernelblaster
+RUN python -m pip install --no-cache-dir \
+       "pip==24.3.1" "setuptools==80.9.0" "wheel==0.45.1" \
+    && python -m pip install --no-cache-dir -e "/opt/kernelblaster[server,llm,local-llm,gpu,dev]"
+RUN python -m pip install --no-cache-dir \
+      "packaging==24.2" "setuptools==80.9.0" "six==1.16.0"
+RUN mkdir -p /tmp/home /workspace \
+    && chmod 1777 /tmp/home /workspace
+ENV HOME=/tmp/home \
+    HF_HOME=/cache/huggingface \
+    TORCH_HOME=/cache/torch \
+    TRITON_CACHE_DIR=/cache/triton \
+    PYTHONPATH=/workspace
+USER 1000:1000
+CMD ["bash"]
 
-# Install system dependencies including those needed for bitsandbytes
-RUN apt-get update && apt-get -y install sudo ccache zsh sshfs cmake build-essential git
-
-# Verify CUDA installation
-RUN nvcc --version
-
-
-RUN cd /kernelblaster
-COPY docker/requirements.txt /tmp/requirements.txt
-
-# Install Python dependencies
-# Note: bitsandbytes requires CUDA toolkit to be available during installation
-RUN python -m pip install --no-cache-dir -U pip setuptools wheel && \
-    python -m pip install --no-cache-dir -r /tmp/requirements.txt
-
-# Verify bitsandbytes installation (optional, for debugging)
-RUN python -c "import bitsandbytes; print('bitsandbytes version:', bitsandbytes.__version__)" || echo "bitsandbytes import check skipped"
-
-COPY docker/entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-ENTRYPOINT ["/entrypoint.sh"]
+FROM cuda-base AS worker
+COPY docker/requirements.gpu.txt /tmp/requirements.gpu.txt
+RUN python -m pip install --no-cache-dir -U pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements.gpu.txt
+COPY . /opt/kernelblaster
+RUN python -m pip install --no-cache-dir --no-deps /opt/kernelblaster \
+    && useradd --create-home --uid 10001 --shell /usr/sbin/nologin kernelblaster \
+    && mkdir -p /tmp/kernelblaster \
+    && chown -R kernelblaster:kernelblaster /tmp/kernelblaster /opt/kernelblaster
+WORKDIR /opt/kernelblaster
+ENV HOME=/home/kernelblaster \
+    CUDA_VISIBLE_DEVICES=0 \
+    NVIDIA_TF32_OVERRIDE=0
+USER kernelblaster
+EXPOSE 2002
+CMD ["python", "scripts/start_gpu_worker.py", "--host", "0.0.0.0", "--port", "2002"]

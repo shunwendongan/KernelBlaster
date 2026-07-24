@@ -1,0 +1,91 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: kernelblaster
+
+x-dev-common: &dev-common
+  image: local/kernelblaster:cuda12.8-${IMAGE_TAG:-dev}
+  build:
+    context: .
+    dockerfile: docker/Dockerfile
+    target: dev
+  gpus: all
+  shm_size: 8gb
+  init: true
+  stdin_open: true
+  tty: true
+  working_dir: /workspace
+  env_file:
+    - ../../secrets/KernelBlaster.env
+  environment:
+    HOME: /tmp/home
+    HF_HOME: /cache/huggingface
+    TORCH_HOME: /cache/torch
+    TRITON_CACHE_DIR: /cache/triton
+    TORCH_CUDA_ARCH_LIST: "8.6"
+    CMAKE_CUDA_ARCHITECTURES: "86"
+    CUDAARCHS: "86"
+    PYTHONPATH: /workspace
+  volumes:
+    - .:/workspace
+    - ../../datasets/KernelBlaster:/data:ro
+    - ../../checkpoints/KernelBlaster:/checkpoints
+    - ../../runs/KernelBlaster:/runs
+    - ../../caches/huggingface:/cache/huggingface
+    - ../../caches/torch:/cache/torch
+    - ../../caches/triton:/cache/triton
+
+services:
+  dev:
+    <<: *dev-common
+    command: bash
+
+  smoke:
+    <<: *dev-common
+    profiles: [test]
+    command:
+      - bash
+      - -lc
+      - >-
+        nvidia-smi && nvcc --version &&
+        python -c "import torch; assert torch.cuda.is_available(); print(torch.cuda.get_device_name(0), torch.cuda.get_device_capability(0))" &&
+        pytest -q tests/benchmarking/test_correctness_gates.py
+
+  gpu-worker:
+    image: local/kernelblaster-worker:cuda12.8-${IMAGE_TAG:-dev}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: worker
+    profiles: [distributed]
+    gpus: all
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=2g
+    env_file:
+      - ../../secrets/KernelBlaster.env
+    environment:
+      KERNELBLASTER_MAX_GPU_BINARY_BYTES: ${KERNELBLASTER_MAX_GPU_BINARY_BYTES:-268435456}
+      TORCH_CUDA_ARCH_LIST: "8.6"
+      CUDAARCHS: "86"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 16g
+    networks: [worker-plane]
+
+  control:
+    <<: *dev-common
+    profiles: [distributed]
+    environment:
+      HOME: /tmp/home
+      GPU_SERVER_URL_RTX3080: http://gpu-worker:2002
+      MODEL: ${MODEL:-gpt-5-mini-2025-08-07}
+    depends_on: [gpu-worker]
+    networks: [default, worker-plane]
+    command: bash
+
+networks:
+  worker-plane:
+    internal: true

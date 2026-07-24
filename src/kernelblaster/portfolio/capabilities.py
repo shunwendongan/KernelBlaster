@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Machine-readable execution contracts for research CUDA candidates.
+"""
+用于研究 CUDA 候选人的机器可读执行合同。
 
-The raw ``launch_gpu_implementation`` ABI deliberately stays small and cannot
-inspect tensor metadata. Callers must validate requests here before creating
-artifacts, compiling code, or initializing CUDA.
+原始的“`launch_gpu_implementation`”ABI 故意保持很小并且不能
+检查张量元数据。调用者必须在创建之前在此处验证请求
+产物、编译代码或初始化 CUDA。
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ HARDENED_TASK_IDS = frozenset({"004", "007", "036", "040", "095"})
 
 @dataclass(frozen=True)
 class CapabilityResult:
-    """Result of validating one candidate invocation."""
+    """验证一个候选调用的结果。"""
 
     supported: bool
     task_id: str | None
@@ -32,6 +33,12 @@ class CapabilityResult:
 
     @property
     def exit_code(self) -> int:
+        """
+        处理 `exit_code` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         if self.supported:
             return 0
         if self.reason_code in {"invalid_request", "unknown_task"}:
@@ -39,6 +46,12 @@ class CapabilityResult:
         return 5
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        处理 `to_dict` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         payload: dict[str, Any] = {
             "schema_version": CAPABILITY_SCHEMA_VERSION,
             "supported": self.supported,
@@ -52,7 +65,18 @@ class CapabilityResult:
 
 
 def load_capability_manifest(path: Path) -> dict[str, Any]:
-    """Load and structurally validate the candidate capability manifest."""
+    """
+    加载并从结构上验证候选人能力清单。
+
+    参数:
+        path: 待读取、写入或校验的文件系统路径。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+    异常:
+        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
+    """
 
     payload = json.loads(path.read_text(encoding="utf-8"))
     if payload.get("schema_version") != CAPABILITY_SCHEMA_VERSION:
@@ -127,11 +151,28 @@ def load_capability_manifest(path: Path) -> dict[str, Any]:
 
 
 def task_map(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """
+    处理 `task_map` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        manifest: 调用方提供的 `manifest` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     return {str(task["id"]): task for task in manifest["tasks"]}
 
 
 def hardened_task_map(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """Return only candidates covered by the schema-v2 execution contract."""
+    """
+    仅返回 schema-v2 执行合约涵盖的候选者。
+
+    参数:
+        manifest: 调用方提供的 `manifest` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
 
     return {
         task_id: task
@@ -143,6 +184,16 @@ def hardened_task_map(manifest: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 def supported_values(
     manifest: Mapping[str, Any], task: Mapping[str, Any]
 ) -> dict[str, Any]:
+    """
+    处理 `supported_values` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        manifest: 调用方提供的 `manifest` 参数。
+        task: 调用方提供的 `task` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     contract = manifest["runtime_contract"]
     values: dict[str, Any] = {
         "gpu_architectures": list(contract["gpu_architectures"]),
@@ -165,7 +216,17 @@ def validate_candidate_request(
     task_id: str | None,
     request: Mapping[str, Any],
 ) -> CapabilityResult:
-    """Validate in the documented reason-code priority order."""
+    """
+    按照记录的原因代码优先顺序进行验证。
+
+    参数:
+        manifest: 调用方提供的 `manifest` 参数。
+        task_id: 调用方分配的任务唯一标识。
+        request: 经过类型约束的服务请求对象。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
 
     normalized = dict(request)
     tasks = hardened_task_map(manifest)
@@ -235,6 +296,18 @@ def validate_candidate_request(
 
 
 def canonical_shape(task: Mapping[str, Any]) -> dict[str, int]:
+    """
+    处理 `canonical_shape` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        task: 调用方提供的 `task` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+    异常:
+        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
+    """
     for case in task["supported_cases"]:
         if case["case_id"] == "canonical":
             return dict(case["shape"])
@@ -242,7 +315,16 @@ def canonical_shape(task: Mapping[str, Any]) -> dict[str, int]:
 
 
 def parse_shape(value: str, task: Mapping[str, Any]) -> dict[str, int]:
-    """Parse ``canonical``, a case id, JSON, or ``name=value`` dimensions."""
+    """
+    解析“`canonical``, a case id, JSON, or ``name=value`”尺寸。
+
+    参数:
+        value: 需要转换、保存或校验的值。
+        task: 调用方提供的 `task` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
 
     for case in task["supported_cases"]:
         if value == case["case_id"]:
@@ -266,6 +348,16 @@ def parse_shape(value: str, task: Mapping[str, Any]) -> dict[str, int]:
 def describe_capabilities(
     manifest: Mapping[str, Any], task_ids: Sequence[str] | None = None
 ) -> dict[str, Any]:
+    """
+    描述 `describe_capabilities` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        manifest: 调用方提供的 `manifest` 参数。
+        task_ids: 调用方提供的 `task_ids` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     tasks = hardened_task_map(manifest)
     selected = list(task_ids) if task_ids else list(tasks)
     return {

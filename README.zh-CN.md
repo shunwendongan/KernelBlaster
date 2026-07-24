@@ -51,6 +51,15 @@ python scripts/sync_portfolio_docs.py --check
 
 这里的优化循环执行的是基于 rollout 的搜索和经验库更新，不会微调或训练底层大语言模型的权重。
 
+### Portfolio v2.1 证据
+
+v2.1 发布内容加固了 Issue #10 涉及的五个 CUDA 候选，但没有扩大其生产可用性声明。稳定能力契约仅接受已经审核的 `sm_86`、FP16、连续 row-major、legacy default stream、单 stream、仅 forward、非 graph capture 和 manifest 白名单场景；不支持的请求会返回明确 reason code，且 `production_ready` 仍为 `false`。
+
+- [证据索引与 SHA-256 清单](artifacts/portfolio-v2.1/SHA256SUMS.json)
+- [五任务正确性与资源生命周期汇总](artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json)
+- [Issue #7 API/Pilot 状态](artifacts/portfolio-v2.1/issue-7/rtx3080/trusted-pilot-summary.json)：HTTP 401，Pilot 未运行
+- [Issue #8 Profiler 状态](artifacts/portfolio-v2.1/issue-8/rtx3080/ncu-preflight-summary.json)：已发布 Windows 原生 NCU/NSYS 证据；WSL counters 与跨 GPU 复测仍未完成
+
 ## 上游项目介绍
 
 <p><strong><span style="color:#0f766e;">KernelBlaster 是一个基于记忆增强上下文强化学习（Memory-Augmented In-context Reinforcement Learning，MAIC-RL）的框架</span></strong></p>
@@ -109,13 +118,54 @@ KernelBlaster 从 KernelBench-CUDA 的初始输入产物开始工作。每个问
 
 ## 快速开始
 
-### 1. 构建容器
+### 推荐方式：Docker Desktop + WSL2
+
+仓库源码和活动实验数据保存在 Ubuntu ext4 文件系统中。Windows 负责 NVIDIA 驱动、WSL、Docker Desktop 和编辑器；项目容器负责 CUDA 12.8、`nvcc`、PyTorch 与 Python 依赖。不要在 Ubuntu 中再安装一套 Docker Engine，也不要在 WSL 内安装 Linux NVIDIA 显示驱动。
+
+在 `~/workspace/KernelBlaster` 这样的常规克隆目录中，先准备容器外部的持久化目录和本地密钥文件：
+
+```bash
+mkdir -p ../../{datasets,checkpoints,runs}/KernelBlaster
+mkdir -p ../../caches/{huggingface,torch,triton} ../../secrets
+cp -n .env.example ../../secrets/KernelBlaster.env
+# 仅在本机编辑 ../../secrets/KernelBlaster.env，绝不能提交到 Git。
+```
+
+构建并运行 RTX 3080 本地工作流：
+
+```bash
+./scripts/container.sh build dev
+./scripts/container.sh --profile distributed build gpu-worker
+./scripts/container.sh --profile test run --rm smoke
+
+# 交互式开发 Shell
+./scripts/container.sh run --rm dev
+
+# 示例：将运行元数据与日志持久化到 /runs
+./scripts/container.sh run --rm dev \
+  bash scripts/run-with-metadata.sh python -m pytest -q
+```
+
+| Ubuntu 路径 | 容器路径 | 默认权限 |
+| --- | --- | --- |
+| 仓库目录 | `/workspace` | 读写 |
+| `~/datasets/KernelBlaster` | `/data` | 只读 |
+| `~/checkpoints/KernelBlaster` | `/checkpoints` | 读写 |
+| `~/runs/KernelBlaster` | `/runs` | 读写 |
+| `~/caches/{huggingface,torch,triton}` | `/cache/...` | 读写 |
+| `~/secrets/KernelBlaster.env` | 仅注入环境变量 | 永不复制进镜像 |
+
+`gpu-worker` target 使用 UID 10001、只读根文件系统、删除全部 Linux capabilities、启用 `no-new-privileges`，并限制内存、PID 和内部 worker 网络。`dev` 容器用于 `nvcc`、测试和交互式调试。
+
+### 旧版手工容器方式
+
+#### 1. 构建容器
 
 ```bash
 docker build . -t kernelblaster -f docker/Dockerfile
 ```
 
-### 2. 启动容器
+#### 2. 启动容器
 
 ```bash
 docker run --rm -it --name=kernelblaster \
@@ -136,7 +186,7 @@ docker run --rm -it --name=kernelblaster \
 `KERNELBLASTER_WORKER_TOKEN` 并使用 `docker/compose.worker.yml`。其中 GPU
 Worker 不接收 LLM Key，仅连接内部网络，根文件系统只读，并限制 tmpfs、能力、进程数和内存。
 
-### 3. 设置 API Key 并运行默认示例
+#### 3. 设置 API Key 并运行默认示例
 
 ```bash
 export OPENAI_API_KEY=<your_api_key>
@@ -162,7 +212,7 @@ Pilot”，任一必要门禁失败都会立即停止。
 bash scripts/run_single_kernelblaster.sh --problem-numbers 1-10 --subset level2
 ```
 
-### 4. 运行产物
+#### 4. 运行产物
 
 - 输入 Kernel 来自 `data/kernelbench-cuda/`。
 - 默认脚本运行一个 Level 1 问题，并执行基于 RL 的 CUDA 优化。
@@ -170,7 +220,7 @@ bash scripts/run_single_kernelblaster.sh --problem-numbers 1-10 --subset level2
 - 最佳优化 Kernel 写入 `final_rl_cuda_perf.cu`。
 - 经 rollout 搜索更新的优化数据库写入运行目录中的 `optimization_database.json`。
 
-### 5. 复现 PyTorch 基线
+#### 5. 复现 PyTorch 基线
 
 如需比较或复现上游 KernelBlaster 的加速效果，可在 Benchmark 问题上运行 `scripts/run_baselines.py`（Torch Eager）和 `scripts/run_baselines_compile.py`（Torch Compile）。
 
@@ -197,6 +247,7 @@ python scripts/run_baselines.py --root data/KernelBench/KernelBench/level1 --dev
 
 ```text
 KernelBlaster/
+|-- compose.yaml
 |-- data/
 |   |-- kernelbench-cuda/
 |   |   |-- level1/
@@ -215,8 +266,12 @@ KernelBlaster/
 |       |-- core10/
 |       `-- rmsnorm/
 |-- artifacts/
-|   `-- portfolio-v1.0/
+|   |-- portfolio-v1.0/
+|   |-- portfolio-v2.0/
+|   `-- portfolio-v2.1/
 |-- scripts/
+|   |-- container.sh
+|   |-- run-with-metadata.sh
 |   |-- benchmark_cuda.py
 |   |-- benchmark_candidates.py
 |   |-- benchmark_pytorch.py
@@ -243,7 +298,9 @@ KernelBlaster/
 - `data/kernelbench-cuda/`：整理后的 KernelBench-CUDA 任务，每个任务包含 `init.cu` 和 `driver.cpp`。
 - `data/kernelblaster/`：优化数据库和整理后的优化知识。
 - `portfolio/`：实时状态清单、可复现 Suite、已提交候选和深度案例。
-- `artifacts/portfolio-v1.0/`：脱敏环境、结果、报告、图表与 SHA256 发布包。
+- `artifacts/portfolio-v1.0/`：不可变的历史环境、结果、报告、图表与 SHA256 发布包。
+- `artifacts/portfolio-v2.0/`：schema-v2 Core 10 完整确认与定向验证证据。
+- `artifacts/portfolio-v2.1/`：加固后的 Issue 证据、精简 NCU/NSYS 报告与自动生成的 SHA-256 索引。
 - `scripts/`：Agent 入口，以及正确性优先的 CUDA、PyTorch、分析和文档同步 Runner。
 - `docs/portfolio/`：架构、验证状态、深度案例证据和双语进度导航。
 - `src/kernelblaster/agents/`：优化 Agent、经验回放组件、数据库逻辑和性能分析工具。

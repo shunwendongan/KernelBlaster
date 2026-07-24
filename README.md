@@ -51,6 +51,20 @@ python scripts/sync_portfolio_docs.py --check
 
 The optimization loop performs rollout-based search and memory updates; it does not fine-tune or train the underlying language-model weights.
 
+### Portfolio v2.1 evidence
+
+The v2.1 publication hardens the five Issue #10 CUDA candidates without
+expanding their production claim. The stable capability contract accepts only
+the reviewed `sm_86`, FP16, contiguous row-major, legacy-default-stream,
+single-stream, forward-only, non-graph-capture, manifest-approved cases;
+unsupported requests return an explicit reason code and
+`production_ready` remains `false`.
+
+- [Evidence index and SHA-256 manifest](artifacts/portfolio-v2.1/SHA256SUMS.json)
+- [Five-task correctness and lifecycle summary](artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json)
+- [Issue #7 API/Pilot status](artifacts/portfolio-v2.1/issue-7/rtx3080/trusted-pilot-summary.json) — HTTP 401; Pilot not run
+- [Issue #8 profiler status](artifacts/portfolio-v2.1/issue-8/rtx3080/ncu-preflight-summary.json) — Windows-native NCU/NSYS evidence published; WSL counters and cross-GPU runs remain open
+
 ## Upstream Project Intro
 
 <p><strong><span style="color:#0f766e;">Introducing KernelBlaster, a Memory-Augmented In-context Reinforcement Learning (MAIC-RL) framework</span></strong></p>
@@ -108,13 +122,62 @@ This figure shows the end-to-end optimization loop. KernelBlaster starts from th
 
 ## Quick Start
 
-### 1. Build the container
+### Recommended: Docker Desktop + WSL2
+
+Keep the repository and active experiment data in the Ubuntu ext4 filesystem.
+Windows provides the NVIDIA driver, WSL, Docker Desktop, and the editor; the
+project containers provide CUDA 12.8, `nvcc`, PyTorch, and Python dependencies.
+Do not install a second Docker Engine or Linux NVIDIA display driver inside
+Ubuntu.
+
+From a normal clone such as `~/workspace/KernelBlaster`, prepare the external
+persistent directories and a local secret file:
+
+```bash
+mkdir -p ../../{datasets,checkpoints,runs}/KernelBlaster
+mkdir -p ../../caches/{huggingface,torch,triton} ../../secrets
+cp -n .env.example ../../secrets/KernelBlaster.env
+# Edit ../../secrets/KernelBlaster.env locally; never commit it.
+```
+
+Build and run the local RTX 3080 workflow:
+
+```bash
+./scripts/container.sh build dev
+./scripts/container.sh --profile distributed build gpu-worker
+./scripts/container.sh --profile test run --rm smoke
+
+# Interactive development shell
+./scripts/container.sh run --rm dev
+
+# Example command with run metadata and logs persisted under /runs
+./scripts/container.sh run --rm dev \
+  bash scripts/run-with-metadata.sh python -m pytest -q
+```
+
+| Ubuntu path | Container path | Default access |
+| --- | --- | --- |
+| repository | `/workspace` | read/write |
+| `~/datasets/KernelBlaster` | `/data` | read-only |
+| `~/checkpoints/KernelBlaster` | `/checkpoints` | read/write |
+| `~/runs/KernelBlaster` | `/runs` | read/write |
+| `~/caches/{huggingface,torch,triton}` | `/cache/...` | read/write |
+| `~/secrets/KernelBlaster.env` | environment only | never copied into the image |
+
+The `gpu-worker` target runs as UID 10001 with a read-only root filesystem,
+all Linux capabilities dropped, `no-new-privileges`, bounded memory/PIDs, and
+an internal-only worker network. The development container remains the place
+for `nvcc`, tests, and interactive debugging.
+
+### Legacy manual container workflow
+
+#### 1. Build the container
 
 ```bash
 docker build . -t kernelblaster -f docker/Dockerfile
 ```
 
-### 2. Launch the container
+#### 2. Launch the container
 
 ```bash
 docker run --rm -it --name=kernelblaster \
@@ -138,7 +201,7 @@ fresh `KERNELBLASTER_WORKER_TOKEN` and use `docker/compose.worker.yml`. Its GPU
 worker receives no LLM key, has an internal-only network, a read-only root
 filesystem, a bounded tmpfs, dropped capabilities, and process/memory limits.
 
-### 3. Set your API key and run the default example
+#### 3. Set your API key and run the default example
 
 ```bash
 export OPENAI_API_KEY=<your_api_key>
@@ -164,7 +227,7 @@ Note that this example runs a single sample from the Level 1 KernelBench-CUDA da
 bash scripts/run_single_kernelblaster.sh --problem-numbers 1-10 --subset level2
 ```
 
-### 4. What to expect
+#### 4. What to expect
 
 - Input kernels come from `data/kernelbench-cuda/`.
 - The default script runs a Level 1 problem and performs RL-based CUDA optimization.
@@ -172,7 +235,7 @@ bash scripts/run_single_kernelblaster.sh --problem-numbers 1-10 --subset level2
 - The best optimized kernel is written as `final_rl_cuda_perf.cu`.
 - The trained optimization database will be tracked in the run's `out` directory, as `optimization_database.json`.
 
-### 5. Reproduce PyTorch baseline
+#### 5. Reproduce PyTorch baseline
 
 To compare/reproduce the speedup KernelBlaster made, run the PyTorch baseline runner `scripts/run_baselines.py` (testing on Torch Eager) and `scripts/run_baselines_compile.py` (testing on Torch Compile) on the benchmark problems.
 
@@ -199,6 +262,7 @@ python scripts/run_baselines.py --root data/KernelBench/KernelBench/level1 --dev
 
 ```text
 KernelBlaster/
+|-- compose.yaml
 |-- data/
 |   |-- kernelbench-cuda/
 |   |   |-- level1/
@@ -217,8 +281,12 @@ KernelBlaster/
 |       |-- core10/
 |       `-- rmsnorm/
 |-- artifacts/
-|   `-- portfolio-v1.0/
+|   |-- portfolio-v1.0/
+|   |-- portfolio-v2.0/
+|   `-- portfolio-v2.1/
 |-- scripts/
+|   |-- container.sh
+|   |-- run-with-metadata.sh
 |   |-- benchmark_cuda.py
 |   |-- benchmark_candidates.py
 |   |-- benchmark_pytorch.py
@@ -245,7 +313,9 @@ KernelBlaster/
 - `data/kernelbench-cuda/`: curated KernelBench-CUDA tasks, each with `init.cu` and `driver.cpp`.
 - `data/kernelblaster/`: optimization database assets and curated optimization knowledge.
 - `portfolio/`: the living status manifest, reproducible suites, committed candidates, and deep case studies.
-- `artifacts/portfolio-v1.0/`: redacted environment, result, report, figure, and SHA256 publication bundle.
+- `artifacts/portfolio-v1.0/`: immutable historical environment, result, report, figure, and SHA256 publication bundle.
+- `artifacts/portfolio-v2.0/`: schema-v2 Core 10 confirmation and targeted validation evidence.
+- `artifacts/portfolio-v2.1/`: hardened Issue evidence, compact NCU/NSYS reports, and the generated SHA-256 index.
 - `scripts/`: Agent entrypoints plus correctness-first CUDA, PyTorch, analysis, and documentation-sync runners.
 - `docs/portfolio/`: architecture, validation status, deep-case evidence, and bilingual progress navigation.
 - `src/kernelblaster/agents/`: the optimization agents, replay components, database logic, and profiling utilities.

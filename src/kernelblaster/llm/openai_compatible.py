@@ -12,6 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""实现兼容 OpenAI Chat Completions 协议的并发请求、预算和重试控制。"""
+
 from __future__ import annotations
 
 import asyncio
@@ -33,6 +36,7 @@ from ..observability import prompt_metadata, record_event
 
 @dataclass(frozen=True)
 class OpenAICompatibleSettings:
+    """封装 `OpenAICompatibleSettings` 对应的领域状态与操作。"""
     base_url: str
     api_key: str
     timeout_seconds: float = 1800
@@ -46,6 +50,12 @@ class OpenAICompatibleSettings:
     log_content: bool = False
 
     def validate(self) -> None:
+        """
+        校验 `validate` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        异常:
+            LLMConfigurationError: 输入、外部调用或状态不满足执行要求时抛出。
+        """
         if not self.api_key:
             raise LLMConfigurationError(
                 "No API key configured. Set KERNELBLASTER_LLM_API_KEY or OPENAI_API_KEY."
@@ -81,6 +91,7 @@ class OpenAICompatibleSettings:
 
 @dataclass
 class _CandidateResult:
+    """保存一次操作的标准化结果及其诊断信息。"""
     content: str
     usage: dict[str, Any]
     request_id: str
@@ -91,6 +102,15 @@ class _CandidateResult:
 
 
 def _to_plain_dict(value: Any) -> dict[str, Any]:
+    """
+    处理 `to_plain_dict` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+    参数:
+        value: 需要转换、保存或校验的值。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     if value is None:
         return {}
     if hasattr(value, "model_dump"):
@@ -104,15 +124,30 @@ def _to_plain_dict(value: Any) -> dict[str, Any]:
 
 
 def _estimate_tokens(text: str) -> int:
-    """Use a deterministic tokenizer-free estimate for gateway responses."""
+    """
+    对网关响应使用确定性的无标记器估计。
+
+    参数:
+        text: 调用方提供的 `text` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     return max(1, math.ceil(len(text) / 4)) if text else 0
 
 
 def _estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
-    """Return a conservative tokenizer-free prompt reservation.
+    """
+    返回保守的无标记器提示保留。
 
-    UTF-8 bytes upper-bound the number of byte-pair tokens for ordinary text,
-    while a small per-message allowance covers role and framing tokens.
+    UTF-8 字节上限是普通文本的字节对标记的数量，
+    而每条消息的少量津贴涵盖了角色和框架令牌。
+
+    参数:
+        messages: 按对话顺序排列的 LLM 消息。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     serialized = "".join(
         f"{message.get('role', '')}:{message.get('content', '')}\n"
@@ -122,6 +157,15 @@ def _estimate_message_tokens(messages: list[dict[str, Any]]) -> int:
 
 
 def _sanitize_base_url(base_url: str) -> str:
+    """
+    清理 `sanitize_base_url` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+    参数:
+        base_url: 调用方提供的 `base_url` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     parsed = urlsplit(base_url)
     hostname = parsed.hostname or ""
     if parsed.port:
@@ -130,6 +174,15 @@ def _sanitize_base_url(base_url: str) -> str:
 
 
 def _merge_usage(items: list[dict[str, Any]]) -> dict[str, int]:
+    """
+    处理 `merge_usage` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+    参数:
+        items: 调用方提供的 `items` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     keys = ("prompt_tokens", "completion_tokens", "total_tokens")
     return {
         key: sum(int(item.get(key, 0) or 0) for item in items)
@@ -138,7 +191,7 @@ def _merge_usage(items: list[dict[str, Any]]) -> dict[str, int]:
 
 
 class OpenAICompatibleProvider(LLMProvider):
-    """Chat Completions provider with client-side candidate fan-out."""
+    """通过 OpenAI 兼容接口并发生成候选，并统一管理重试、预算与用量。"""
 
     name = "openai_compatible"
 
@@ -147,6 +200,13 @@ class OpenAICompatibleProvider(LLMProvider):
         settings: OpenAICompatibleSettings,
         client: openai.AsyncOpenAI | openai.AsyncAzureOpenAI | None = None,
     ) -> None:
+        """
+        初始化 OpenAICompatibleProvider 实例，并保存后续流程所需的配置与依赖。
+
+        参数:
+            settings: 调用方提供的 `settings` 参数。
+            client: 调用方提供的 `client` 参数。
+        """
         settings.validate()
         self.settings = settings
         self._client = client or openai.AsyncOpenAI(
@@ -162,6 +222,12 @@ class OpenAICompatibleProvider(LLMProvider):
         self._reserved_tokens = 0
 
     def public_config(self) -> dict[str, Any]:
+        """
+        处理 `public_config` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         return {
             "provider": self.name,
             "base_url": _sanitize_base_url(self.settings.base_url),
@@ -184,6 +250,22 @@ class OpenAICompatibleProvider(LLMProvider):
         model: str,
         n: int = 1,
     ) -> LLMResponse:
+        """
+        生成 `generate` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+            messages: 按对话顺序排列的 LLM 消息。
+            model: 生成候选时使用的模型标识。
+            n: 调用方提供的 `n` 参数。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+        异常:
+            LLMConfigurationError: 输入、外部调用或状态不满足执行要求时抛出。
+            ValueError: 输入、外部调用或状态不满足执行要求时抛出。
+            errors[0]: 输入、外部调用或状态不满足执行要求时抛出。
+        """
         if not model:
             raise LLMConfigurationError("A model identifier is required.")
         if n < 1:
@@ -236,6 +318,19 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[dict[str, Any]],
         model: str,
     ) -> _CandidateResult:
+        """
+        生成 `generate_candidate` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            messages: 按对话顺序排列的 LLM 消息。
+            model: 生成候选时使用的模型标识。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+        异常:
+            RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
+        """
         started = time.monotonic()
         last_error: Exception | None = None
         prompt = prompt_metadata(messages, include_content=self.settings.log_content)
@@ -338,6 +433,16 @@ class OpenAICompatibleProvider(LLMProvider):
         messages: list[dict[str, Any]],
         model: str,
     ) -> Any:
+        """
+        创建 `create_completion` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            messages: 按对话顺序排列的 LLM 消息。
+            model: 生成候选时使用的模型标识。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         args: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -383,6 +488,19 @@ class OpenAICompatibleProvider(LLMProvider):
         response: Any,
         messages: list[dict[str, Any]],
     ) -> tuple[str, dict[str, Any], str, str, str]:
+        """
+        规范化 `normalize_response` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            response: 需要解析或规范化的服务响应。
+            messages: 按对话顺序排列的 LLM 消息。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+        异常:
+            RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
+        """
         if isinstance(response, list):
             content_parts: list[str] = []
             usage: dict[str, Any] = {}
@@ -431,6 +549,15 @@ class OpenAICompatibleProvider(LLMProvider):
         return content, usage, request_id, usage_source, response_model
 
     async def _reserve_request(self, token_reservation: int) -> None:
+        """
+        处理 `reserve_request` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            token_reservation: 调用方提供的 `token_reservation` 参数。
+
+        异常:
+            LLMBudgetExceeded: 输入、外部调用或状态不满足执行要求时抛出。
+        """
         async with self._budget_lock:
             if (
                 self.settings.max_requests
@@ -454,16 +581,38 @@ class OpenAICompatibleProvider(LLMProvider):
             self._reserved_tokens += token_reservation
 
     async def _settle_tokens(self, reservation: int, total_tokens: int) -> None:
+        """
+        处理 `settle_tokens` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            reservation: 调用方提供的 `reservation` 参数。
+            total_tokens: 调用方提供的 `total_tokens` 参数。
+        """
         async with self._budget_lock:
             self._reserved_tokens = max(0, self._reserved_tokens - reservation)
             self._total_tokens += max(0, total_tokens)
 
     async def _release_reservation(self, reservation: int) -> None:
+        """
+        处理 `release_reservation` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            reservation: 调用方提供的 `reservation` 参数。
+        """
         async with self._budget_lock:
             self._reserved_tokens = max(0, self._reserved_tokens - reservation)
 
     @staticmethod
     def _is_retryable(error: Exception) -> bool:
+        """
+        判断 `is_retryable` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            error: 调用方提供的 `error` 参数。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         if isinstance(
             error,
             (
@@ -480,6 +629,15 @@ class OpenAICompatibleProvider(LLMProvider):
 
     @staticmethod
     def _error_metadata(error: Exception) -> dict[str, Any]:
+        """
+        处理 `error_metadata` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            error: 调用方提供的 `error` 参数。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         status_code = getattr(error, "status_code", None)
         return {
             "error_type": type(error).__name__,

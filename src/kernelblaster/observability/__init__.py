@@ -12,6 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""导出单次运行的事件上下文和结构化记录器。"""
+
 from .context import event_context, get_run_recorder, record_event, set_run_recorder
 from .recorder import (
     RunRecorder,

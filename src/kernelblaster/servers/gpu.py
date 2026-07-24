@@ -12,6 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""实现 GPU 执行与性能分析服务，限制上传、环境变量、命令和临时文件。"""
+
 import argparse
 import asyncio
 from contextlib import asynccontextmanager
@@ -41,10 +44,10 @@ QUEUE = asyncio.Queue()
 
 logger = logging.getLogger("uvicorn")
 
-# Common temporary directory for all operations
+# 所有操作的通用临时目录
 WORKING_DIR = None
 
-# Multi-GPU worker configuration (populated at startup)
+# 多 GPU 工作线程配置（启动时填充）
 GPU_IDS: list[str] | None = None
 
 ALLOWED_ENVIRONMENT_KEYS = {
@@ -54,6 +57,7 @@ ALLOWED_ENVIRONMENT_KEYS = {
     "OMP_NUM_THREADS",
 }
 class Profiler(str, Enum):
+    """采集并规范化 Kernel 的性能指标。"""
     NCU = "ncu"
     NSYS = "nsys"
 
@@ -61,6 +65,19 @@ class Profiler(str, Enum):
 ALLOWED_PROFILERS = {profiler.value for profiler in Profiler}
 FORBIDDEN_ARGUMENT_TOKENS = {";", "|", "||", "&&", ">", ">>", "<", "2>", "2>&1"}
 async def read_upload_with_limit(upload: UploadFile, limit: int) -> bytes:
+    """
+    读取 `read_upload_with_limit` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        upload: 调用方提供的 `upload` 参数。
+        limit: 调用方提供的 `limit` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+    异常:
+        HTTPException: 输入、外部调用或状态不满足执行要求时抛出。
+    """
     chunks: list[bytes] = []
     size = 0
     while True:
@@ -75,6 +92,18 @@ async def read_upload_with_limit(upload: UploadFile, limit: int) -> bytes:
 
 
 def validated_environment(values: Optional[dict]) -> dict[str, str]:
+    """
+    处理 `validated_environment` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        values: 调用方提供的 `values` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+    异常:
+        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
+    """
     result: dict[str, str] = {}
     for raw_key, raw_value in (values or {}).items():
         key = str(raw_key)
@@ -92,7 +121,20 @@ def build_execution_argv(
     args: str = "",
     prefix_command: Optional[str | list[str]] = None,
 ) -> tuple[list[str], dict[str, str]]:
-    """Build an argv vector without invoking a shell."""
+    """
+    构建 argv 向量而不调用 shell。
+
+    参数:
+        binary_path: 调用方提供的 `binary_path` 参数。
+        args: 调用方提供的 `args` 参数。
+        prefix_command: 调用方提供的 `prefix_command` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+    异常:
+        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
+    """
 
     prefix = (
         [str(value) for value in prefix_command]
@@ -118,27 +160,38 @@ def build_execution_argv(
 
 
 def get_temp_dir():
-    """Get or create a common temporary directory for all GPU operations"""
+    """
+    获取或创建所有 GPU 操作的通用临时目录
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     global WORKING_DIR
     if WORKING_DIR is None or not os.path.exists(WORKING_DIR):
         WORKING_DIR = tempfile.mkdtemp(prefix="kernelblaster_gpu_")
     return WORKING_DIR
 
 
-# Start worker tasks in the background
+# 在后台启动工作任务
 @asynccontextmanager
 async def lifespan(app):
+    """
+    处理 `lifespan` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        app: 调用方提供的 `app` 参数。
+    """
     global logger, env, GPU_IDS
 
-    # Base environment for subprocesses launched by this server.
-    # NOTE: per-worker GPU pinning is applied at execution time via env vars.
+    # 该服务器启动的子进程的基础环境。
+    # 注意：每个工作线程的 GPU 固定是在执行时通过环境变量应用的。
     env = sanitized_worker_environment()
     env.setdefault("NVIDIA_TF32_OVERRIDE", "0")
 
-    # Determine which GPUs (and how many workers) to use.
-    # Examples:
-    #   KERNELBLASTER_GPU_SERVER_GPU_IDS="0,1,2,3"
-    #   KERNELBLASTER_GPU_SERVER_NUM_WORKERS=4
+    # 确定要使用哪些 GPU（以及多少个工作线程）。
+    # 示例：
+    # 环境变量配置：KERNELBLASTER_GPU_SERVER_GPU_IDS="0,1,2,3"
+    # 环境变量配置：KERNELBLASTER_GPU_SERVER_NUM_WORKERS=4
     gpu_ids_raw = os.getenv("KERNELBLASTER_GPU_SERVER_GPU_IDS", "").strip()
     if gpu_ids_raw:
         GPU_IDS = [s.strip() for s in gpu_ids_raw.split(",") if s.strip()]
@@ -151,7 +204,7 @@ async def lifespan(app):
         f"(override via KERNELBLASTER_GPU_SERVER_NUM_WORKERS / KERNELBLASTER_GPU_SERVER_GPU_IDS)"
     )
 
-    # Print the current user (whoami) at server startup
+    # 服务器启动时打印当前用户 (whoami)
     logger.info(f"GPU Server running as user: {os.getuid()}")
     logger.info(f"GPU Server running as user: {os.geteuid()}")
 
@@ -161,12 +214,12 @@ async def lifespan(app):
     stdout, stderr = await exec_command("groups")
     logger.info(f"User groups: {stdout}\n{stderr}")
     
-    # Print nvidia-smi information before starting the server
+    # 启动服务器前打印 nvidia-smi 信息
     await print_nvidia_smi(logger)
 
-    # Check for pre-existing GPU processes
+    # 检查预先存在的 GPU 进程
     await check_gpu_processes()
-    # Start worker tasks on startup (one per GPU id)
+    # 启动时启动工作任务（每个 GPU id 一个）
     for wid in range(len(GPU_IDS)):
         _ = asyncio.create_task(gpu_worker(wid))
     yield
@@ -176,12 +229,13 @@ APP = FastAPI(lifespan=lifespan)
 
 
 class GpuExecutionRequest(BaseModel):
-    """Request model for GPU binary execution"""
+    """GPU二进制执行的请求模型"""
 
-    args: Optional[str] = ""  # Command line arguments for the binary
+    args: Optional[str] = ""  # 二进制文件的命令行参数
 
 
 class GpuCommandResult(BaseModel):
+    """保存一次操作的标准化结果及其诊断信息。"""
     stdout: str | list[str] = []
     stderr: str | list[str] = []
     success: bool = False
@@ -189,13 +243,25 @@ class GpuCommandResult(BaseModel):
 
 
 class GpuCommandError(Exception):
+    """表示该领域内可被调用方识别和处理的失败。"""
     def __init__(self, error_message: str):
+        """
+        初始化 GpuCommandError 实例，并保存后续流程所需的配置与依赖。
+
+        参数:
+            error_message: 调用方提供的 `error_message` 参数。
+        """
         self.error_message = error_message
         super().__init__(self.error_message)
 
 
 async def print_nvidia_smi(logger):
-    """Print nvidia-smi information"""
+    """
+    打印 nvidia-smi 信息
+
+    参数:
+        logger: 记录诊断信息和任务进度的日志器。
+    """
     try:
         nvidia_smi_stdout, nvidia_smi_stderr = await exec_command("nvidia-smi")
         logger.info(f"GPU Server Startup - nvidia-smi output:\n{nvidia_smi_stdout}")
@@ -210,10 +276,15 @@ async def print_nvidia_smi(logger):
 
 
 async def check_gpu_processes():
-    """Check for any pre-existing processes on NVIDIA GPUs.
+    """
+    检查 NVIDIA GPU 上是否存在任何预先存在的进程。
 
-    Filters out stale or non-existent PIDs and entries where the process name is
-    reported as "[Not Found]" by nvidia-smi, to avoid false positives.
+    过滤掉过时或不存在的 PID 以及进程名称所在的条目
+    nvidia-smi 报告为“[未找到]”，以避免误报。
+
+    异常:
+        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
+        e: 输入、外部调用或状态不满足执行要求时抛出。
     """
     try:
         stdout, _ = await exec_command(
@@ -233,13 +304,13 @@ async def check_gpu_processes():
             pid_str = parts[0]
             proc_name = parts[1] if len(parts) > 1 else ""
 
-            # Skip entries with invalid PID format
+            # 跳过 PID 格式无效的条目
             try:
                 pid = int(pid_str)
             except ValueError:
                 continue
 
-            # Ignore stale entries or where process name cannot be resolved
+            # 忽略过时的条目或无法解析进程名称的地方
             if proc_name == "[Not Found]" or not psutil.pid_exists(pid):
                 continue
 
@@ -264,15 +335,29 @@ async def exec_command(
     env_vars: Optional[dict] = None,
     n_runs: Optional[int] = 1,
 ) -> tuple[list[str], list[str]] | tuple[str, str]:
-    """Execute a shell command"""
-    # Prepare environment
+    """
+    执行外壳命令
+
+    参数:
+        cmd: 调用方提供的 `cmd` 参数。
+        timeout: 允许操作等待的最长秒数。
+        env_vars: 调用方提供的 `env_vars` 参数。
+        n_runs: 调用方提供的 `n_runs` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+    异常:
+        GpuCommandError: 输入、外部调用或状态不满足执行要求时抛出。
+    """
+    # 准备环境
     process_env = env.copy() if env else os.environ.copy()
     process_env.update(validated_environment(env_vars))
     argv = shlex.split(cmd) if isinstance(cmd, str) else [str(item) for item in cmd]
     if not argv:
         raise GpuCommandError("No command was provided")
 
-    # Use common temp directory as working directory
+    # 使用公共临时目录作为工作目录
     working_dir = get_temp_dir()
 
     stdout_list = []
@@ -288,7 +373,7 @@ async def exec_command(
             cwd=working_dir,
         )
         try:
-            # Wait for the process with timeout
+            # 等待进程超时
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             stdout_list.append(stdout.decode())
             stderr_list.append(stderr.decode())
@@ -297,7 +382,7 @@ async def exec_command(
                     f"stdout:\n{stdout.decode()}\nstderr:\n{stderr.decode()}"
                 )
         except asyncio.TimeoutError:
-            # Kill the process if it times out
+            # 如果超时则终止该进程
             logger.error(f"TIMEOUT: {argv[0]}")
             await safe_kill_process(proc, logger)
             raise GpuCommandError(
@@ -318,7 +403,20 @@ async def exec_binary(
     prefix_command: Optional[str] = None,
     n_runs: Optional[int] = 1,
 ) -> tuple[list[str], list[str]] | tuple[str, str]:
-    """Execute a binary file with optional arguments, environment variables, and prefix command"""
+    """
+    使用可选参数、环境变量和前缀命令执行二进制文件
+
+    参数:
+        binary_path: 调用方提供的 `binary_path` 参数。
+        args: 调用方提供的 `args` 参数。
+        timeout: 允许操作等待的最长秒数。
+        env_vars: 调用方提供的 `env_vars` 参数。
+        prefix_command: 调用方提供的 `prefix_command` 参数。
+        n_runs: 调用方提供的 `n_runs` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     argv, prefix_environment = build_execution_argv(
         binary_path,
         args,
@@ -330,18 +428,27 @@ async def exec_binary(
 
 
 def save_binary_to_temp(binary_data: bytes, filename: str = "gpu_executable") -> str:
-    """Save binary data to a temporary file and make it executable"""
-    # Use common temp directory
+    """
+    将二进制数据保存到临时文件并使其可执行
+
+    参数:
+        binary_data: 调用方提供的 `binary_data` 参数。
+        filename: 调用方提供的 `filename` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
+    # 使用公共临时目录
     temp_dir = get_temp_dir()
-    # IMPORTANT: never write to a path derived solely from the client-provided filename.
-    # We can receive concurrent requests (and clients may retry the same request),
-    # which would otherwise cause:
-    # - [Errno 26] Text file busy (overwrite while executing)
-    # - "does not exist" (another worker cleans up the shared path)
+    # 重要提示：切勿写入仅从客户端提供的文件名派生的路径。
+    # 我们可以接收并发请求（并且客户端可以重试相同的请求），
+    # 否则会导致：
+    # - [Errno 26] 文本文件忙（执行时覆盖）
+    # - “不存在”（另一个工作人员清理共享路径）
     safe_name = os.path.basename(filename) if filename else "gpu_executable"
     fd, binary_path = tempfile.mkstemp(prefix=f"{safe_name}_", dir=temp_dir)
 
-    # Write binary data
+    # 写入二进制数据
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(binary_data)
@@ -355,7 +462,7 @@ def save_binary_to_temp(binary_data: bytes, filename: str = "gpu_executable") ->
         cleanup_temp_file(binary_path)
         raise
 
-    # Make executable
+    # 使可执行
     os.chmod(
         binary_path,
         stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH,
@@ -365,7 +472,12 @@ def save_binary_to_temp(binary_data: bytes, filename: str = "gpu_executable") ->
 
 
 def cleanup_temp_file(binary_path: str):
-    """Clean up temporary binary file"""
+    """
+    清理临时二进制文件
+
+    参数:
+        binary_path: 调用方提供的 `binary_path` 参数。
+    """
     try:
         if os.path.exists(binary_path):
             os.remove(binary_path)
@@ -374,37 +486,54 @@ def cleanup_temp_file(binary_path: str):
 
 
 def complete_future(completion_future: asyncio.Future, result: GpuCommandResult) -> None:
-    """Do not crash a worker when the HTTP client has already disconnected."""
+    """
+    当 HTTP 客户端已经断开连接时，不要使工作线程崩溃。
+
+    参数:
+        completion_future: 调用方提供的 `completion_future` 参数。
+        result: 上一步产生并等待进一步处理的结果。
+    """
     if not completion_future.done():
         completion_future.set_result(result)
 
 
 async def gpu_worker(worker_id: int) -> GpuCommandResult:
-    """Process GPU execution requests from the queue"""
+    """
+    处理来自队列的 GPU 执行请求
+
+    参数:
+        worker_id: 调用方提供的 `worker_id` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+    异常:
+        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
+    """
     while True:
         queue_item = await QUEUE.get()
-        completion_future = queue_item[-1]  # Future is always the last item
+        completion_future = queue_item[-1]  # completion Future 始终位于队列项末尾。
 
         try:
             if len(queue_item) == 7:
-                # Binary execution with prefix: (binary_path, args, env_vars, prefix_command, n_runs, timeout, completion_future)
+                # 带前缀的二进制执行：（binary_path，args，env_vars，prefix_command，n_runs，超时，completion_future）
                 binary_path, args, env_vars, prefix_command, n_runs, timeout, _ = queue_item
             elif len(queue_item) == 6:
-                # Backward compatibility: (binary_path, args, env_vars, prefix_command, n_runs, completion_future)
+                # 向后兼容性：（binary_path、args、env_vars、prefix_command、n_runs、completion_future）
                 binary_path, args, env_vars, prefix_command, n_runs, _ = queue_item
-                timeout = 3600  # Default timeout
+                timeout = 3600  # 默认超时
             
-            # Common execution code for both 6-item and 7-item formats
+            # 6 项和 7 项格式的通用执行代码
             if len(queue_item) in (6, 7):
-                # Pin this worker to a specific GPU by injecting CUDA_VISIBLE_DEVICES.
-                # If the caller explicitly passed CUDA_VISIBLE_DEVICES, respect it.
+                # 通过注入 CUDA_VISIBLE_DEVICES 将此工作线程固定到特定 GPU。
+                # 如果调用者显式传递了 CUDA_VISIBLE_DEVICES，请尊重它。
                 eff_env_vars = dict(env_vars or {})
                 if "CUDA_VISIBLE_DEVICES" not in eff_env_vars:
                     gpu_id = str(worker_id)
                     if GPU_IDS and worker_id < len(GPU_IDS):
                         gpu_id = str(GPU_IDS[worker_id])
                     eff_env_vars["CUDA_VISIBLE_DEVICES"] = gpu_id
-                # Ensure TF32 override is stable unless caller requested otherwise.
+                # 确保 TF32 覆盖稳定，除非调用者另有要求。
                 eff_env_vars.setdefault("NVIDIA_TF32_OVERRIDE", "0")
                 gpu_visible = eff_env_vars.get("CUDA_VISIBLE_DEVICES", "<unset>")
                 logger.info(
@@ -426,7 +555,7 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
                     f"[Worker {worker_id}]: Successfully executed binary on CUDA_VISIBLE_DEVICES={gpu_visible}: {f'{prefix_command} ' if prefix_command else ''}{binary_path} with {n_runs} runs"
                 )
 
-                # Clean up temporary binary file
+                # 清理临时二进制文件
                 cleanup_temp_file(binary_path)
 
             else:
@@ -440,7 +569,7 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
         except GpuCommandError as e:
             if len(queue_item) in (6, 7):
                 binary_path = queue_item[0]
-                # Best-effort GPU attribution for failures too
+                # 尽最大努力 GPU 归因失败
                 gpu_visible = None
                 try:
                     gpu_visible = (env_vars or {}).get("CUDA_VISIBLE_DEVICES")
@@ -450,7 +579,7 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
                     f"[Worker {worker_id}]: Error executing binary {binary_path}"
                     f"{' on CUDA_VISIBLE_DEVICES=' + str(gpu_visible) if gpu_visible is not None else ''}: {e.error_message}"
                 )
-                # Clean up on error too
+                # 也清理错误
                 cleanup_temp_file(binary_path)
             complete_future(
                 completion_future,
@@ -459,7 +588,7 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
         except Exception as e:
             logger.error(f"[Worker {worker_id}]: Unexpected error: {str(e)}")
 
-            # Clean up binary file if this was a binary execution
+            # 如果这是二进制执行，则清理二进制文件
             if len(queue_item) >= 4:
                 cleanup_temp_file(queue_item[0])
 
@@ -476,7 +605,12 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
 
 @APP.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """
+    健康检查端点
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     return {"status": "healthy", "service": "gpu-server"}
 
 
@@ -509,7 +643,27 @@ async def execute_gpu_binary(
     ),
     _authorized: None = Depends(require_worker_token),
 ):
-    """Execute a binary file on the GPU server"""
+    """
+    在GPU服务器上执行二进制文件
+
+    参数:
+        binary: 调用方提供的 `binary` 参数。
+        args: 调用方提供的 `args` 参数。
+        env_vars: 调用方提供的 `env_vars` 参数。
+        prefix_command: 调用方提供的 `prefix_command` 参数。
+        profiler: 调用方提供的 `profiler` 参数。
+        profiler_args: 调用方提供的 `profiler_args` 参数。
+        n_runs: 调用方提供的 `n_runs` 参数。
+        timeout: 允许操作等待的最长秒数。
+        _authorized: 调用方提供的 `_authorized` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+    异常:
+        HTTPException: 输入、外部调用或状态不满足执行要求时抛出。
+        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
+    """
 
     logger.info(
         f"/gpu/binary - Binary: {binary.filename}, Prefix: {prefix_command}, "
@@ -517,7 +671,7 @@ async def execute_gpu_binary(
     )
 
     try:
-        # Read binary data
+        # 读取二进制数据
         binary_data = await read_upload_with_limit(
             binary,
             config.MAX_GPU_BINARY_BYTES,
@@ -544,7 +698,7 @@ async def execute_gpu_binary(
         except (json.JSONDecodeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
 
-        # Parse environment variables if provided
+        # 解析环境变量（如果提供）
         parsed_env_vars = None
         if env_vars:
             try:
@@ -558,15 +712,15 @@ async def execute_gpu_binary(
                     detail=f"Invalid environment variables JSON: {str(e)}",
                 )
 
-        # Save binary to temporary location
+        # 将二进制文件保存到临时位置
         binary_path = save_binary_to_temp(
             binary_data, binary.filename or "gpu_executable"
         )
 
-        # Create a future to track completion
+        # 创建 Future，使请求处理协程可以等待 GPU Worker 完成。
         completion_future = asyncio.Future()
 
-        # Add to execution queue (7-item tuple format: binary_path, args, env_vars, prefix_command, n_runs, timeout, completion_future)
+        # 添加到执行队列（7项元组格式：binary_path、args、env_vars、prefix_command、n_runs、超时、completion_future）
         await QUEUE.put(
             (
                 binary_path,
@@ -579,7 +733,7 @@ async def execute_gpu_binary(
             )
         )
 
-        # Wait for completion
+        # 等待完成
         await completion_future
         return completion_future.result()
 
@@ -595,14 +749,19 @@ async def execute_gpu_binary(
 
 def run_server(host: str, port: int, log_filepath: str = None):
     """
-    Run the compilation server with REST API
+    使用 REST API 运行编译服务器
 
-    Args:
-        host: Host to bind the server to
-        port: Port to bind the server to
-        log_filepath: Optional path to log file for uvicorn logging
+    参数：
+    host：要绑定服务器的主机
+    port：服务器绑定的端口
+    log_filepath：用于 uvicorn 日志记录的日志文件的可选路径
+
+    参数:
+        host: 远端服务监听或连接的主机名。
+        port: 远端服务监听或连接的端口。
+        log_filepath: 调用方提供的 `log_filepath` 参数。
     """
-    # Run the FastAPI server
+    # 运行 FastAPI 服务器
     log_config = get_log_config(log_filepath=log_filepath)
     uvicorn.run(
         APP, host=host, port=port, log_config=log_config, timeout_graceful_shutdown=0.1
@@ -610,13 +769,19 @@ def run_server(host: str, port: int, log_filepath: str = None):
 
 
 def main(args):
-    # Ensure log directory exists if log path is provided
+    # 如果提供了日志路径，请确保日志目录存在
+    """
+    处理 `main` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        args: 调用方提供的 `args` 参数。
+    """
     if args.log_path:
         log_dir = args.log_path.parent
         if log_dir:
             log_dir.mkdir(parents=True, exist_ok=True)
     
-    # Run the REST API compilation server
+    # 运行 REST API 编译服务器
     run_server(
         args.host,
         args.port,
@@ -633,8 +798,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Define base environment variables for GPU subprocesses.
-    # Per-worker CUDA_VISIBLE_DEVICES pinning is applied in gpu_worker().
+    # 定义 GPU 子进程的基本环境变量。
+    # 每个工作线程 CUDA_VISIBLE_DEVICES 固定应用于 gpu_worker()。
     env = sanitized_worker_environment()
     env.setdefault("NVIDIA_TF32_OVERRIDE", "0")
 

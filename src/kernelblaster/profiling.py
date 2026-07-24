@@ -1,3 +1,6 @@
+
+"""抽象 CUDA 性能分析后端，并实现统计置信区间和正确性优先的性能门控。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -12,6 +15,7 @@ from typing import Any, Protocol
 
 
 class ProfilingMode(str, Enum):
+    """封装 `ProfilingMode` 对应的领域状态与操作。"""
     NCU = "ncu"
     EVENTS_ONLY = "events_only"
     UNAVAILABLE = "unavailable"
@@ -19,6 +23,7 @@ class ProfilingMode(str, Enum):
 
 @dataclass(frozen=True)
 class ProfilingResult:
+    """保存一次操作的标准化结果及其诊断信息。"""
     mode: ProfilingMode
     elapsed_cycles: int | None = None
     elapsed_us: float | None = None
@@ -30,19 +35,37 @@ class ProfilingResult:
 
     @property
     def available(self) -> bool:
+        """
+        处理 `available` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         return self.error is None and (
             self.elapsed_cycles is not None or self.elapsed_us is not None
         )
 
 
 class ProfilerBackend(Protocol):
+    """实现统一接口背后的具体执行与结果转换逻辑。"""
     mode: ProfilingMode
 
-    async def profile(self, filepath: Path) -> ProfilingResult: ...
+    async def profile(self, filepath: Path) -> ProfilingResult:
+        """
+        分析指定 CUDA 候选并返回统一的性能结果。
+
+        参数:
+        filepath: 待分析的 CUDA 源文件路径。
+
+        返回:
+        包含分析模式、耗时指标和诊断信息的性能结果。
+        """
+        ...
 
 
 @dataclass(frozen=True)
 class PerformanceGateResult:
+    """保存一次操作的标准化结果及其诊断信息。"""
     passed: bool
     median_speedup: float | None
     bootstrap_95_lower: float | None
@@ -51,6 +74,12 @@ class PerformanceGateResult:
     reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        处理 `to_dict` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         return {
             "passed": self.passed,
             "median_speedup": self.median_speedup,
@@ -67,6 +96,17 @@ def paired_bootstrap_interval(
     seed: int = 20260719,
     resamples: int = 10_000,
 ) -> tuple[float, float] | None:
+    """
+    对配对基线与候选样本执行 Bootstrap，估计加速比的置信区间。
+
+    参数:
+    speedups: 调用方提供的 `speedups` 参数。
+    seed: 调用方提供的 `seed` 参数。
+    resamples: 调用方提供的 `resamples` 参数。
+
+    返回:
+    当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     if len(speedups) < 2:
         return None
     rng = random.Random(seed)
@@ -88,6 +128,18 @@ def evaluate_performance_gate(
     minimum_sessions: int = 5,
     minimum_speedup: float = 1.01,
 ) -> PerformanceGateResult:
+    """
+    结合基线配对样本、置信区间和正确性状态判断候选能否通过性能门控。
+
+    参数:
+        baseline_session_us: 各独立会话测得的基线延迟，单位为微秒。
+        candidate_session_us: 与基线按会话配对的候选延迟，单位为微秒。
+        minimum_sessions: 允许执行统计判断所需的最少配对会话数。
+        minimum_speedup: 候选中位加速比必须达到的下限。
+
+    返回:
+        包含是否通过、中位加速比、Bootstrap 区间和失败原因的门控结果。
+    """
     if len(baseline_session_us) != len(candidate_session_us):
         return PerformanceGateResult(
             passed=False,
@@ -152,16 +204,28 @@ def evaluate_performance_gate(
 
 
 class EventsRunner(Protocol):
+    """封装外部命令或测量过程，并返回可测试的结构化结果。"""
     async def __call__(
         self,
         filepath: Path,
         *,
         sessions: int,
-    ) -> list[float]: ...
+    ) -> list[float]:
+        """
+        运行若干独立 CUDA Events 测量会话。
+
+        参数:
+        filepath: 待分析的 CUDA 源文件路径。
+        sessions: 需要采集的独立会话数量。
+
+        返回:
+        每个会话得到的代表性延迟样本。
+        """
+        ...
 
 
 class EventsProfilerBackend:
-    """Search and confirmation backend driven by CUDA Events session medians."""
+    """由 CUDA 事件会话中位数驱动的搜索和确认后端。"""
 
     mode = ProfilingMode.EVENTS_ONLY
 
@@ -172,11 +236,28 @@ class EventsProfilerBackend:
         discovery_sessions: int = 3,
         confirmation_sessions: int = 5,
     ) -> None:
+        """
+        初始化 EventsProfilerBackend 实例，并保存后续流程所需的配置与依赖。
+
+        参数:
+        runner: 调用方提供的 `runner` 参数。
+        discovery_sessions: 调用方提供的 `discovery_sessions` 参数。
+        confirmation_sessions: 调用方提供的 `confirmation_sessions` 参数。
+        """
         self.runner = runner
         self.discovery_sessions = discovery_sessions
         self.confirmation_sessions = confirmation_sessions
 
     async def profile(self, filepath: Path) -> ProfilingResult:
+        """
+        处理 `profile` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+        filepath: 目标文件路径。
+
+        返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         samples = await self.runner(filepath, sessions=self.discovery_sessions)
         if len(samples) != self.discovery_sessions:
             return ProfilingResult(
@@ -195,6 +276,19 @@ class EventsProfilerBackend:
         baseline: Path,
         candidate: Path,
     ) -> PerformanceGateResult:
+        """
+        处理 `confirm_pair` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+        baseline: 作为正确性或性能比较基准的数据。
+        candidate: 当前正在验证或评估的候选实现。
+
+        返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+        异常:
+        ProfilerUnavailable: 输入、外部调用或状态不满足执行要求时抛出。
+        """
         baseline_samples: list[float] = []
         candidate_samples: list[float] = []
         for session in range(self.confirmation_sessions):
@@ -218,7 +312,7 @@ class EventsProfilerBackend:
 
 
 class CudaEventsRunner:
-    """Compile an instrumented correctness driver and execute separate sessions."""
+    """编译检测正确性驱动程序并执行单独的会话。"""
 
     def __init__(
         self,
@@ -232,6 +326,19 @@ class CudaEventsRunner:
         seed: int = 20260719,
         timeout: float = 1200,
     ) -> None:
+        """
+        初始化 CudaEventsRunner 实例，并保存后续流程所需的配置与依赖。
+
+        参数:
+        driver_path: 调用方提供的 `driver_path` 参数。
+        gpu: 执行或分析任务使用的 GPU 配置。
+        logger: 记录诊断信息和任务进度的日志器。
+        work_dir: 调用方提供的 `work_dir` 参数。
+        warmup: 调用方提供的 `warmup` 参数。
+        repetitions: 调用方提供的 `repetitions` 参数。
+        seed: 调用方提供的 `seed` 参数。
+        timeout: 允许操作等待的最长秒数。
+        """
         self.driver_path = driver_path
         self.gpu = gpu
         self.logger = logger
@@ -244,6 +351,19 @@ class CudaEventsRunner:
         self._compiled: dict[tuple[str, str], Path] = {}
 
     async def __call__(self, filepath: Path, *, sessions: int) -> list[float]:
+        """
+        处理 `__call__` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+        filepath: 目标文件路径。
+        sessions: 调用方提供的 `sessions` 参数。
+
+        返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+
+        异常:
+        ProfilerUnavailable: 输入、外部调用或状态不满足执行要求时抛出。
+        """
         from .agents.utils import (
             NamedTimer,
             compile_and_run_cu_file,
@@ -312,18 +432,34 @@ class CudaEventsRunner:
 
 
 class NCUFallbackProfilerBackend:
-    """Use NCU when available and downgrade only permission failures to Events."""
+    """在可用时使用 NCU，并仅将权限失败降级为事件。"""
 
     def __init__(
         self,
         ncu_backend: ProfilerBackend,
         events_backend: EventsProfilerBackend,
     ) -> None:
+        """
+        初始化 NCUFallbackProfilerBackend 实例，并保存后续流程所需的配置与依赖。
+
+        参数:
+        ncu_backend: 调用方提供的 `ncu_backend` 参数。
+        events_backend: 调用方提供的 `events_backend` 参数。
+        """
         self.ncu_backend = ncu_backend
         self.events_backend = events_backend
         self.mode = ncu_backend.mode
 
     async def profile(self, filepath: Path) -> ProfilingResult:
+        """
+        处理 `profile` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+        filepath: 目标文件路径。
+
+        返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         result = await self.ncu_backend.profile(filepath)
         combined_error = "\n".join(
             value for value in (result.error, result.stderr, result.raw_output) if value
@@ -339,14 +475,34 @@ class NCUFallbackProfilerBackend:
         baseline: Path,
         candidate: Path,
     ) -> PerformanceGateResult:
+        """
+        处理 `confirm_pair` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+        baseline: 作为正确性或性能比较基准的数据。
+        candidate: 当前正在验证或评估的候选实现。
+
+        返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         return await self.events_backend.confirm_pair(baseline, candidate)
 
 
 class ProfilerUnavailable(RuntimeError):
+    """封装 `ProfilerUnavailable` 对应的领域状态与操作。"""
     pass
 
 
 def ncu_permission_blocked(output: str) -> bool:
+    """
+    处理 `ncu_permission_blocked` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+    output: 调用方提供的 `output` 参数。
+
+    返回:
+    当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     return "ERR_NVGPUCTRPERM" in output
 
 

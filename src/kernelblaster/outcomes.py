@@ -1,3 +1,6 @@
+
+"""定义工作流终态及跨模块传递的标准运行结果。"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
@@ -7,7 +10,7 @@ from typing import Any
 
 
 class RunStatus(str, Enum):
-    """Terminal status for one KernelBlaster workflow invocation."""
+    """一次 KernelBlaster 工作流调用的标准终态。"""
 
     IMPROVED = "improved"
     NO_IMPROVEMENT = "no_improvement"
@@ -18,7 +21,7 @@ class RunStatus(str, Enum):
 
 @dataclass(frozen=True)
 class RunOutcome:
-    """Structured result that keeps diagnostic artifacts separate from success."""
+    """保存工作流终态、诊断原因、性能指标和可选成功产物。"""
 
     status: RunStatus
     artifact_path: Path | None = None
@@ -28,6 +31,12 @@ class RunOutcome:
 
     @property
     def success(self) -> bool:
+        """
+        处理 `success` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         return bool(
             self.status is RunStatus.IMPROVED
             and self.artifact_path is not None
@@ -35,6 +44,12 @@ class RunOutcome:
         )
 
     def to_dict(self) -> dict[str, Any]:
+        """
+        处理 `to_dict` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         payload = asdict(self)
         payload["status"] = self.status.value
         payload["artifact_path"] = (
@@ -44,6 +59,15 @@ class RunOutcome:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RunOutcome":
+        """
+        处理 `from_dict` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+            payload: 跨接口传递的序列化载荷。
+
+        返回:
+            当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        """
         artifact = payload.get("artifact_path")
         return cls(
             status=RunStatus(payload["status"]),

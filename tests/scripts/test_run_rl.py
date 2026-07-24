@@ -113,6 +113,7 @@ def test_run_rl_rejects_wrong_trusted_suite_before_dataset_or_provider(
             "2",
         ],
     )
+    monkeypatch.setattr(GPUType, "current", lambda: GPUType.RTX3080)
     monkeypatch.setattr(
         run_rl,
         "get_dataset",

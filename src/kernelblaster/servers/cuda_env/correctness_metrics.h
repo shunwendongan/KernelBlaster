@@ -18,11 +18,16 @@
 
 namespace kernelblaster::correctness {
 
+// 汇总一个或多个正确性案例的误差包络。所有绝对误差字段沿用输入张量的
+// 数值尺度；normalized_* 为无量纲误差，1.0 对应 atol/rtol 容差边界。
 struct Metrics {
+    // 实际参与统计的元素数，以及用于估算分位数的降采样元素数。
     int64_t count = 0;
     int64_t quantile_sample_count = 0;
+    // mismatch_count 统计 normalized > 1 的元素；nonfinite_count 统计候选中的 NaN/Inf。
     int64_t mismatch_count = 0;
     int64_t nonfinite_count = 0;
+    // 全量绝对误差的均值、均方根和若干尾部分位数。
     double abs_mean = 0.0;
     double abs_rmse = 0.0;
     double abs_p50 = 0.0;
@@ -30,6 +35,7 @@ struct Metrics {
     double abs_p99 = 0.0;
     double abs_p999 = 0.0;
     double abs_max = 0.0;
+    // 归一化误差分位数，用于直接判断给定 atol/rtol 下的容差余量。
     double normalized_p50 = 0.0;
     double normalized_p90 = 0.0;
     double normalized_p99 = 0.0;
@@ -37,6 +43,8 @@ struct Metrics {
     double normalized_max = 0.0;
 };
 
+// 合并不同案例时，均值和 RMSE 按元素数量加权；分位数和最大值取各案例的
+// 最大值，形成保守包络。后者不是把所有样本重新拼接后计算的全局分位数。
 inline void merge_envelope(Metrics& aggregate, const Metrics& value) {
     const int64_t combined_count = aggregate.count + value.count;
     if (combined_count == 0) return;
@@ -73,6 +81,8 @@ inline void merge_envelope(Metrics& aggregate, const Metrics& value) {
     );
 }
 
+// 从已升序排列且非空的样本中取得向上取整的 nearest-rank 分位数。
+// q 应位于 [0, 1]；调用方负责保证张量已经排序且至少含一个元素。
 inline double sample_quantile(const torch::Tensor& sorted, double q) {
     const int64_t index = static_cast<int64_t>(
         std::ceil(q * static_cast<double>(sorted.numel() - 1))
@@ -80,6 +90,8 @@ inline double sample_quantile(const torch::Tensor& sorted, double q) {
     return sorted[index].item<double>();
 }
 
+// 为限制排序开销，最多保留 2^20 个等步长样本。采样完全确定，但得到的是
+// 近似分位数；最大值等精确包络指标仍由完整张量单独计算。
 inline torch::Tensor sorted_quantile_sample(const torch::Tensor& values) {
     constexpr int64_t max_samples = 1 << 20;
     auto flat = values.flatten();
@@ -90,6 +102,10 @@ inline torch::Tensor sorted_quantile_sample(const torch::Tensor& values) {
     return std::get<0>(flat.sort());
 }
 
+// 比较参考输出与候选输出。计算统一提升到 FP32，并采用
+//     normalized = |candidate - reference| / (atol + rtol * |reference|)
+// 作为逐元素无量纲误差；normalized > 1 表示超出调用方给定的混合容差。
+// 输入必须形状兼容且非空，否则张量广播、mean/max 或分位数读取会失败。
 inline Metrics summarize(
     const torch::Tensor& reference,
     const torch::Tensor& candidate,
@@ -126,6 +142,8 @@ inline Metrics summarize(
     return metrics;
 }
 
+// 输出不带最外层花括号的稳定 JSON 字段片段，供单案例与聚合结果复用。
+// 数值使用十位有效精度；字段名同时记录分位数采样策略和样本上限。
 inline std::string fields_json(const Metrics& metrics) {
     std::ostringstream output;
     output << std::setprecision(10)
@@ -150,6 +168,8 @@ inline std::string fields_json(const Metrics& metrics) {
     return output.str();
 }
 
+// 序列化单个测试案例。case_id 与 shape_json 由受控调用方生成，必须已经满足
+// JSON 字符串/对象语法要求；本函数不会再次转义这些片段。
 inline std::string case_json(
     const std::string& case_id,
     int64_t seed,
@@ -165,6 +185,8 @@ inline std::string case_json(
     return output.str();
 }
 
+// 序列化任务级聚合结果。aggregate 中的分位数采用“各案例分位数最大值包络”
+// 语义，cases 则保留每个案例的完整 JSON，便于定位被聚合值掩盖的失败来源。
 inline std::string result_json(
     const Metrics& aggregate,
     bool finite,

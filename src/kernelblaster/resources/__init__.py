@@ -12,6 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""导出编译与 GPU 资源客户端和受管服务包装器。"""
+
 from .client import TCPClient
 from .servers import CompileServer, GPUServer
 

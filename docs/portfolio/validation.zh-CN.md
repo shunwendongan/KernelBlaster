@@ -7,15 +7,17 @@
 <!-- VALIDATION_STATUS:START -->
 | 门禁 | 当前状态 | 规范证据 |
 | --- | --- | --- |
-| Provider/Recorder/Suite CPU 测试 | 通过 — 100 项通过 | `tests/` |
-| 真实网关冒烟 | 未运行 — 历史 HTTP 401 尚未重新验证 | 历史 `artifacts/portfolio-v1.0/results/analysis_summary.json` |
+| Provider/Recorder/Suite CPU 测试 | 通过 — 177 项通过 | `tests/` |
+| 真实网关冒烟 | 失败：当前 HTTP 401（1 次请求、0 次重试、0 tokens；2026-07-22） | `artifacts/portfolio-v2.1/issue-7/rtx3080/trusted-pilot-summary.json` |
 | RTX 3080 容器与 `sm_86` 构建 | 通过 | `artifacts/portfolio-v1.0/environment/environment.json` |
 | 官方候选正确性 | 历史 v1 通过 — 10/10；schema v2 完整 10/10 通过 | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
 | RMSNorm 边界正确性 | 通过 | 已提交的 `edge_driver.cpp` 与深度案例 artifacts |
 | CUDA Events 计时 | schema v2 完整确认：4 项提升；1 项无提升；5 项无法定论 | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
 | 同卡 PyTorch 对比 | schema v2 完整确认；9/10 题有稳定方法 | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
-| NCU 硬件计数器 | 阻塞 — `ERR_NVGPUCTRPERM` | 环境清单与历史验证报告 |
-| 跨 GPU 对比 | 未运行 — 延后至 Day 11–14 | 未发布性能声明 |
+| Issue #10 能力与资源加固 | 4 项正式提升；095 因 upstream baseline spread 24.37% 仍无法定论，Issue 保持开启 | `artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json` |
+| Portfolio v2.1 证据完整性 | 精确 SHA256 清单已发布 | `artifacts/portfolio-v2.1/SHA256SUMS.json` |
+| NCU 硬件计数器 | 阻塞 — `ERR_NVGPUCTRPERM (non-root Docker/WSL; one no-network SYS_ADMIN retry also blocked; Windows native control passed)` | `artifacts/portfolio-v2.1/issue-8/rtx3080/ncu-preflight-summary.json` |
+| 跨 GPU 对比 | 阻塞 — `requires authorized A100/L40S rental` | 未发布跨卡聚合性能声明 |
 
 历史手工跟进验证了全部十个候选，并在旧门槛下改进 4/10。相关声明作为不可变历史证据保留。schema v2 完整结果仍是手工候选确认，不能外推为 Agent 搜索结论。
 <!-- VALIDATION_STATUS:END -->
@@ -91,5 +93,13 @@ python scripts/analyze_core10_comparison.py \
 python scripts/sync_portfolio_docs.py --write
 python scripts/sync_portfolio_docs.py --check
 ```
+
+GPU/profiler worker 由 `docker/Dockerfile.gpu` 构建，并以非 root 用户运行，固定
+使用 `--network none --cap-drop ALL --security-opt no-new-privileges`；不会向其中
+传入任何 API 凭据。只有已经明确返回 `ERR_NVGPUCTRPERM` 的一次性 NCU 容器才可
+增加 `--cap-add SYS_ADMIN`，永远不接受 `--privileged` 作为规避方案。WSL 下的
+Nsys smoke 还会采用 [NVIDIA 官方 WSL 时间戳回退配置](https://archive.docs.nvidia.com/nsight-systems/2025.2/ReleaseNotes/index.html)
+（`CuptiUseRawGpuTimestamps=false`）、预热 RMSNorm，并且只有 GPU
+kernel 表中出现 `rmsnorm_half2_rsqrt` 才算通过。
 
 语言模型仍是外部推理服务。Rollout 会更新轨迹和优化数据库，但不会训练或微调模型权重。

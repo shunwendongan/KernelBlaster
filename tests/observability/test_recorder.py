@@ -104,3 +104,23 @@ def test_context_is_propagated_to_events(tmp_path):
     assert event["rollout_id"] == "2"
     assert event["stage"] == "rollout_step_1"
     assert event["candidate_id"] == "candidate-1"
+
+
+def test_failed_request_is_counted_and_marks_smoke_failed(tmp_path):
+    recorder = _recorder(tmp_path)
+    recorder.record_event("llm_request_started", attempt=1)
+    recorder.record_event(
+        "llm_request_failed",
+        status="error",
+        attempt=1,
+        data={"error_type": "AuthenticationError", "status_code": 401},
+    )
+    recorder.close("failed")
+
+    summary = json.loads(recorder.summary_path.read_text())
+    manifest = json.loads(recorder.manifest_path.read_text())
+    assert summary["llm"]["requests_started"] == 1
+    assert summary["llm"]["requests_failed"] == 1
+    assert manifest["budget"]["consumed"]["requests"] == 1
+    assert manifest["validation"]["llm_smoke_test"] == "FAILED"
+    assert manifest["validation"]["gates"]["api_smoke"] == "FAILED"

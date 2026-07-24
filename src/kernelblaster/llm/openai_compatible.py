@@ -389,7 +389,9 @@ class OpenAICompatibleProvider(LLMProvider):
             request_id = ""
             response_model = ""
             for chunk in response:
-                request_id = request_id or str(getattr(chunk, "id", "") or "")
+                request_id = request_id or str(
+                    getattr(chunk, "_request_id", "") or ""
+                )
                 response_model = response_model or str(
                     getattr(chunk, "model", "") or ""
                 )
@@ -408,7 +410,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 raise RuntimeError("The provider returned no completion choices.")
             content = getattr(choices[0].message, "content", None) or ""
             usage = _to_plain_dict(getattr(response, "usage", None))
-            request_id = str(getattr(response, "id", "") or "")
+            request_id = str(getattr(response, "_request_id", "") or "")
             response_model = str(getattr(response, "model", "") or "")
 
         if usage:
@@ -473,7 +475,7 @@ class OpenAICompatibleProvider(LLMProvider):
         ):
             return True
         if isinstance(error, openai.APIStatusError):
-            return error.status_code in (408, 409, 429) or error.status_code >= 500
+            return error.status_code == 429 or error.status_code >= 500
         return False
 
     @staticmethod

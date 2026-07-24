@@ -9,12 +9,12 @@ This fork has completed the Day 1–10 infrastructure, the RMSNorm deep case, ma
 
 | Validation item | Current status |
 | --- | --- |
-| CPU tests | **100 passed** on the current branch |
+| CPU tests | **177 passed** on the current branch |
 | CUDA build and official correctness | **historical 10/10; schema-v2 full 10/10 passed** |
 | CUDA Events and same-GPU PyTorch | **schema v2 full: 4 improved, 1 no improvement, 5 inconclusive; 9/10 tasks have a stable PyTorch method** |
-| External LLM smoke | **NOT RUN (historical HTTP 401; credential not revalidated)** |
-| Nsight Compute counters | **blocked: ERR_NVGPUCTRPERM** |
-| Cross-GPU rerun | **NOT RUN (Day 11-14 out of scope)** |
+| External LLM smoke | **failed: current HTTP 401 (1 request, 0 retries, 0 tokens; 2026-07-22)** |
+| Nsight Compute counters | **blocked: ERR_NVGPUCTRPERM (non-root Docker/WSL; one no-network SYS_ADMIN retry also blocked; Windows native control passed)** |
+| Cross-GPU rerun | **blocked: requires authorized A100/L40S rental** |
 
 | Historical v1 scope | Versus upstream (diagnostic / old strict gate) | Versus fastest PyTorch method (diagnostic / old strict gate) |
 | --- | ---: | ---: |

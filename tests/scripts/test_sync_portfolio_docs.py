@@ -66,11 +66,20 @@ def test_generated_status_blocks_are_localized_and_evidence_is_labeled():
     english = MODULE._root_block(context, chinese=False)
     index_chinese = MODULE._index_block(context, chinese=True)
     index_english = MODULE._index_block(context, chinese=False)
+    architecture_chinese = MODULE._architecture_block(context, chinese=True)
+    architecture_english = MODULE._architecture_block(context, chinese=False)
+    expected_chinese = MODULE._validation_labels(
+        context["status"]["validation"], chinese=True
+    )
+    expected_english = MODULE._validation_labels(
+        context["status"]["validation"], chinese=False
+    )
 
-    assert "100 项通过" in chinese
+    assert expected_chinese["current_cpu_pytest"] in chinese
     assert "历史 10/10；schema v2 完整验证 10/10 通过" in chinese
-    assert "未运行（历史记录为 HTTP 401；凭据尚未重新验证）" in chinese
-    assert "未运行（Day 11–14 不在本阶段范围）" in chinese
+    assert expected_chinese["live_api_smoke"] in chinese
+    assert expected_chinese["cross_gpu"] in chinese
+    assert expected_english["cross_gpu"] in english
     assert "10/10 candidates passed" not in chinese
     assert "Schema v2 定向验证" in chinese
     assert "Schema v2 完整 Core 10 验证" in chinese
@@ -80,9 +89,81 @@ def test_generated_status_blocks_are_localized_and_evidence_is_labeled():
     assert "English full report" not in english
     assert "9/10" in index_chinese
     assert "1.053×" in index_chinese
+    assert expected_chinese["live_api_smoke"] in index_chinese
+    assert expected_chinese["live_api_smoke"] in architecture_chinese
     assert "9/10" in index_english
     assert "1.053×" in index_english
+    assert expected_english["live_api_smoke"] in index_english
+    assert expected_english["live_api_smoke"] in architecture_english
     assert "strict full-ten ratio is 0.992×" not in index_english
+
+
+@pytest.mark.parametrize(
+    ("ncu_state", "cross_gpu_state", "english_marker", "chinese_marker"),
+    (
+        (
+            "blocked: ERR_NVGPUCTRPERM",
+            "NOT RUN (Day 11-14 out of scope)",
+            "blocked: ERR_NVGPUCTRPERM",
+            "阻塞：ERR_NVGPUCTRPERM",
+        ),
+        (
+            "local-passed",
+            "local-passed",
+            "local-passed (RTX 3080 counter evidence complete; cross-GPU pending)",
+            "本地通过（RTX 3080 计数器证据已完成；等待跨 GPU 复测）",
+        ),
+        (
+            "cross-gpu-passed",
+            "cross-gpu-passed",
+            "cross-gpu-passed (local and A100/L40S counter evidence complete)",
+            "跨 GPU 通过（本地与 A100/L40S 计数器证据均已完成）",
+        ),
+    ),
+)
+def test_validation_labels_support_ncu_lifecycle_states(
+    ncu_state, cross_gpu_state, english_marker, chinese_marker
+):
+    validation = dict(MODULE.load_context(ROOT)["status"]["validation"])
+    validation["ncu_counters"] = ncu_state
+    validation["cross_gpu"] = cross_gpu_state
+
+    assert MODULE._validation_labels(validation, chinese=False)[
+        "ncu_counters"
+    ] == english_marker
+    assert MODULE._validation_labels(validation, chinese=True)[
+        "ncu_counters"
+    ] == chinese_marker
+
+
+def test_generated_blocks_do_not_hardcode_old_ncu_blocker_after_local_pass():
+    context = MODULE.load_context(ROOT)
+    context["status"] = dict(context["status"])
+    context["status"]["validation"] = dict(context["status"]["validation"])
+    context["status"]["validation"].update(
+        {"ncu_counters": "local-passed", "cross_gpu": "local-passed"}
+    )
+
+    rendered = "\n".join(
+        (
+            MODULE._validation_block(context, chinese=False),
+            MODULE._architecture_block(context, chinese=False),
+            MODULE._rmsnorm_block(context, chinese=False),
+            MODULE._validation_block(context, chinese=True),
+            MODULE._architecture_block(context, chinese=True),
+            MODULE._rmsnorm_block(context, chinese=True),
+        )
+    )
+    assert "ERR_NVGPUCTRPERM" not in rendered
+    assert "LOCAL-PASSED" in rendered
+    assert "本地通过" in rendered
+
+
+def test_unknown_ncu_lifecycle_state_is_rejected():
+    validation = dict(MODULE.load_context(ROOT)["status"]["validation"])
+    validation["ncu_counters"] = "maybe"
+    with pytest.raises(MODULE.DocumentationSyncError, match="Unsupported ncu_counters"):
+        MODULE._validation_labels(validation, chinese=False)
 
 
 def test_readme_confirmation_commands_use_five_sessions():

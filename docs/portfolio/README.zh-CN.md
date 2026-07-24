@@ -3,10 +3,10 @@
 **简体中文** | [English](README.md)
 
 <!-- PORTFOLIO_PROGRESS:START -->
-**更新日期：2026-07-21**
+**更新日期：2026-07-23**
 
 - Day 1–2：Provider、Recorder、Suite、dry-run 与 CPU 测试已完成。
-- Day 3–7：WSL2/RTX 3080、容器、编译、正确性和 CUDA Events 基准设施已完成；历史 API 冒烟为 401，当前凭据尚未重新验证。
+- Day 3–7：WSL2/RTX 3080、容器、编译、正确性和 CUDA Events 基准设施已完成；API 冒烟状态：失败：当前 HTTP 401（1 次请求、0 次重试、0 tokens；2026-07-22）。
 - Day 8–10：RMSNorm V0–V3c 已完成，独立深度结果 49.348×；统一 Core 10 复测 52.772×。
 - 后续 Core 10：schema v2 完整手工确认通过 10/10 正确性，确认 4 项提升、1 项无提升、5 项无法定论；9/10 题有稳定 PyTorch 方法。
 - Schema v2 PyTorch 对照：仅在 9/10 个存在正确且稳定方法的可比任务上，严格结果相对最快稳定方法的几何平均为 1.053×；026 不进入该几何平均。

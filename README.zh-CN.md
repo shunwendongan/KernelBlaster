@@ -9,12 +9,12 @@
 
 | 验证项目 | 当前状态 |
 | --- | --- |
-| CPU 测试 | **100 项通过**（当前分支） |
+| CPU 测试 | **177 项通过**（当前分支） |
 | CUDA 编译与官方正确性 | **历史 10/10；schema v2 完整验证 10/10 通过** |
 | CUDA Events 与同卡 PyTorch | **schema v2 完整验证：4 项提升、1 项无提升、5 项无法定论；9/10 题有稳定 PyTorch 方法** |
-| 外部 LLM 冒烟测试 | **未运行（历史记录为 HTTP 401；凭据尚未重新验证）** |
-| Nsight Compute 硬件计数器 | **阻塞：ERR_NVGPUCTRPERM** |
-| 跨 GPU 复测 | **未运行（Day 11–14 不在本阶段范围）** |
+| 外部 LLM 冒烟测试 | **失败：当前 HTTP 401（1 次请求、0 次重试、0 tokens；2026-07-22）** |
+| Nsight Compute 硬件计数器 | **阻塞：ERR_NVGPUCTRPERM (non-root Docker/WSL; one no-network SYS_ADMIN retry also blocked; Windows native control passed)** |
+| 跨 GPU 复测 | **阻塞：requires authorized A100/L40S rental** |
 
 | 历史 v1 实测范围 | 相对仓库原版（诊断 / 旧严格口径） | 相对 PyTorch 最快方法（诊断 / 旧严格口径） |
 | --- | ---: | ---: |

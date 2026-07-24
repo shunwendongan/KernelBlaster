@@ -12,6 +12,29 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from .capabilities import (
+    CAPABILITY_MARKER,
+    CapabilityResult,
+    canonical_shape,
+    describe_capabilities,
+    load_capability_manifest,
+    parse_shape,
+    task_map,
+    validate_candidate_request,
+)
 from .suite import PortfolioSuite, PortfolioTask, load_suite, resolve_suite_path
 
-__all__ = ["PortfolioSuite", "PortfolioTask", "load_suite", "resolve_suite_path"]
+__all__ = [
+    "CAPABILITY_MARKER",
+    "CapabilityResult",
+    "PortfolioSuite",
+    "PortfolioTask",
+    "canonical_shape",
+    "describe_capabilities",
+    "load_capability_manifest",
+    "load_suite",
+    "parse_shape",
+    "resolve_suite_path",
+    "task_map",
+    "validate_candidate_request",
+]

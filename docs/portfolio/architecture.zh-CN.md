@@ -3,15 +3,15 @@
 **简体中文** | [English](architecture.md)
 
 <!-- ARCHITECTURE_STATUS:START -->
-当前实测状态（2026-07-21）：
+当前实测状态（2026-07-23）：
 
 - RTX 3080 / `sm_86` CUDA 构建、正确性与 CUDA Events：**已完成**
 - 同卡 PyTorch eager/out/fused 对比：**已完成**
 - 历史 v1 手工 Core 10 严格验证提升：**4/10**
 - Schema v2 完整手工确认：**4 项提升、1 项无提升、5 项无法定论**
-- LLM 在线冒烟：**尚未重跑；历史结果为 HTTP 401**；没有 Agent Core 10 搜索声明
-- NCU 计数器归因：**受 `ERR_NVGPUCTRPERM` 阻塞**
-- 跨 GPU 对比：**未运行；延后至 Day 11–14**
+- LLM 在线冒烟：**失败：当前 HTTP 401（1 次请求、0 次重试、0 tokens；2026-07-22）**；没有 Agent Core 10 搜索声明
+- NCU 计数器归因：**受 `ERR_NVGPUCTRPERM (non-root Docker/WSL; one no-network SYS_ADMIN retry also blocked; Windows native control passed)` 阻塞**
+- 跨 GPU 对比：**受 `requires authorized A100/L40S rental` 阻塞**
 
 规范状态位于 `portfolio/status.json`；实测数值从已提交的对比 JSON 派生。`scripts/sync_portfolio_docs.py --check` 会拒绝过期的生成区块和失效的证据链接。
 <!-- ARCHITECTURE_STATUS:END -->
@@ -100,6 +100,49 @@ flowchart LR
 `benchmark_cuda.py` 在计时前编译并运行原始源码与启动器规范化源码的正确性测试。它只移除启动器中明确的主机同步，记录两套源码哈希，校准 inner loops，交替 AB/BA 顺序，采集遥测，并在 Session spread 超过 5% 时冷却后重测一次。
 
 `benchmark_candidates.py` 解析 `portfolio/case_studies/core10/candidates.json`，串行执行全部 GPU 工作，保留失败或不稳定候选，并增量写入 suite summary。`benchmark_pytorch.py` 为每个 Session 使用新进程，并在确实改变比较含义时暴露普通 eager、预分配 out 和 fused 方案。`analyze_core10_comparison.py` 将诊断中位数与严格 fallback 分数分开。
+
+## Candidate 能力边界
+
+Core 10 candidate manifest 现使用 schema 2.0。独立的
+`launch_gpu_implementation(void*, ...)` 只是私有实现；Python runner 才是受
+支持的入口，因为只有它能在编译或 CUDA 初始化之前校验架构、dtype、布局、
+stream、graph、方向、target dtype 与 shape 元数据。
+
+```bash
+python scripts/benchmark_candidates.py \
+  --task-id 036 \
+  --describe-capabilities
+```
+
+能力响应使用 `KERNELBLASTER_CAPABILITY_JSON` 标记。退出码 0 表示支持或查询
+成功，2 表示请求格式错误或 task 未知，5 表示请求格式正确但能力不支持。
+拒绝发生在创建输出目录或任何子进程之前。004/007/036/040/095 的 hardened
+契约固定为 FP16 输入与 FP32 reference/累积、连续 row-major、legacy default
+stream、单 stream、仅 inference-forward、不支持 graph capture、无 fallback。
+其他请求均明确失败，不会静默回退到 PyTorch。
+
+只有 canonical case 可以进入五 Session 性能协议。Edge case 仅验证正确性，
+使用三个 seed，每个 seed 连续执行五次并要求确定性。mismatch、非有限值、
+mean、RMSE 与最大误差覆盖全部元素；p50/p90/p99/p99.9 使用 artifact 中明确
+记录的确定性等距采样，每个 case 最多 1,048,576 个元素。聚合分位数明确标记为
+“各 case 分位数的最大包络”，而不是汇总分布。007 的超大 upstream canonical
+baseline 继续由 official driver 验证，同时增加 candidate-only 的三 seed、五次连续
+launch canonical driver。这样既满足候选严格矩阵，也避免将 naive upstream 16K×16K
+路径重复 15 次；boundary/odd/neighbor 仍由共享 edge driver 覆盖。
+
+007、040 与 095 使用按 host thread、按 CUDA device 所有的 RAII context 管理
+cuBLAS/workspace。固定资源分别为一个 cuBLAS handle、32,896 bytes 与 2,048
+bytes；资源在正式计时前初始化，并在线程退出时释放。专用 GPU driver 验证连续
+五次复用、两个 host thread 在 `cudaStreamLegacy` 上同时调用、线程退出清理、
+稳态显存有界以及独立 FP32 golden。Release 构建中的初始化/清理失败会输出稳定
+resource marker 并由 runner 映射为 `blocked`；执行错误仍为 `failed`。Profiler
+executable 会在开启采集前预热一次。Manifest 继续标记
+`production_ready=false`：任意 dtype/layout、非默认或多 stream、CUDA Graph
+capture、backward 与任意 shape 均不受支持。
+
+跨 GPU 验证必须显式声明。`--portability-replay-from sm_86 --sm sm_80` 会把
+A100 运行标记为 `sm86_candidate_portability_replay_on_sm80`，强制仅正确性
+执行，并且不会扩大公开的 sm_86 能力契约。
 
 ## 持续文档流水线
 

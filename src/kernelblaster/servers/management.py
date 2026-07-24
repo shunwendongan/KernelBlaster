@@ -27,11 +27,12 @@ import time
 import psutil
 import socket
 from ..config import GPUType, config
+from .security import sanitized_worker_environment
 from typing import Optional
 
 
 def _worker_environment() -> dict[str, str]:
-    environment = os.environ.copy()
+    environment = sanitized_worker_environment(dict(os.environ))
     environment["KERNELBLASTER_WORKER_TOKEN"] = config.WORKER_TOKEN
     return environment
 

@@ -2,12 +2,152 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
+#include <memory>
+#include <unordered_map>
 
 struct Statistics {
     float mean;
     float inverse_std;
 };
+
+namespace {
+
+constexpr int kMaxBatchSize = 16;
+constexpr int kTilesPerBatch = 256;
+constexpr size_t kPartialsBytes =
+    kMaxBatchSize * kTilesPerBatch * sizeof(float2);
+constexpr size_t kWorkspaceBytes =
+    kPartialsBytes + kMaxBatchSize * sizeof(Statistics);
+static_assert(kWorkspaceBytes == 32896, "LayerNorm workspace contract changed.");
+
+[[noreturn]] void fail_cuda(
+    const char* operation,
+    cudaError_t status
+) noexcept {
+    std::fprintf(
+        stderr,
+        "KERNELBLASTER_CUDA_ERROR operation=%s status=%d message=%s\n",
+        operation,
+        static_cast<int>(status),
+        cudaGetErrorString(status)
+    );
+    std::fflush(stderr);
+    std::abort();
+}
+
+void require_cuda(const char* operation, cudaError_t status) noexcept {
+    if (status != cudaSuccess) {
+        fail_cuda(operation, status);
+    }
+}
+
+[[noreturn]] void fail_cuda_resource(
+    const char* operation,
+    cudaError_t status
+) noexcept {
+    std::fprintf(
+        stderr,
+        "KERNELBLASTER_RESOURCE_BLOCKED kind=cuda operation=%s status=%d message=%s\n",
+        operation,
+        static_cast<int>(status),
+        cudaGetErrorString(status)
+    );
+    std::fflush(stderr);
+    std::abort();
+}
+
+void require_cuda_resource(const char* operation, cudaError_t status) noexcept {
+    if (status != cudaSuccess) {
+        fail_cuda_resource(operation, status);
+    }
+}
+
+[[noreturn]] void fail_contract(const char* message) noexcept {
+    std::fprintf(stderr, "KERNELBLASTER_CONTRACT_ERROR message=%s\n", message);
+    std::fflush(stderr);
+    std::abort();
+}
+
+void require_contract(bool condition, const char* message) noexcept {
+    if (!condition) {
+        fail_contract(message);
+    }
+}
+
+void report_cuda_cleanup(const char* operation, cudaError_t status) noexcept {
+    if (status != cudaSuccess) {
+        std::fprintf(
+            stderr,
+            "KERNELBLASTER_RESOURCE_CLEANUP_BLOCKED kind=cuda operation=%s status=%d\n",
+            operation,
+            static_cast<int>(status)
+        );
+        std::fflush(stderr);
+    }
+}
+
+class LayerNormContext {
+public:
+    explicit LayerNormContext(int device) : device_(device), workspace_(nullptr) {
+        require_cuda_resource("cudaSetDevice", cudaSetDevice(device_));
+        require_cuda_resource(
+            "cudaMalloc(layernorm_workspace)",
+            cudaMalloc(&workspace_, kWorkspaceBytes)
+        );
+    }
+
+    ~LayerNormContext() noexcept {
+        int previous_device = -1;
+        const cudaError_t queried = cudaGetDevice(&previous_device);
+        const bool restore = queried == cudaSuccess;
+        report_cuda_cleanup("cudaGetDevice", queried);
+        const cudaError_t selected = cudaSetDevice(device_);
+        report_cuda_cleanup("cudaSetDevice", selected);
+        if (selected == cudaSuccess && workspace_ != nullptr) {
+            report_cuda_cleanup(
+                "cudaFree(layernorm_workspace)", cudaFree(workspace_)
+            );
+        }
+        if (restore && previous_device != device_) {
+            report_cuda_cleanup(
+                "cudaSetDevice(restore)", cudaSetDevice(previous_device)
+            );
+        }
+    }
+
+    LayerNormContext(const LayerNormContext&) = delete;
+    LayerNormContext& operator=(const LayerNormContext&) = delete;
+
+    float2* partials() const { return static_cast<float2*>(workspace_); }
+    Statistics* statistics() const {
+        return reinterpret_cast<Statistics*>(
+            static_cast<unsigned char*>(workspace_) + kPartialsBytes
+        );
+    }
+
+private:
+    int device_;
+    void* workspace_;
+};
+
+LayerNormContext& thread_device_context() {
+    int device = -1;
+    require_cuda_resource("cudaGetDevice", cudaGetDevice(&device));
+    static thread_local std::unordered_map<int, std::unique_ptr<LayerNormContext>>
+        contexts;
+    auto found = contexts.find(device);
+    if (found == contexts.end()) {
+        found = contexts.emplace(
+            device, std::make_unique<LayerNormContext>(device)
+        ).first;
+    }
+    return *found->second;
+}
+
+}  // namespace
 
 __device__ __forceinline__ float warp_sum(float value) {
     for (int offset = 16; offset > 0; offset >>= 1) {
@@ -144,32 +284,30 @@ void launch_gpu_implementation(
     int64_t dim2
 ) {
     constexpr int threads = 256;
-    constexpr int tiles_per_batch = 256;
-    static float2* partials = nullptr;
-    static Statistics* statistics = nullptr;
-    static int64_t partial_capacity = 0;
-    if (batch_size * tiles_per_batch > partial_capacity) {
-        if (partials != nullptr) {
-            cudaFree(partials);
-            cudaFree(statistics);
-        }
-        cudaMalloc(&partials, batch_size * tiles_per_batch * sizeof(float2));
-        cudaMalloc(&statistics, batch_size * sizeof(Statistics));
-        partial_capacity = batch_size * tiles_per_batch;
-    }
+    require_contract(
+        batch_size > 0 && batch_size <= kMaxBatchSize,
+        "batch_size must be in [1, 16]"
+    );
+    require_contract(
+        features > 0 && dim1 > 0 && dim2 > 0,
+        "features, dim1, and dim2 must be positive"
+    );
+    LayerNormContext& context = thread_device_context();
+    float2* const partials = context.partials();
+    Statistics* const statistics = context.statistics();
 
     const int64_t norm_size = features * dim1 * dim2;
-    layernorm_partials_kernel<<<static_cast<int>(batch_size) * tiles_per_batch, threads>>>(
+    layernorm_partials_kernel<<<static_cast<int>(batch_size) * kTilesPerBatch, threads>>>(
         partials,
         static_cast<const half*>(input),
         norm_size,
-        tiles_per_batch
+        kTilesPerBatch
     );
     layernorm_statistics_kernel<<<static_cast<int>(batch_size), threads>>>(
         statistics,
         partials,
         norm_size,
-        tiles_per_batch
+        kTilesPerBatch
     );
     if ((norm_size & 1) == 0) {
         const int64_t norm_pairs = norm_size / 2;
@@ -201,5 +339,5 @@ void launch_gpu_implementation(
             norm_size
         );
     }
-    cudaDeviceSynchronize();
+    require_cuda("cudaDeviceSynchronize", cudaDeviceSynchronize());
 }

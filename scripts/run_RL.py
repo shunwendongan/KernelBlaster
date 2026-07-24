@@ -50,11 +50,116 @@ CLEANUP_IN_PROGRESS = False
 SIGNAL_COUNT = 0
 COMPREHENSIVE_ANALYSIS_CACHE = None
 RUN_RECORDER = None
+TRUSTED_RMSNORM_SUITE = (
+    ROOT_DIR / "portfolio" / "suites" / "rmsnorm.json"
+).resolve()
+TRUSTED_RMSNORM_TASK_IDS = ("036",)
+TRUSTED_RMSNORM_ROLLOUTS = 2
+TRUSTED_RMSNORM_STEPS = 2
 
 
 def resolve_target_gpu(gpu: str | None) -> GPUType:
     """Resolve the GPU whose server URL should be configured for this run."""
     return GPUType(gpu) if gpu is not None else GPUType.current()
+
+
+def _normalize_task_id(value: object) -> str:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid portfolio task ID: {value!r}")
+    text = str(value).strip()
+    if not text.isdigit():
+        raise ValueError(f"Invalid portfolio task ID: {value!r}")
+    task_number = int(text)
+    if task_number < 1:
+        raise ValueError(f"Invalid portfolio task ID: {value!r}")
+    return f"{task_number:03d}"
+
+
+def _parse_problem_ids(problem_numbers: str | None) -> list[str]:
+    if not problem_numbers:
+        raise ValueError(
+            "--portfolio-suite requires explicit --problem-numbers for validation."
+        )
+    task_ids: list[str] = []
+    for raw_part in problem_numbers.split(","):
+        part = raw_part.strip()
+        if not part:
+            raise ValueError("--problem-numbers contains an empty entry.")
+        if "-" in part and not part.startswith("-"):
+            start_text, end_text = part.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if start > end:
+                raise ValueError(f"Invalid descending problem range: {part!r}")
+            task_ids.extend(_normalize_task_id(number) for number in range(start, end + 1))
+        else:
+            task_ids.append(_normalize_task_id(part))
+    if len(task_ids) != len(set(task_ids)):
+        raise ValueError("--problem-numbers contains duplicate tasks.")
+    return task_ids
+
+
+def resolve_portfolio_suite(
+    path: Path,
+    *,
+    problem_numbers: str | None,
+    rollouts: int,
+    steps: int,
+    trusted_pilot: bool = False,
+) -> dict:
+    """Validate a suite against the requested task set and resolved pilot shape."""
+    resolved_path = path.resolve()
+    try:
+        payload = json.loads(resolved_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Cannot load portfolio suite {resolved_path}: {error}") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Portfolio suite must be a JSON object.")
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise ValueError("Portfolio suite must contain a non-empty tasks list.")
+
+    task_ids: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise ValueError("Every portfolio suite task must be an object.")
+        raw_id = task.get("id", task.get("number"))
+        task_id = _normalize_task_id(raw_id)
+        if "number" in task and _normalize_task_id(task["number"]) != task_id:
+            raise ValueError(f"Portfolio task id/number disagree for {task!r}.")
+        task_ids.append(task_id)
+    if len(task_ids) != len(set(task_ids)):
+        raise ValueError("Portfolio suite contains duplicate task IDs.")
+
+    requested_task_ids = _parse_problem_ids(problem_numbers)
+    if set(task_ids) != set(requested_task_ids):
+        raise ValueError(
+            "Portfolio suite task IDs do not match --problem-numbers: "
+            f"suite={task_ids}, requested={requested_task_ids}."
+        )
+
+    if trusted_pilot and (
+        resolved_path != TRUSTED_RMSNORM_SUITE
+        or tuple(task_ids) != TRUSTED_RMSNORM_TASK_IDS
+        or rollouts != TRUSTED_RMSNORM_ROLLOUTS
+        or steps != TRUSTED_RMSNORM_STEPS
+    ):
+        raise ValueError(
+            "Trusted RMSNorm pilot must use portfolio/suites/rmsnorm.json and "
+            "resolve to task 036 with 2 rollouts x 2 steps."
+        )
+
+    try:
+        suite_source = str(resolved_path.relative_to(ROOT_DIR.resolve()))
+    except ValueError:
+        suite_source = str(resolved_path)
+    payload["source"] = suite_source
+    payload["resolved"] = {
+        "task_ids": task_ids,
+        "rollouts": rollouts,
+        "steps": steps,
+    }
+    return payload
 
 
 def load_comprehensive_analysis_results():
@@ -427,21 +532,22 @@ async def async_main() -> int:
     args = parser.parse_args()
     validate_common_arguments(parser, args)
 
+    suite_config = {}
+    if args.portfolio_suite is not None:
+        try:
+            suite_config = resolve_portfolio_suite(
+                args.portfolio_suite,
+                problem_numbers=args.problem_numbers,
+                rollouts=args.rl_iterations,
+                steps=args.rl_rollout_steps,
+                trusted_pilot=args.experiment_name == "trusted-rmsnorm-pilot",
+            )
+        except ValueError as error:
+            parser.error(str(error))
+
     if args.run_record_dir is not None:
         global RUN_RECORDER
         config.MODEL = args.model
-        suite_config = {}
-        if args.portfolio_suite is not None:
-            suite_config = json.loads(args.portfolio_suite.read_text(encoding="utf-8"))
-            try:
-                suite_source = str(args.portfolio_suite.resolve().relative_to(ROOT_DIR))
-            except ValueError:
-                suite_source = str(args.portfolio_suite.resolve())
-            suite_config["source"] = suite_source
-            suite_config["resolved"] = {
-                "rollouts": args.rl_iterations,
-                "steps": args.rl_rollout_steps,
-            }
         provider = get_llm_provider(type(config))
         RUN_RECORDER = RunRecorder(
             args.run_record_dir,

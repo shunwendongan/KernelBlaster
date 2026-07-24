@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,7 +26,6 @@ from src.kernelblaster.benchmarking import (  # noqa: E402
     instrument_profiler_driver,
     instrument_driver,
     latency_summary,
-    ncu_metric_names,
     normalize_cuda_source,
     session_spread_percent,
     sha256_text,
@@ -36,15 +36,74 @@ from src.kernelblaster.profiling import evaluate_performance_gate  # noqa: E402
 
 NCU_SECTIONS = (
     "SpeedOfLight",
-    "MemoryWorkloadAnalysis",
-    "Occupancy",
-    "SchedulerStats",
     "LaunchStats",
+    "Occupancy",
 )
+NCU_SECTION_NAMES = {
+    "SpeedOfLight": "GPU Speed Of Light Throughput",
+    "LaunchStats": "Launch Statistics",
+    "Occupancy": "Occupancy",
+}
+NCU_REQUIRED_METRIC_GROUPS = {
+    "GPU Speed Of Light Throughput": (
+        ("Compute (SM) Throughput",),
+        ("Memory Throughput", "DRAM Throughput"),
+    ),
+    "Launch Statistics": (
+        ("Block Size",),
+        ("Grid Size",),
+        ("Registers Per Thread",),
+    ),
+    "Occupancy": (
+        ("Theoretical Occupancy",),
+        ("Achieved Occupancy",),
+    ),
+}
 CORRECTNESS_MARKER = "KERNELBLASTER_CORRECTNESS_JSON "
 CORRECTNESS_ERROR_METRICS = ("p99_abs_error", "max_abs_error")
 CORRECTNESS_ERROR_RELATIVE_ALLOWANCE = 1.10
 CORRECTNESS_ERROR_ABSOLUTE_ALLOWANCE = 1e-4
+CORRECTNESS_DISTRIBUTION_METRICS = (
+    "abs_mean",
+    "abs_rmse",
+    "abs_p50",
+    "abs_p90",
+    "abs_p99",
+    "abs_p999",
+    "abs_max",
+    "normalized_p50",
+    "normalized_p90",
+    "normalized_p99",
+    "normalized_p999",
+    "normalized_max",
+)
+CORRECTNESS_SEEDS = {0, 42, 20260721}
+AGGREGATE_QUANTILE_SEMANTICS = "max_per_case_quantile_envelope"
+RESOURCE_BLOCKED_MARKER = "KERNELBLASTER_RESOURCE_"
+
+
+class BlockedResourceError(RuntimeError):
+    """A CUDA/cuBLAS context or owned resource could not be used safely."""
+
+
+def _raise_if_resource_blocked(
+    completed: subprocess.CompletedProcess[str],
+    *,
+    log_path: Path,
+) -> None:
+    combined = completed.stdout + completed.stderr
+    if RESOURCE_BLOCKED_MARKER in combined:
+        marker_line = next(
+            (
+                line
+                for line in combined.splitlines()
+                if RESOURCE_BLOCKED_MARKER in line
+            ),
+            RESOURCE_BLOCKED_MARKER,
+        )
+        raise BlockedResourceError(
+            f"CUDA resource lifecycle blocked: {marker_line}; see {log_path.name}."
+        )
 
 
 def _timestamp() -> str:
@@ -62,6 +121,105 @@ def _atomic_json(path: Path, payload: Any) -> None:
         encoding="utf-8",
     )
     os.replace(temporary, path)
+
+
+def _validate_correctness_distribution(metrics: dict[str, Any]) -> None:
+    cases = metrics.get("cases")
+    if cases is None:
+        return
+    if not isinstance(cases, list) or not cases:
+        raise RuntimeError("Correctness distribution must contain case records.")
+    aggregate_count = metrics.get("count")
+    if not isinstance(aggregate_count, int) or aggregate_count < 1:
+        raise RuntimeError("Correctness distribution has an invalid count.")
+    aggregate_sample_count = metrics.get("quantile_sample_count")
+    if (
+        not isinstance(aggregate_sample_count, int)
+        or aggregate_sample_count < 1
+        or aggregate_sample_count > aggregate_count
+        or metrics.get("quantile_sampling") != "deterministic_stride"
+        or metrics.get("quantile_max_samples") != 1048576
+        or metrics.get("aggregate_quantile_semantics")
+        != AGGREGATE_QUANTILE_SEMANTICS
+    ):
+        raise RuntimeError("Correctness distribution has invalid quantile sampling.")
+    for name in CORRECTNESS_DISTRIBUTION_METRICS:
+        value = metrics.get(name)
+        if not isinstance(value, (int, float)) or not 0 <= float(value) < float(
+            "inf"
+        ):
+            raise RuntimeError(
+                f"Correctness distribution has invalid {name}: {value!r}."
+            )
+    for count_name in ("mismatch_count", "nonfinite_count"):
+        value = metrics.get(count_name)
+        if not isinstance(value, int) or value < 0:
+            raise RuntimeError(
+                f"Correctness distribution has invalid {count_name}: {value!r}."
+            )
+    if metrics["mismatch_count"] != 0 or metrics["nonfinite_count"] != 0:
+        raise RuntimeError("Correctness distribution contains mismatches or NaN/Inf.")
+    if float(metrics["normalized_max"]) > 1.0:
+        raise RuntimeError("Correctness normalized error exceeded the declared tolerance.")
+
+    observed_seeds: set[int] = set()
+    case_ids: set[str] = set()
+    observed_case_seed_pairs: set[tuple[str, int]] = set()
+    count_sum = 0
+    sample_count_sum = 0
+    for case in cases:
+        if not isinstance(case, dict):
+            raise RuntimeError("Correctness case record must be an object.")
+        case_id = case.get("case_id")
+        seed = case.get("seed")
+        shape = case.get("shape")
+        if not isinstance(case_id, str) or not case_id:
+            raise RuntimeError("Correctness case record is missing case_id.")
+        if not isinstance(seed, int) or seed not in CORRECTNESS_SEEDS:
+            raise RuntimeError(f"Correctness case has an unexpected seed: {seed!r}.")
+        if not isinstance(shape, dict) or not shape:
+            raise RuntimeError("Correctness case record has an invalid shape.")
+        if case.get("deterministic") is not True:
+            raise RuntimeError("Correctness case record is not deterministic.")
+        if case.get("mismatch_count") != 0 or case.get("nonfinite_count") != 0:
+            raise RuntimeError("Correctness case contains mismatches or NaN/Inf.")
+        if float(case.get("normalized_max", float("inf"))) > 1.0:
+            raise RuntimeError("Correctness case exceeded the declared tolerance.")
+        case_count = case.get("count")
+        if not isinstance(case_count, int) or case_count < 1:
+            raise RuntimeError("Correctness case has an invalid count.")
+        count_sum += case_count
+        case_sample_count = case.get("quantile_sample_count")
+        if (
+            not isinstance(case_sample_count, int)
+            or case_sample_count < 1
+            or case_sample_count > case_count
+            or case.get("quantile_sampling") != "deterministic_stride"
+            or case.get("quantile_max_samples") != 1048576
+        ):
+            raise RuntimeError("Correctness case has invalid quantile sampling.")
+        sample_count_sum += case_sample_count
+        case_seed_pair = (case_id, seed)
+        if case_seed_pair in observed_case_seed_pairs:
+            raise RuntimeError(
+                "Correctness cases contain a duplicate case_id/seed pair."
+            )
+        observed_case_seed_pairs.add(case_seed_pair)
+        observed_seeds.add(seed)
+        case_ids.add(case_id)
+    if observed_seeds != CORRECTNESS_SEEDS:
+        raise RuntimeError("Correctness cases do not cover the required seed set.")
+    expected_case_seed_pairs = {
+        (case_id, seed) for case_id in case_ids for seed in CORRECTNESS_SEEDS
+    }
+    if observed_case_seed_pairs != expected_case_seed_pairs:
+        raise RuntimeError("Correctness cases do not cover every case/seed pair exactly.")
+    if count_sum != aggregate_count:
+        raise RuntimeError("Correctness aggregate count does not match its case records.")
+    if sample_count_sum != aggregate_sample_count:
+        raise RuntimeError(
+            "Correctness aggregate sample count does not match its case records."
+        )
 
 
 def _run_command(
@@ -163,14 +321,17 @@ def _run_correctness(
     label: str,
     mode: str,
     timeout: float,
+    require_distribution: bool = False,
 ) -> dict[str, Any]:
+    log_path = output_dir / f"correctness-{label}-{mode}.log"
     completed = _run_command(
         [str(executable)],
         cwd=executable.parent,
         timeout=timeout,
-        log_path=output_dir / f"correctness-{label}-{mode}.log",
+        log_path=log_path,
         check=False,
     )
+    _raise_if_resource_blocked(completed, log_path=log_path)
     marker_lines = [
         line
         for line in completed.stdout.splitlines()
@@ -179,6 +340,10 @@ def _run_correctness(
     if len(marker_lines) > 1:
         raise RuntimeError(
             "Correctness output contained more than one result marker."
+        )
+    if require_distribution and not marker_lines:
+        raise RuntimeError(
+            "Candidate-only correctness Driver did not emit a distribution marker."
         )
     metrics: dict[str, Any] | None = None
     if marker_lines:
@@ -198,6 +363,11 @@ def _run_correctness(
             raise RuntimeError(
                 "Correctness metrics reported NaN/Inf or non-deterministic output."
             )
+        if require_distribution and metrics.get("cases") is None:
+            raise RuntimeError(
+                "Candidate-only correctness Driver did not emit case distributions."
+            )
+        _validate_correctness_distribution(metrics)
 
     passed = completed.returncode == 0 and "passed" in completed.stdout.lower()
     result = {
@@ -224,8 +394,10 @@ def _validate_correctness_error_regression(
         indexed: dict[str, dict[str, float]] = {}
         for result in variants[label]["correctness"]:
             driver = str(result["driver"])
-            if driver == "official" or not str(result["mode"]).startswith(
-                "normalized-"
+            if (
+                driver == "official"
+                or not str(result["mode"]).startswith("normalized-")
+                or result.get("driver_scope") == "candidate_only"
             ):
                 continue
             metrics = result.get("metrics")
@@ -293,6 +465,60 @@ def _validate_correctness_error_regression(
     return gate
 
 
+def _validate_candidate_only_correctness(
+    variants: dict[str, Any],
+    *,
+    candidate_label: str | None,
+    required_drivers: set[str],
+) -> dict[str, Any]:
+    """Require both source forms of each strict candidate-only Driver."""
+
+    if not required_drivers:
+        return {"status": "not_applicable", "drivers": [], "executions": 0}
+    if candidate_label is None or candidate_label not in variants:
+        raise RuntimeError("Candidate-only correctness Drivers require a candidate.")
+
+    results = [
+        result
+        for result in variants[candidate_label]["correctness"]
+        if result.get("driver_scope") == "candidate_only"
+    ]
+    observed_drivers = {str(result.get("driver")) for result in results}
+    if observed_drivers != required_drivers:
+        missing = sorted(required_drivers - observed_drivers)
+        unexpected = sorted(observed_drivers - required_drivers)
+        raise RuntimeError(
+            "Candidate-only correctness Driver coverage mismatch: "
+            f"missing={missing}, unexpected={unexpected}."
+        )
+
+    expected_modes = {
+        (driver, f"{source_mode}-{driver}")
+        for driver in required_drivers
+        for source_mode in ("original", "normalized")
+    }
+    observed_modes = {
+        (str(result.get("driver")), str(result.get("mode"))) for result in results
+    }
+    if observed_modes != expected_modes or len(results) != len(expected_modes):
+        raise RuntimeError(
+            "Candidate-only correctness Drivers did not cover original and normalized sources."
+        )
+    if any(
+        result.get("passed") is not True
+        or not isinstance(result.get("metrics", {}).get("cases"), list)
+        for result in results
+    ):
+        raise RuntimeError(
+            "Candidate-only correctness Drivers did not pass strict distribution validation."
+        )
+    return {
+        "status": "passed",
+        "drivers": sorted(required_drivers),
+        "executions": len(results),
+    }
+
+
 def _gpu_telemetry() -> dict[str, Any]:
     fields = (
         "name,uuid,driver_version,temperature.gpu,power.draw,"
@@ -324,6 +550,146 @@ def _parse_benchmark_output(stdout: str) -> dict[str, Any]:
     return json.loads(lines[0][len(BENCHMARK_MARKER) :])
 
 
+def _parse_ncu_details(csv_text: str) -> dict[str, Any]:
+    """Parse NCU's long-form details export and validate requested coverage."""
+    rows = list(csv.reader(csv_text.splitlines()))
+    section_column: int | None = None
+    metric_column: int | None = None
+    value_column: int | None = None
+    header_index: int | None = None
+    for index, row in enumerate(rows):
+        normalized = [cell.strip().casefold() for cell in row]
+        if all(
+            column in normalized
+            for column in ("section name", "metric name", "metric value")
+        ):
+            header_index = index
+            section_column = normalized.index("section name")
+            metric_column = normalized.index("metric name")
+            value_column = normalized.index("metric value")
+            break
+    if (
+        header_index is None
+        or section_column is None
+        or metric_column is None
+        or value_column is None
+    ):
+        return {
+            "parse_valid": False,
+            "observed_section_names": [],
+            "metrics_by_section": {},
+            "empty_metrics_by_section": {},
+            "metric_names": [],
+            "metric_count": 0,
+            "missing_section_ids": list(NCU_SECTIONS),
+            "missing_metrics_by_section": {},
+        }
+
+    metrics_by_section: dict[str, list[str]] = {}
+    empty_metric_candidates: dict[str, list[str]] = {}
+    for row in rows[header_index + 1 :]:
+        if len(row) <= max(section_column, metric_column):
+            continue
+        section = row[section_column].strip()
+        metric = row[metric_column].strip()
+        value = row[value_column].strip() if len(row) > value_column else ""
+        if not section:
+            continue
+        section_metrics = metrics_by_section.setdefault(section, [])
+        if metric and value and metric not in section_metrics:
+            section_metrics.append(metric)
+        elif metric and not value:
+            empty_metrics = empty_metric_candidates.setdefault(section, [])
+            if metric not in empty_metrics:
+                empty_metrics.append(metric)
+
+    empty_metrics_by_section = {
+        section: [
+            metric
+            for metric in metrics
+            if metric not in metrics_by_section.get(section, [])
+        ]
+        for section, metrics in empty_metric_candidates.items()
+    }
+    empty_metrics_by_section = {
+        section: metrics
+        for section, metrics in empty_metrics_by_section.items()
+        if metrics
+    }
+
+    observed_section_names = list(metrics_by_section)
+    missing_section_ids = [
+        section_id
+        for section_id in NCU_SECTIONS
+        if NCU_SECTION_NAMES[section_id] not in metrics_by_section
+    ]
+    missing_metrics_by_section: dict[str, list[list[str]]] = {}
+    for section_id in NCU_SECTIONS:
+        section_name = NCU_SECTION_NAMES[section_id]
+        observed_metrics = set(metrics_by_section.get(section_name, []))
+        missing_groups = [
+            list(group)
+            for group in NCU_REQUIRED_METRIC_GROUPS[section_name]
+            if observed_metrics.isdisjoint(group)
+        ]
+        if missing_groups:
+            missing_metrics_by_section[section_name] = missing_groups
+
+    metric_names = list(
+        dict.fromkeys(
+            metric
+            for metrics in metrics_by_section.values()
+            for metric in metrics
+        )
+    )
+    return {
+        "parse_valid": True,
+        "observed_section_names": observed_section_names,
+        "metrics_by_section": metrics_by_section,
+        "empty_metrics_by_section": empty_metrics_by_section,
+        "metric_names": metric_names,
+        "metric_count": sum(len(metrics) for metrics in metrics_by_section.values()),
+        "missing_section_ids": missing_section_ids,
+        "missing_metrics_by_section": missing_metrics_by_section,
+    }
+
+
+def _file_evidence(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"path": path.name, "size_bytes": 0, "sha256": None}
+    content = path.read_bytes()
+    return {
+        "path": path.name,
+        "size_bytes": len(content),
+        "sha256": hashlib.sha256(content).hexdigest() if content else None,
+    }
+
+
+def _ncu_failure(
+    error_type: str,
+    *,
+    artifacts: dict[str, dict[str, Any]],
+    returncode: int | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    result: dict[str, Any] = {
+        "status": "failed",
+        "error_type": error_type,
+        "requested_section_ids": list(NCU_SECTIONS),
+        "artifacts": artifacts,
+        "artifact_sha256": {
+            metadata["path"]: metadata["sha256"]
+            for metadata in artifacts.values()
+            if metadata.get("sha256")
+        },
+    }
+    if returncode is not None:
+        result["returncode"] = returncode
+    if details is not None:
+        result.update(details)
+    return result
+
+
 def _run_ncu(
     executable: Path,
     *,
@@ -332,6 +698,21 @@ def _run_ncu(
     timeout: float,
 ) -> dict[str, Any]:
     report_base = output_dir / f"ncu-{label}"
+    report_path = report_base.with_suffix(".ncu-rep")
+    details_path = output_dir / f"ncu-{label}-details.csv"
+    raw_path = output_dir / f"ncu-{label}-raw.csv"
+    metrics_path = output_dir / f"ncu-{label}-metrics.json"
+
+    def artifacts() -> dict[str, dict[str, Any]]:
+        return {
+            "report": _file_evidence(report_path),
+            "details_csv": _file_evidence(details_path),
+            "raw_csv": _file_evidence(raw_path),
+        }
+
+    if not executable.is_file():
+        return _ncu_failure("NCUTargetMissing", artifacts=artifacts())
+
     command = ["ncu"]
     for section in NCU_SECTIONS:
         command.extend(["--section", section])
@@ -353,49 +734,111 @@ def _run_ncu(
             log_path=output_dir / f"ncu-{label}.log",
             check=False,
         )
+    except FileNotFoundError:
+        return _ncu_failure("NCUExecutableUnavailable", artifacts=artifacts())
+    except subprocess.TimeoutExpired:
+        return _ncu_failure("NCUCommandTimeout", artifacts=artifacts())
     except (OSError, subprocess.SubprocessError) as error:
-        return {"status": "failed", "error_type": type(error).__name__}
+        return _ncu_failure(type(error).__name__, artifacts=artifacts())
     if completed.returncode != 0:
         error_name = (
             "ERR_NVGPUCTRPERM"
             if "ERR_NVGPUCTRPERM" in completed.stderr + completed.stdout
             else "NCUCommandFailed"
         )
-        return {
-            "status": "failed",
-            "error_type": error_name,
-            "returncode": completed.returncode,
-        }
+        return _ncu_failure(
+            error_name,
+            artifacts=artifacts(),
+            returncode=completed.returncode,
+        )
+    report_evidence = _file_evidence(report_path)
+    if report_evidence["size_bytes"] == 0:
+        return _ncu_failure("NCUReportMissingOrEmpty", artifacts=artifacts())
 
-    report_path = report_base.with_suffix(".ncu-rep")
-    csv_result = _run_command(
-        ["ncu", "--import", str(report_path), "--csv", "--page", "raw"],
-        cwd=executable.parent,
-        timeout=timeout,
-        log_path=output_dir / f"ncu-{label}-export.log",
-        check=False,
-    )
-    csv_path = output_dir / f"ncu-{label}.csv"
-    csv_path.write_text(csv_result.stdout, encoding="utf-8")
-    metric_names = ncu_metric_names(csv_result.stdout)
+    export_results: dict[str, subprocess.CompletedProcess[str]] = {}
+    for page, destination in (("details", details_path), ("raw", raw_path)):
+        try:
+            exported = _run_command(
+                ["ncu", "--import", str(report_path), "--csv", "--page", page],
+                cwd=executable.parent,
+                timeout=timeout,
+                log_path=output_dir / f"ncu-{label}-export-{page}.log",
+                check=False,
+            )
+        except FileNotFoundError:
+            return _ncu_failure("NCUExecutableUnavailable", artifacts=artifacts())
+        except subprocess.TimeoutExpired:
+            return _ncu_failure(
+                f"NCU{page.title()}ExportTimeout", artifacts=artifacts()
+            )
+        except (OSError, subprocess.SubprocessError) as error:
+            return _ncu_failure(type(error).__name__, artifacts=artifacts())
+        destination.write_text(exported.stdout, encoding="utf-8")
+        export_results[page] = exported
+
+    failed_exports = [
+        page for page, exported in export_results.items() if exported.returncode != 0
+    ]
+    evidence = artifacts()
+    if failed_exports:
+        return _ncu_failure(
+            "NCUCSVExportFailed",
+            artifacts=evidence,
+            details={"failed_pages": failed_exports},
+        )
+    empty_artifacts = [
+        name for name, metadata in evidence.items() if metadata["size_bytes"] == 0
+    ]
+    if empty_artifacts:
+        return _ncu_failure(
+            "NCUArtifactMissingOrEmpty",
+            artifacts=evidence,
+            details={"empty_artifacts": empty_artifacts},
+        )
+
+    coverage = _parse_ncu_details(export_results["details"].stdout)
+    metrics_payload = {
+        "requested_section_ids": list(NCU_SECTIONS),
+        **coverage,
+    }
     _atomic_json(
-        output_dir / f"ncu-{label}-metrics.json",
-        {"sections": list(NCU_SECTIONS), "metric_names": metric_names},
+        metrics_path,
+        metrics_payload,
     )
-    if csv_result.returncode != 0 or not metric_names:
-        return {
-            "status": "failed",
-            "error_type": "NCUCSVExportFailed",
-            "returncode": csv_result.returncode,
-            "report": report_path.name,
-            "csv": csv_path.name,
-        }
+    evidence = artifacts()
+    evidence["metrics_json"] = _file_evidence(metrics_path)
+    if not coverage["parse_valid"]:
+        return _ncu_failure(
+            "NCUDetailsParseFailed",
+            artifacts=evidence,
+            details={**coverage, "metrics_json": metrics_path.name},
+        )
+    if coverage["missing_section_ids"]:
+        return _ncu_failure(
+            "NCUSectionCoverageIncomplete",
+            artifacts=evidence,
+            details={**coverage, "metrics_json": metrics_path.name},
+        )
+    if coverage["missing_metrics_by_section"]:
+        return _ncu_failure(
+            "NCUMetricCoverageIncomplete",
+            artifacts=evidence,
+            details={**coverage, "metrics_json": metrics_path.name},
+        )
     return {
         "status": "completed",
+        "requested_section_ids": list(NCU_SECTIONS),
+        **coverage,
         "report": report_path.name,
-        "csv": csv_path.name,
-        "sections": list(NCU_SECTIONS),
-        "metric_names": metric_names,
+        "details_csv": details_path.name,
+        "raw_csv": raw_path.name,
+        "metrics_json": metrics_path.name,
+        "artifacts": evidence,
+        "artifact_sha256": {
+            metadata["path"]: metadata["sha256"]
+            for metadata in evidence.values()
+            if metadata.get("sha256")
+        },
     }
 
 
@@ -506,6 +949,16 @@ def main() -> int:
         default=[],
         help="Additional Driver with the same launcher signature; may be repeated.",
     )
+    parser.add_argument(
+        "--candidate-only-correctness-driver",
+        type=Path,
+        action="append",
+        default=[],
+        help=(
+            "Strict distribution Driver compiled only with the candidate; "
+            "may be repeated."
+        ),
+    )
     parser.add_argument("--gpu", default="RTX 3080")
     parser.add_argument("--sm", default="sm_86")
     parser.add_argument("--dtype", default="fp16")
@@ -556,6 +1009,14 @@ def main() -> int:
     for path in extra_driver_paths:
         if not path.is_file():
             parser.error(f"Extra correctness Driver does not exist: {path}")
+    candidate_only_driver_paths = [
+        path.resolve() for path in args.candidate_only_correctness_driver
+    ]
+    for path in candidate_only_driver_paths:
+        if not path.is_file():
+            parser.error(f"Candidate-only correctness Driver does not exist: {path}")
+    if candidate_only_driver_paths and candidate_path is None:
+        parser.error("Candidate-only correctness Drivers require --candidate.")
     if min(args.warmup, args.repetitions, args.sessions) < 1:
         parser.error("Warmup, repetitions, and sessions must be positive.")
     try:
@@ -613,6 +1074,15 @@ def main() -> int:
             {"name": path.name, "sha256": sha256_text(path.read_text(encoding="utf-8"))}
             for path in extra_driver_paths
         ],
+        "candidate_only_correctness_drivers": [
+            {
+                "name": path.name,
+                "scope": "candidate_only",
+                "sha256": sha256_text(path.read_text(encoding="utf-8")),
+            }
+            for path in candidate_only_driver_paths
+        ],
+        "correctness_support_headers": [],
         "environment": {
             "nvidia_smi": _version(["nvidia-smi"]),
             "nvcc": _version(["nvcc", "--version"]),
@@ -625,18 +1095,58 @@ def main() -> int:
             else "variant_head_to_head"
         ),
     }
+    if any(
+        '#include "correctness_metrics.h"' in path.read_text(encoding="utf-8")
+        for path in [*extra_driver_paths, *candidate_only_driver_paths]
+    ):
+        support_header = (
+            ROOT_DIR
+            / "src"
+            / "kernelblaster"
+            / "servers"
+            / "cuda_env"
+            / "correctness_metrics.h"
+        )
+        manifest["correctness_support_headers"].append(
+            {
+                "path": str(support_header.relative_to(ROOT_DIR)),
+                "sha256": sha256_text(support_header.read_text(encoding="utf-8")),
+            }
+        )
 
-    executables: dict[str, Path] = {}
+    candidate_label = args.candidate_name if candidate_path is not None else None
+    normalized_sources: dict[str, str] = {}
     for label, source_path in variant_paths.items():
         original = source_path.read_text(encoding="utf-8")
         normalized, transformations = normalize_cuda_source(original)
+        normalized_sources[label] = normalized
         correctness_results: list[dict[str, Any]] = []
         normalized_executable: Path | None = None
-        correctness_drivers = [("official", driver)] + [
-            (f"extra-{index}-{path.stem}", path.read_text(encoding="utf-8"))
+        correctness_drivers = [("official", driver, "shared", False)] + [
+            (
+                f"extra-{index}-{path.stem}",
+                path.read_text(encoding="utf-8"),
+                "shared",
+                False,
+            )
             for index, path in enumerate(extra_driver_paths)
         ]
-        for driver_label, correctness_driver in correctness_drivers:
+        if label == candidate_label:
+            correctness_drivers.extend(
+                (
+                    f"candidate-only-{index}-{path.stem}",
+                    path.read_text(encoding="utf-8"),
+                    "candidate_only",
+                    True,
+                )
+                for index, path in enumerate(candidate_only_driver_paths)
+            )
+        for (
+            driver_label,
+            correctness_driver,
+            driver_scope,
+            require_distribution,
+        ) in correctness_drivers:
             for source_mode, correctness_source in (
                 ("original", original),
                 ("normalized", normalized),
@@ -656,8 +1166,10 @@ def main() -> int:
                     label=label,
                     mode=f"{source_mode}-{driver_label}",
                     timeout=args.timeout_seconds,
+                    require_distribution=require_distribution,
                 )
                 result["driver"] = driver_label
+                result["driver_scope"] = driver_scope
                 correctness_results.append(result)
                 if source_mode == "normalized" and driver_label == "official":
                     normalized_executable = executable
@@ -666,7 +1178,36 @@ def main() -> int:
         if normalized_executable is None:
             raise RuntimeError("Official normalized correctness executable is missing.")
 
-        benchmark_executable = _compile_program(
+        manifest["variants"][label] = {
+            "source_name": source_path.name,
+            "source_sha256": sha256_text(original),
+            "normalized_sha256": sha256_text(normalized),
+            "transformations": transformations,
+            "correctness": correctness_results,
+        }
+    manifest["correctness_error_regression"] = _validate_correctness_error_regression(
+        manifest["variants"],
+        candidate_label=candidate_label,
+        required_drivers={
+            f"extra-{index}-{path.stem}"
+            for index, path in enumerate(extra_driver_paths)
+        },
+    )
+    manifest["candidate_only_correctness"] = _validate_candidate_only_correctness(
+        manifest["variants"],
+        candidate_label=candidate_label,
+        required_drivers={
+            f"candidate-only-{index}-{path.stem}"
+            for index, path in enumerate(candidate_only_driver_paths)
+        },
+    )
+    _atomic_json(output_dir / "run_manifest.json", manifest)
+
+    # No benchmark executable, NCU target, or Events sample is created until
+    # every shared and candidate-only correctness gate has passed.
+    executables: dict[str, Path] = {}
+    for label, normalized in normalized_sources.items():
+        executables[label] = _compile_program(
             output_dir,
             label=label,
             mode="benchmark",
@@ -675,14 +1216,6 @@ def main() -> int:
             sm=args.sm,
             timeout=args.timeout_seconds,
         )
-        executables[label] = benchmark_executable
-        manifest["variants"][label] = {
-            "source_name": source_path.name,
-            "source_sha256": sha256_text(original),
-            "normalized_sha256": sha256_text(normalized),
-            "transformations": transformations,
-            "correctness": correctness_results,
-        }
         if args.ncu:
             profiler_executable = _compile_program(
                 output_dir,
@@ -699,14 +1232,6 @@ def main() -> int:
                 label=label,
                 timeout=args.timeout_seconds,
             )
-    manifest["correctness_error_regression"] = _validate_correctness_error_regression(
-        manifest["variants"],
-        candidate_label=args.candidate_name if candidate_path is not None else None,
-        required_drivers={
-            f"extra-{index}-{path.stem}"
-            for index, path in enumerate(extra_driver_paths)
-        },
-    )
     _atomic_json(output_dir / "run_manifest.json", manifest)
 
     if args.correctness_only:
@@ -730,6 +1255,9 @@ def main() -> int:
             "correctness": "passed",
             "correctness_error_regression": manifest[
                 "correctness_error_regression"
+            ]["status"],
+            "candidate_only_correctness": manifest[
+                "candidate_only_correctness"
             ]["status"],
             "events_stability": None,
             "performance": None,
@@ -763,14 +1291,18 @@ def main() -> int:
             order = labels if session % 2 == 0 else list(reversed(labels))
             for position, label in enumerate(order):
                 before = _gpu_telemetry()
+                log_path = (
+                    output_dir
+                    / f"round-{round_index}-session-{session}-{position}-{label}.log"
+                )
                 completed = _run_command(
                     [str(executables[label])],
                     cwd=executables[label].parent,
                     timeout=args.timeout_seconds,
-                    log_path=output_dir
-                    / f"round-{round_index}-session-{session}-{position}-{label}.log",
+                    log_path=log_path,
                     check=False,
                 )
+                _raise_if_resource_blocked(completed, log_path=log_path)
                 if (
                     completed.returncode != 0
                     or "passed" not in completed.stdout.lower()
@@ -942,6 +1474,9 @@ def main() -> int:
         "correctness_error_regression": manifest[
             "correctness_error_regression"
         ]["status"],
+        "candidate_only_correctness": manifest[
+            "candidate_only_correctness"
+        ]["status"],
         "events_stability": "passed" if stable else "failed",
         "performance": (
             comparison.get("performance_gate", {}).get("passed")
@@ -963,4 +1498,9 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        exit_code = main()
+    except BlockedResourceError as error:
+        print(f"KERNELBLASTER_BLOCKED {error}", file=sys.stderr)
+        exit_code = 4
+    raise SystemExit(exit_code)

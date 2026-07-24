@@ -17,7 +17,6 @@
 
 from .base import LLMBudgetExceeded, LLMConfigurationError, LLMProvider, LLMResponse
 from .factory import get_llm_provider, reset_llm_provider
-from .openai_compatible import OpenAICompatibleProvider, OpenAICompatibleSettings
 
 __all__ = [
     "LLMBudgetExceeded",
@@ -29,3 +28,14 @@ __all__ = [
     "get_llm_provider",
     "reset_llm_provider",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"OpenAICompatibleProvider", "OpenAICompatibleSettings"}:
+        from .openai_compatible import OpenAICompatibleProvider, OpenAICompatibleSettings
+
+        return {
+            "OpenAICompatibleProvider": OpenAICompatibleProvider,
+            "OpenAICompatibleSettings": OpenAICompatibleSettings,
+        }[name]
+    raise AttributeError(name)

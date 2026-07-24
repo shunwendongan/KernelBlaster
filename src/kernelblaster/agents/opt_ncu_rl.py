@@ -30,6 +30,14 @@ from ..config import config
 from ..observability import event_context
 from ..outcomes import RunOutcome, RunStatus
 from ..profiling import ProfilerBackend, ProfilerUnavailable, ProfilingMode
+from ..measurements import (
+    Measurement,
+    MeasurementComparisonError,
+    MeasurementSource,
+    MeasurementUnit,
+    format_measurement,
+    hardware_fingerprint,
+)
 from .feedback import FeedbackAgent, Feedback, FeedbackConfig
 from .database import OptimizationDatabase, OptimizationEntry, CompositeOptimization
 from .rl_agents import (
@@ -335,6 +343,7 @@ APPROACH:
 class RLNCUFeedback(Feedback):
     """封装 `RLNCUFeedback` 对应的领域状态与操作。"""
     elapsed_cycles: Optional[int] = None
+    measurement: Measurement | None = None
     ncu_log: Optional[str] = None
     annotated_ncu: Optional[str] = None
     optimization_technique: Optional[str] = None
@@ -359,6 +368,24 @@ class RLNCUAgent(FeedbackAgent):
         当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         return new_state or current_state or "events_only/unknown"
+
+    @property
+    def initial_cycles(self) -> int | None:
+        """Deprecated compatibility view; Events measurements never become cycles."""
+        if getattr(self, "initial_measurement", None) is None:
+            return None
+        if self.initial_measurement.unit is not MeasurementUnit.CYCLES:
+            return None
+        return int(self.initial_measurement.value)
+
+    @property
+    def best_cycles(self) -> int | None:
+        """Deprecated compatibility view; use ``best_measurement`` internally."""
+        if getattr(self, "best_measurement", None) is None:
+            return None
+        if self.best_measurement.unit is not MeasurementUnit.CYCLES:
+            return None
+        return int(self.best_measurement.value)
     
     def __init__(
         self,
@@ -414,8 +441,8 @@ class RLNCUAgent(FeedbackAgent):
         self.iteration_count = 0
         self.total_trajectories = 0
         self._next_trajectory_id = 0
-        self.best_cycles = float('inf')
-        self.initial_cycles = None
+        self.best_measurement: Measurement | None = None
+        self.initial_measurement: Measurement | None = None
         self.profiling_mode = "ncu"
         
         # 并发助手
@@ -429,7 +456,7 @@ class RLNCUAgent(FeedbackAgent):
         # 要运行的 RL 迭代次数（可以通过工作流程设置）
         self.num_rl_iterations = 50  # 默认为 50 次 RL 迭代
 
-    async def _profile_candidate(self, filepath: Path) -> Tuple[str, str, str, int]:
+    async def _profile_candidate(self, filepath: Path) -> Tuple[str, str, str, Measurement]:
         """
         处理 `profile_candidate` 所表示的内部步骤；该函数不属于稳定的公开接口。
 
@@ -443,18 +470,26 @@ class RLNCUAgent(FeedbackAgent):
         ProfilerUnavailable: 输入、外部调用或状态不满足执行要求时抛出。
         """
         if self.profiler_backend is None:
-            return await self.gather_perf_metrics(filepath)
+            annotated, raw_output, stderr, cycles = await self.gather_perf_metrics(filepath)
+            return (
+                annotated,
+                raw_output,
+                stderr,
+                Measurement(
+                    value=int(cycles),
+                    unit=MeasurementUnit.CYCLES,
+                    source=MeasurementSource.NCU,
+                    protocol_id="ncu-default",
+                    hardware_fingerprint=hardware_fingerprint(getattr(self, "gpu", None)),
+                ),
+            )
 
         result = await self.profiler_backend.profile(filepath)
         self.profiling_mode = result.mode.value
         if not result.available:
             raise ProfilerUnavailable(result.error or "Profiler returned no timing metric")
-        measurement = result.elapsed_cycles
-        if measurement is None and result.elapsed_us is not None:
-            # rollout 数据模型沿用 cycles 作为排名信号字段名。
-            # CUDA Events 返回微秒时转换为纳秒，以保持既有接口和排序方向稳定。
-            measurement = round(result.elapsed_us * 1000.0)
-        if measurement is None or measurement <= 0:
+        measurement = result.measurement
+        if measurement is None or measurement.value <= 0:
             raise ProfilerUnavailable("Profiler returned no positive timing metric")
         return (
             result.annotated_source,
@@ -468,7 +503,7 @@ class RLNCUAgent(FeedbackAgent):
         ncu_log: str,
         metrics: dict,
         code: str,
-        measurement: int,
+        measurement: Measurement,
     ) -> str:
         """
         仅当存在硬件反证据时才导出 NCU 状态。
@@ -488,7 +523,11 @@ class RLNCUAgent(FeedbackAgent):
             ncu_log,
             metrics,
             code,
-            elapsed_cycles=measurement,
+            elapsed_cycles=(
+                int(measurement.value)
+                if measurement.unit is MeasurementUnit.CYCLES
+                else None
+            ),
         )
 
     async def initialize(self):
@@ -499,11 +538,11 @@ class RLNCUAgent(FeedbackAgent):
 
         self.agent_logger.info(f"Gathering initial NCU log...")
         try:
-            annotated_ncu, init_ncu_log, _, cycles = await self._profile_candidate(
+            annotated_ncu, init_ncu_log, _, measurement = await self._profile_candidate(
                 self.code_to_optimize_fp
             )
-            self.initial_cycles = cycles
-            self.best_cycles = cycles
+            self.initial_measurement = measurement
+            self.best_measurement = measurement
 
             # 保留第一个 NCU 日志，以便后续步骤可以执行分析
             self.last_ncu_log = init_ncu_log
@@ -517,10 +556,16 @@ class RLNCUAgent(FeedbackAgent):
                     init_ncu_log,
                     init_metrics,
                     self.code_to_optimize,
-                    elapsed_cycles=cycles,
+                    elapsed_cycles=(
+                        int(measurement.value)
+                        if measurement.unit is MeasurementUnit.CYCLES
+                        else None
+                    ),
                 )
             
-            self.agent_logger.info(f"Initial state: {initial_state}, cycles: {cycles}")
+            self.agent_logger.info(
+                f"Initial state: {initial_state}, measurement: {format_measurement(measurement)}"
+            )
             
             # 保存初始文件
             (self.folder / "0_init_annotated.cu").write_text(annotated_ncu)
@@ -550,7 +595,7 @@ class RLNCUAgent(FeedbackAgent):
             if "ERR_NVGPUCTRPERM" not in str(e):
                 raise
             self.profiling_mode = "events_only"
-            self.initial_cycles = None
+            self.initial_measurement = None
             self.last_ncu_log = ""
             initial_state = "events_only/unknown"
             self.agent_logger.warning(
@@ -573,7 +618,7 @@ class RLNCUAgent(FeedbackAgent):
         import asyncio as _asyncio
         
         best_filename = None
-        best_cycles = float('inf')
+        best_measurement: Measurement | None = None
         iteration_errors: list[str] = []
 
         # 确保初始分析数据在生成任务之前可用一次
@@ -624,15 +669,24 @@ class RLNCUAgent(FeedbackAgent):
 
             # 处理轨迹结果
             if trajectory.steps:
-                best_step = min(trajectory.steps, key=lambda s: s.cycles)
-                if best_step.cycles < best_cycles:
-                    best_cycles = best_step.cycles
+                for best_step in trajectory.steps:
+                    try:
+                        is_best = best_measurement is None or best_step.measurement.is_faster_than(
+                            best_measurement
+                        )
+                    except MeasurementComparisonError as error:
+                        self.agent_logger.warning(f"Skipping incomparable measurement: {error}")
+                        continue
+                    if not is_best:
+                        continue
+                    best_measurement = best_step.measurement
                     best_filename_path = self.folder / f"rl_iter_{iteration_idx}_best.cu"
                     best_filename_path.write_text(
-                        best_step.code + f"\n\n// Elapsed Cycles: {best_step.cycles}\n")
+                        best_step.code + f"\n\n// Measurement: {format_measurement(best_measurement)}\n")
                     best_filename = best_filename_path
                     self.agent_logger.info(
-                        f"[Async] New best result from iter {iteration_idx}: {best_cycles} cycles")
+                        f"[Async] New best result from iter {iteration_idx}: "
+                        f"{format_measurement(best_measurement)}")
 
             await self._record_completed_trajectory(trajectory)
 
@@ -652,33 +706,37 @@ class RLNCUAgent(FeedbackAgent):
         except Exception as snap_exc:
             self.agent_logger.warning(f"Failed to write database snapshot: {snap_exc}")
 
-        if best_filename is not None:
+        if best_filename is not None and best_measurement is not None:
             # 确保我们有基线周期来判断改进情况。
             try:
-                if self.initial_cycles is None:
+                if self.initial_measurement is None:
                     init_fp = getattr(self, "code_to_optimize_fp", None)
                     if not init_fp or not init_fp.exists():
                         self.code_to_optimize_fp = self.folder / "init.cu"
                         self.code_to_optimize_fp.write_text(self.code_to_optimize)
-                    _, _, _, baseline_cycles = await self._profile_candidate(self.code_to_optimize_fp)
-                    self.initial_cycles = baseline_cycles
+                    _, _, _, baseline_measurement = await self._profile_candidate(self.code_to_optimize_fp)
+                    self.initial_measurement = baseline_measurement
             except Exception as e:
                 self.agent_logger.warning(
                     f"Failed to obtain baseline cycles before finalizing result: {e}"
                 )
 
-            preliminary_speedup = (
-                self.initial_cycles / best_cycles
-                if self.initial_cycles is not None and best_cycles > 0
-                else None
-            )
+            try:
+                preliminary_speedup = (
+                    best_measurement.speedup_over(self.initial_measurement)
+                    if self.initial_measurement is not None
+                    else None
+                )
+            except MeasurementComparisonError as error:
+                preliminary_speedup = None
+                self.agent_logger.warning(f"Cannot rank final result: {error}")
             performance_gate = {
                 "passed": False,
                 "reason": "Five-session CUDA Events confirmation was not run.",
             }
             confirmation_error: str | None = None
             confirm_pair = getattr(self.profiler_backend, "confirm_pair", None)
-            if confirm_pair is not None and self.initial_cycles is not None:
+            if confirm_pair is not None and self.initial_measurement is not None:
                 try:
                     gate_result = await confirm_pair(
                         self.code_to_optimize_fp,
@@ -706,25 +764,25 @@ class RLNCUAgent(FeedbackAgent):
                     artifact_path=final_filename,
                     profiling_mode=self.profiling_mode,
                     metrics={
-                        "baseline_cycles": self.initial_cycles,
-                        "best_cycles": best_cycles,
+                        "baseline_measurement": self.initial_measurement.to_dict(),
+                        "best_measurement": best_measurement.to_dict(),
                         "search_speedup": preliminary_speedup,
                         "performance_gate": performance_gate,
                     },
                 )
 
             failure_file = self.folder / "failure_rl_optimization.cu"
-            baseline_str = self.initial_cycles if self.initial_cycles is not None else "N/A"
+            baseline_str = format_measurement(self.initial_measurement)
             try:
                 failure_file.write_text(
-                    self.code_to_optimize + f"\n\n// Elapsed Cycles: {baseline_str}\n"
+                    self.code_to_optimize + f"\n\n// Measurement: {baseline_str}\n"
                 )
             except Exception:
                 try:
                     init_fp = getattr(self, "code_to_optimize_fp", None)
                     if init_fp and init_fp.exists():
                         failure_file.write_text(
-                            init_fp.read_text() + f"\n\n// Elapsed Cycles: {baseline_str}\n"
+                            init_fp.read_text() + f"\n\n// Measurement: {baseline_str}\n"
                         )
                 except Exception:
                     pass
@@ -740,8 +798,11 @@ class RLNCUAgent(FeedbackAgent):
                 ),
                 profiling_mode=self.profiling_mode,
                 metrics={
-                    "baseline_cycles": self.initial_cycles,
-                    "best_cycles": best_cycles,
+                    "baseline_measurement": (
+                        self.initial_measurement.to_dict()
+                        if self.initial_measurement is not None else None
+                    ),
+                    "best_measurement": best_measurement.to_dict(),
                     "search_speedup": preliminary_speedup,
                     "performance_gate": performance_gate,
                 },
@@ -749,26 +810,29 @@ class RLNCUAgent(FeedbackAgent):
 
         # 没有产生候选人的轨迹。仍然编写一个失败文件（如果有的话，带有基线）。
         try:
-            if self.initial_cycles is None:
+            if self.initial_measurement is None:
                 init_fp = getattr(self, "code_to_optimize_fp", None)
                 if not init_fp or not init_fp.exists():
                     self.code_to_optimize_fp = self.folder / "init.cu"
                     self.code_to_optimize_fp.write_text(self.code_to_optimize)
-                _, _, _, cycles = await self._profile_candidate(self.code_to_optimize_fp)
-                self.initial_cycles = cycles
-                self.best_cycles = min(self.best_cycles, cycles) if self.best_cycles else cycles
+                _, _, _, measurement = await self._profile_candidate(self.code_to_optimize_fp)
+                self.initial_measurement = measurement
+                self.best_measurement = measurement
         except Exception as e:
             self.agent_logger.warning(f"Failed to obtain baseline cycles for original code: {e}")
 
-        fallback_cycles = self.initial_cycles if self.initial_cycles is not None else "N/A"
+        fallback_measurement = format_measurement(self.initial_measurement)
         failure_file = self.folder / "failure_rl_optimization.cu"
         try:
-            failure_file.write_text(self.code_to_optimize + f"\n\n// Elapsed Cycles: {fallback_cycles}\n")
+            failure_file.write_text(self.code_to_optimize + f"\n\n// Measurement: {fallback_measurement}\n")
         except Exception:
             try:
                 init_fp = getattr(self, "code_to_optimize_fp", None)
                 if init_fp and init_fp.exists():
-                    failure_file.write_text(init_fp.read_text() + f"\n\n// Elapsed Cycles: {fallback_cycles}\n")
+                    failure_file.write_text(
+                        init_fp.read_text()
+                        + f"\n\n// Measurement: {fallback_measurement}\n"
+                    )
             except Exception:
                 pass
         self.agent_logger.error(
@@ -1195,7 +1259,7 @@ class RLNCUAgent(FeedbackAgent):
 
         current_code: str = initial_code
         current_state: str = initial_state
-        current_cycles: int = self.initial_cycles
+        current_measurement: Measurement | None = self.initial_measurement
         last_ncu_log: str = getattr(self, "last_ncu_log", "")
         
         self.agent_logger.info(f"Starting rollout from state: {current_state}")
@@ -1210,7 +1274,15 @@ class RLNCUAgent(FeedbackAgent):
             # 退出(0)
             try:
                 profile = await self.database.analyze_performance_state(
-                    last_ncu_log, metrics, current_code, elapsed_cycles=current_cycles
+                    last_ncu_log,
+                    metrics,
+                    current_code,
+                    elapsed_cycles=(
+                        int(current_measurement.value)
+                        if current_measurement is not None
+                        and current_measurement.unit is MeasurementUnit.CYCLES
+                        else None
+                    ),
                 )
                 analysis_json_str = _json.dumps(asdict(profile), indent=2)
 
@@ -1339,7 +1411,7 @@ class RLNCUAgent(FeedbackAgent):
                     stage=f"rollout_step_{step}",
                     candidate_id=f"trajectory_{trajectory_index}_step_{step}",
                 ):
-                    optimized_code, new_cycles, new_state, new_ncu_log = await self.apply_optimization(
+                    optimized_code, new_measurement, new_state, new_ncu_log = await self.apply_optimization(
                         current_code,
                         optimization_entry,
                         step,
@@ -1348,15 +1420,22 @@ class RLNCUAgent(FeedbackAgent):
                     )
                 
                 # 计算实际改进
-                if current_cycles is not None and current_cycles > 0:
-                    actual_improvement = ((current_cycles - new_cycles) / current_cycles) * 100
-                else:
-                    # 基线未知；出于奖励/记录目的，将改进视为 0
+                try:
+                    actual_improvement = (
+                        new_measurement.speedup_over(current_measurement) - 1.0
+                    ) * 100.0 if current_measurement is not None else 0.0
+                    is_faster = (
+                        new_measurement.is_faster_than(current_measurement)
+                        if current_measurement is not None else False
+                    )
+                except MeasurementComparisonError as error:
+                    self.agent_logger.warning(f"Step {step} cannot be ranked: {error}")
                     actual_improvement = 0.0
+                    is_faster = False
                 reward = self.calculate_reward(
                     getattr(optimization_entry, "predicted_improvement", None), 
                     actual_improvement,
-                    (current_cycles is not None and new_cycles < current_cycles)
+                    is_faster,
                 )
                 
                 # 创建轨迹步骤
@@ -1370,7 +1449,7 @@ class RLNCUAgent(FeedbackAgent):
                     state=current_state,
                     action=action_name,
                     code=optimized_code,
-                    cycles=new_cycles,
+                    measurement=new_measurement,
                     predicted_improvement=getattr(optimization_entry, "predicted_improvement", 0.0),
                     actual_improvement=actual_improvement,
                     reward=reward
@@ -1384,7 +1463,8 @@ class RLNCUAgent(FeedbackAgent):
                     self.database.update_composite_optimization_result(
                         current_state,
                         technique_name,
-                        actual_improvement
+                        actual_improvement,
+                        measurement=new_measurement,
                     )
                 else:
                     # 用记录器记录这个
@@ -1392,18 +1472,19 @@ class RLNCUAgent(FeedbackAgent):
                     self.database.update_optimization_result(
                         current_state, 
                         technique_name,
-                        actual_improvement
+                        actual_improvement,
+                        measurement=new_measurement,
                     )
                 
                 self.agent_logger.info(
-                    f"Step {step} result: {new_cycles} cycles "
+                    f"Step {step} result: {format_measurement(new_measurement)} "
                     f"({actual_improvement:.1f}% improvement, reward: {reward:.2f})"
                 )
                 
                 # 更新下一步
                 current_code = optimized_code
                 current_state = self.next_performance_state(current_state, new_state)
-                current_cycles = new_cycles
+                current_measurement = new_measurement
                 last_ncu_log = new_ncu_log or last_ncu_log  # 保留下一次迭代
                 
                 # 如果严重退化则提前停止（从-20%放宽至-50%至-500%）
@@ -1626,7 +1707,7 @@ class RLNCUAgent(FeedbackAgent):
         attempt_idx = 0
         compile_success = False
         run_success = False
-        new_cycles = 0
+        new_measurement: Measurement | None = None
         new_ncu_log = ""
 
         while attempt_idx < MAX_FIX_ATTEMPTS:
@@ -1636,7 +1717,7 @@ class RLNCUAgent(FeedbackAgent):
 
             try:
                 # 分析优化的代码（这会隐式编译+运行它）
-                _, new_ncu_log, _, new_cycles = await self._profile_candidate(filepath)
+                _, new_ncu_log, _, new_measurement = await self._profile_candidate(filepath)
 
                 # 如果到这里就说明编译运行成功了
                 compile_success = True
@@ -1648,7 +1729,7 @@ class RLNCUAgent(FeedbackAgent):
                     with open(log_fp, "a", encoding="utf-8") as f:
                         f.write(f"Compile success: {compile_success}\n")
                         f.write(f"Run success    : {run_success}\n")
-                        f.write(f"Elapsed cycles  : {new_cycles}\n\n")
+                        f.write(f"Measurement     : {format_measurement(new_measurement)}\n\n")
 
                 break  # 退出重试循环 – 成功
 
@@ -1746,14 +1827,16 @@ class RLNCUAgent(FeedbackAgent):
                 new_ncu_log,
                 new_metrics,
                 optimized_code,
-                new_cycles,
+                new_measurement,
             )
         except Exception as state_error:
             self.agent_logger.warning(
                 f"Could not classify the optimized candidate state: {state_error}"
             )
             new_state = "events_only/unknown" if not new_ncu_log else "unknown"
-        return optimized_code, new_cycles, new_state, new_ncu_log
+        if new_measurement is None:
+            raise ProfilerUnavailable("Optimization completed without a measurement")
+        return optimized_code, new_measurement, new_state, new_ncu_log
 
     def calculate_reward(self, predicted_improvement: Optional[float], actual_improvement: float, 
                         is_faster: bool) -> float:
@@ -1858,7 +1941,7 @@ class RLNCUAgent(FeedbackAgent):
         """
         
         # 如果这是第一次调用则初始化
-        if self.initial_cycles is None:
+        if self.initial_measurement is None:
             await self.initialize()
         
         # 为这个任务开启一个新的轨迹
@@ -1870,9 +1953,17 @@ class RLNCUAgent(FeedbackAgent):
         
         try:
             # 分析初始代码，建立 rollout 的起始性能状态。
-            annotated_ncu, ncu_log, _, cycles = await self._profile_candidate(filepath)
+            annotated_ncu, ncu_log, _, measurement = await self._profile_candidate(filepath)
             metrics = parse_ncu_metrics(ncu_log)
-            initial_state = await self.database.get_state_from_ncu_report(ncu_log, metrics, code, elapsed_cycles=cycles)
+            initial_state = await self.database.get_state_from_ncu_report(
+                ncu_log,
+                metrics,
+                code,
+                elapsed_cycles=(
+                    int(measurement.value)
+                    if measurement.unit is MeasurementUnit.CYCLES else None
+                ),
+            )
             
             # 运行优化 rollout。
             trajectory = await self.run_rollout(code, initial_state)
@@ -1880,24 +1971,40 @@ class RLNCUAgent(FeedbackAgent):
             await self._record_completed_trajectory(trajectory)
             
             # 更新最佳表现
-            if trajectory.final_cycles < self.best_cycles:
-                self.best_cycles = trajectory.final_cycles
-                is_faster = True
-            else:
+            try:
+                is_faster = (
+                    trajectory.final_measurement is not None
+                    and (
+                        self.best_measurement is None
+                        or trajectory.final_measurement.is_faster_than(self.best_measurement)
+                    )
+                )
+            except MeasurementComparisonError:
                 is_faster = False
+            if is_faster:
+                self.best_measurement = trajectory.final_measurement
             
             # 准备反馈消息
             if trajectory.steps:
-                best_step = min(trajectory.steps, key=lambda s: s.cycles)
-                if self.initial_cycles is not None and self.initial_cycles > 0:
-                    improvement_pct = ((self.initial_cycles - best_step.cycles) / self.initial_cycles) * 100
-                else:
+                best_step = trajectory.steps[0]
+                for candidate in trajectory.steps[1:]:
+                    try:
+                        if candidate.measurement.is_faster_than(best_step.measurement):
+                            best_step = candidate
+                    except MeasurementComparisonError:
+                        continue
+                try:
+                    improvement_pct = (
+                        (best_step.measurement.speedup_over(self.initial_measurement) - 1.0) * 100.0
+                        if self.initial_measurement is not None else 0.0
+                    )
+                except MeasurementComparisonError:
                     improvement_pct = 0.0
                 
                 feedback_msg = f"""Optimization trajectory completed with {len(trajectory.steps)} steps.
 
 BEST RESULT:
-- Cycles: {best_step.cycles} (vs initial: {self.initial_cycles})
+- Measurement: {format_measurement(best_step.measurement)} (vs initial: {format_measurement(self.initial_measurement)})
 - Overall improvement: {improvement_pct:.1f}%
 - Best technique: {best_step.action}
 - Total reward: {trajectory.total_reward:.2f}
@@ -1924,6 +2031,7 @@ The optimization process is learning and adapting. Continue with further optimiz
                     filename=str(best_file),
                     contents=best_step.code,
                     elapsed_cycles=best_step.cycles,
+                    measurement=best_step.measurement,
                     ncu_log=ncu_log,
                     annotated_ncu=annotated_ncu,
                     optimization_technique=best_step.action,
@@ -1939,7 +2047,11 @@ The optimization process is learning and adapting. Continue with further optimiz
                         {"role": "user", "content": "No successful optimization steps completed. Please try a different approach."}
                     ],
                     success=False,
-                    elapsed_cycles=cycles,
+                    elapsed_cycles=(
+                        int(measurement.value)
+                        if measurement.unit is MeasurementUnit.CYCLES else None
+                    ),
+                    measurement=measurement,
                     ncu_log=ncu_log,
                     annotated_ncu=annotated_ncu,
                     state=initial_state
@@ -2023,9 +2135,19 @@ The optimization process is learning and adapting. Continue with further optimiz
         return {
             'total_trajectories': self.total_trajectories,
             'iteration_count': self.iteration_count,
-            'initial_cycles': self.initial_cycles,
-            'best_cycles': self.best_cycles,
-            'overall_improvement': ((self.initial_cycles - self.best_cycles) / self.initial_cycles * 100) if self.initial_cycles else 0,
+            'initial_measurement': (
+                self.initial_measurement.to_dict() if self.initial_measurement is not None else None
+            ),
+            'best_measurement': (
+                self.best_measurement.to_dict() if self.best_measurement is not None else None
+            ),
+            'overall_improvement': (
+                (self.best_measurement.speedup_over(self.initial_measurement) - 1.0) * 100.0
+                if self.initial_measurement is not None
+                and self.best_measurement is not None
+                and self.initial_measurement.comparison_key == self.best_measurement.comparison_key
+                else 0
+            ),
             'buffer_stats': self.replay_buffer.get_statistics(),
             'database_stats': self.database.get_database_stats()
         }

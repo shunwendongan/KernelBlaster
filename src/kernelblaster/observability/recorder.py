@@ -31,8 +31,10 @@ import threading
 from typing import Any
 import uuid
 
+from ..measurements import Measurement
 
-SCHEMA_VERSION = "2.0"
+
+SCHEMA_VERSION = "3.0"
 _SENSITIVE_KEY_PARTS = (
     "api_key",
     "apikey",
@@ -100,6 +102,16 @@ def redact_secrets(value: Any, key: str = "") -> Any:
         redacted = _AUTH_PATTERN.sub(r"\1[REDACTED]", redacted)
         redacted = _QUERY_SECRET_PATTERN.sub(r"\1[REDACTED]", redacted)
         return _URL_USERINFO_PATTERN.sub(r"\1[REDACTED]@", redacted)
+    return value
+
+
+def _serialize_measurements(value: Any) -> Any:
+    if isinstance(value, Measurement):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return {str(key): _serialize_measurements(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_measurements(item) for item in value]
     return value
 
 
@@ -378,7 +390,7 @@ class RunRecorder:
                 "stage": stage,
                 "candidate_id": candidate_id,
                 "attempt": attempt,
-                "data": redact_secrets(data or {}),
+                "data": redact_secrets(_serialize_measurements(data or {})),
             }
             with self.events_path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n")
@@ -504,6 +516,12 @@ class RunRecorder:
                     "outcome": outcome,
                     "profiling_mode": profiling_mode,
                     "reason": data.get("reason"),
+                    "reason_code": data.get("reason_code", "none"),
+                    "execution_status": data.get("execution_status", "not_run"),
+                    "correctness_status": data.get("correctness_status", "not_run"),
+                    "timing_status": data.get("timing_status", "not_run"),
+                    "diagnostic_status": data.get("diagnostic_status", "not_requested"),
+                    "measurement": data.get("measurement"),
                     "metrics": data.get("metrics", {}),
                 }
             )

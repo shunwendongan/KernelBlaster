@@ -20,8 +20,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .base import LLMConfigurationError, LLMProvider
-from .openai_compatible import OpenAICompatibleProvider, OpenAICompatibleSettings
-
 if TYPE_CHECKING:
     from ..config.config import SystemConfig
 
@@ -50,6 +48,10 @@ def get_llm_provider(config: type[SystemConfig]) -> LLMProvider:
         raise LLMConfigurationError(
             f"Unsupported KERNELBLASTER_LLM_PROVIDER: {config.LLM_PROVIDER}"
         )
+
+    # Keep the optional OpenAI client out of CPU-only imports. This lets
+    # profiling and artifact tooling run without the ``llm`` extra installed.
+    from .openai_compatible import OpenAICompatibleProvider, OpenAICompatibleSettings
 
     _provider = OpenAICompatibleProvider(
         OpenAICompatibleSettings(

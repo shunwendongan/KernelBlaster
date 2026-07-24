@@ -31,6 +31,8 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 import threading
 
+from ..measurements import Measurement
+
 def get_elapsed_cycles_v2(text: str) -> int:
     """
     获取 `get_elapsed_cycles_v2` 对应的领域操作，并返回调用方所需的标准化结果。
@@ -222,6 +224,8 @@ class OptimizationEntry:
     predicted_speedup: float = 1.0  # 预期加速（比率）
     actual_speedup: Optional[float] = None  # 最近的加速测量
     initial_elapsed_cycles: Optional[int] = None  # 基线经过周期
+    initial_measurement: Optional[dict[str, Any]] = None
+    last_measurement: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -439,7 +443,7 @@ class GPUOptimizationDatabase:
                 }
 
             data = {
-                "schema_version": "2.0",
+                "schema_version": "3.0",
                 "known_states": {k: _asdict(v) for k, v in self.known_states.items()},
                 "optimization_strategies": optimization_strategies,
                 "composite_optimizations": {
@@ -2095,7 +2099,8 @@ CODE IMPLEMENTATION:
             self.composite_optimizations[state].append(composite)
 
     def update_optimization_result(self, state: str, technique: str, actual_improvement: float,
-                                    current_file_path: Optional[Path] = None):
+                                    current_file_path: Optional[Path] = None,
+                                    measurement: Measurement | None = None):
             # 记录更新尝试
             # 以实际结果更新优化条目
             """
@@ -2248,6 +2253,8 @@ CODE IMPLEMENTATION:
                             else:  # 预测不佳
                                 opt.confidence_score = max(0.1, opt.confidence_score - 0.1)
                         # -- 日志更改 --------------------------------------------------
+                        if measurement is not None:
+                            opt.last_measurement = measurement.to_dict()
                         self._log_db_change(
                             "update_optimization_result",
                             {
@@ -2261,12 +2268,19 @@ CODE IMPLEMENTATION:
                                 "predicted_speedup": opt.predicted_speedup,
                                 "actual_speedup": opt.actual_speedup,
                                 "initial_elapsed_cycles": opt.initial_elapsed_cycles,
+                                "last_measurement": opt.last_measurement,
                             },
                         )
                         # 对于首次使用的条目，我们保留原样的信心。
                         break
 
-    def update_composite_optimization_result(self, state: str, composite_id: str, actual_improvement: float):
+    def update_composite_optimization_result(
+        self,
+        state: str,
+        composite_id: str,
+        actual_improvement: float,
+        measurement: Measurement | None = None,
+    ):
         """
         更新复合优化结果以进行跟踪和学习。
 
@@ -2298,6 +2312,7 @@ CODE IMPLEMENTATION:
                             "predicted_improvement": comp_opt.predicted_improvement,
                             "confidence_score": comp_opt.confidence_score,
                             "usage_count": comp_opt.usage_count,
+                            "measurement": measurement.to_dict() if measurement is not None else None,
                         },
                     )
                     break

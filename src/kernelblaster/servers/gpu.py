@@ -30,6 +30,7 @@ import stat
 from typing import Optional
 
 from .server_logging import get_log_config
+from .security import sanitized_worker_environment
 from .utils import safe_kill_process
 from .auth import require_worker_token
 from ..config import config
@@ -59,28 +60,6 @@ class Profiler(str, Enum):
 
 ALLOWED_PROFILERS = {profiler.value for profiler in Profiler}
 FORBIDDEN_ARGUMENT_TOKENS = {";", "|", "||", "&&", ">", ">>", "<", "2>", "2>&1"}
-SECRET_ENVIRONMENT_MARKERS = (
-    "API_KEY",
-    "AUTHORIZATION",
-    "CREDENTIAL",
-    "PASSWORD",
-    "SECRET",
-    "TOKEN",
-)
-
-
-def sanitized_worker_environment(
-    source: Optional[dict[str, str]] = None,
-) -> dict[str, str]:
-    """Build the untrusted worker environment without control-plane secrets."""
-    source = source or os.environ
-    return {
-        str(key): str(value)
-        for key, value in source.items()
-        if not any(marker in str(key).upper() for marker in SECRET_ENVIRONMENT_MARKERS)
-    }
-
-
 async def read_upload_with_limit(upload: UploadFile, limit: int) -> bytes:
     chunks: list[bytes] = []
     size = 0

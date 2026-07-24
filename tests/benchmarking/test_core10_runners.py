@@ -23,6 +23,59 @@ CANDIDATES = _load("benchmark_candidates", "benchmark_candidates.py")
 ANALYZE = _load("analyze_core10_comparison", "analyze_core10_comparison.py")
 
 
+def _manifest(tasks):
+    return {
+        "schema_version": "2.0",
+        "runtime_contract": {
+            "device": "cuda",
+            "gpu_architectures": ["sm_86"],
+            "input_dtype": "fp16",
+            "accumulation_dtype": "fp32",
+            "layout": "contiguous_row_major",
+            "stream_mode": "legacy_default",
+            "max_streams": 1,
+            "graph_capture": False,
+            "directions": ["inference_forward"],
+            "backward": False,
+            "fallback": "none",
+            "production_ready": False,
+        },
+        "tasks": tasks,
+    }
+
+
+def _candidate(task_id, source, **extra):
+    candidate = {
+        "id": task_id,
+        "name": "candidate",
+        "source": source,
+        "supported_cases": [
+            {
+                "case_id": "canonical",
+                "class": "canonical",
+                "shape": {"M": 1, "K": 1},
+                "correctness": True,
+                "performance": True,
+            }
+        ],
+    }
+    if task_id in {"004", "007", "036", "040", "095"}:
+        candidate.update(
+            {
+                "numerics_profile": "test",
+                "resource_policy": {
+                    "kind": "none",
+                    "ownership": "none",
+                    "workspace_bytes": 0,
+                },
+                "reentrant_under_contract": True,
+                "requires_prewarm": False,
+            }
+        )
+    candidate.update(extra)
+    return candidate
+
+
 def test_pytorch_matrix_covers_every_core10_task():
     expected = {"004", "007", "019", "023", "026", "036", "040", "047", "088", "095"}
     assert set(PYTORCH.CORE10_TASKS) == expected
@@ -40,17 +93,15 @@ def test_candidate_manifest_resolves_relative_sources(tmp_path):
     manifest = tmp_path / "candidates.json"
     manifest.write_text(
         json.dumps(
-            {
-                "schema_version": "1.0",
-                "tasks": [
-                    {
-                        "id": "004",
-                        "name": "candidate",
-                        "source": source.name,
-                        "extra_correctness_drivers": [driver.name],
-                    }
-                ],
-            }
+            _manifest(
+                [
+                    _candidate(
+                        "004",
+                        source.name,
+                        extra_correctness_drivers=[driver.name],
+                    )
+                ]
+            )
         ),
         encoding="utf-8",
     )
@@ -65,18 +116,29 @@ def test_candidate_manifest_rejects_duplicate_ids(tmp_path):
     manifest = tmp_path / "candidates.json"
     manifest.write_text(
         json.dumps(
-            {
-                "schema_version": "1.0",
-                "tasks": [
-                    {"id": "004", "name": "a", "source": source.name},
-                    {"id": "004", "name": "b", "source": source.name},
-                ],
-            }
+            _manifest(
+                [
+                    _candidate("004", source.name, name="a"),
+                    _candidate("004", source.name, name="b"),
+                ]
+            )
         ),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="duplicate"):
         CANDIDATES.load_candidates(manifest)
+
+
+def test_candidate_runner_forwards_explicit_gpu_and_sm():
+    assert CANDIDATES._benchmark_target_arguments(
+        "NVIDIA A100-SXM4-80GB",
+        "sm_80",
+    ) == [
+        "--gpu",
+        "NVIDIA A100-SXM4-80GB",
+        "--sm",
+        "sm_80",
+    ]
 
 
 def test_comparison_selects_only_verified_improvements(tmp_path):
@@ -198,7 +260,7 @@ def test_comparison_excludes_unstable_pytorch_method():
     assert all(row["pytorch_best_method"] != "unstable_but_fast" for row in rows)
 
 
-def test_core10_manifest_declares_edge_drivers_and_non_reentrant_candidates():
+def test_core10_manifest_declares_hardened_edge_contracts():
     payload = json.loads(
         (ROOT / "portfolio" / "case_studies" / "core10" / "candidates.json").read_text(
             encoding="utf-8"
@@ -207,10 +269,18 @@ def test_core10_manifest_declares_edge_drivers_and_non_reentrant_candidates():
     tasks = {task["id"]: task for task in payload["tasks"]}
     for task_id in ("004", "007", "036", "040", "095"):
         assert tasks[task_id]["extra_correctness_drivers"]
+        assert tasks[task_id]["reentrant_under_contract"] is True
+        assert tasks[task_id]["supported_cases"][0]["case_id"] == "canonical"
+        assert tasks[task_id]["supported_cases"][0]["performance"] is True
+        assert all(
+            not case["performance"]
+            for case in tasks[task_id]["supported_cases"][1:]
+        )
         for relative in tasks[task_id]["extra_correctness_drivers"]:
             assert (ROOT / "portfolio" / "case_studies" / "core10" / relative).resolve().is_file()
-    for task_id in ("007", "040", "095"):
-        assert tasks[task_id]["reentrant"] is False
+    assert tasks["040"]["resource_policy"]["workspace_bytes"] == 32896
+    assert tasks["095"]["resource_policy"]["workspace_bytes"] == 2048
+    assert tasks["095"]["target_dtype"] == "int64"
 
 
 def test_bilingual_confirmation_report_labels_outcomes_and_links_json():

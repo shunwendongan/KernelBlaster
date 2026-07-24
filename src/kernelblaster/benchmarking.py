@@ -6,6 +6,7 @@ import io
 import math
 from pathlib import Path
 import re
+import shutil
 import statistics
 from typing import Any, Iterable
 
@@ -62,6 +63,14 @@ def find_launch_definition(source: str) -> tuple[str, tuple[int, int]]:
 def normalize_cuda_source(source: str) -> tuple[str, list[str]]:
     """Remove explicit host synchronization only from the launcher body."""
     replacements = [
+        (
+            re.compile(
+                r"require_cuda\s*\(\s*\"cudaDeviceSynchronize\"\s*,\s*"
+                r"cudaDeviceSynchronize\s*\(\s*\)\s*\)\s*;"
+            ),
+            'require_cuda("cudaGetLastError", cudaGetLastError());',
+            "cudaDeviceSynchronize via require_cuda",
+        ),
         (
             re.compile(
                 r"CUDA_CHECK\s*\(\s*cudaDeviceSynchronize\s*\(\s*\)\s*\)\s*;"
@@ -236,15 +245,24 @@ def instrument_driver(
 
 
 def instrument_profiler_driver(driver: str) -> str:
-    """Limit Nsight Compute collection to the target launcher call."""
+    """Prewarm resources, then limit Nsight Compute to one launcher call."""
     call, span = find_launch_call(driver)
     block = (
-        "cudaProfilerStart();\n"
+        "{\n"
         f"    {call}\n"
-        "    cudaProfilerStop();"
+        "    cudaDeviceSynchronize();\n"
+        "    cudaProfilerStart();\n"
+        f"    {call}\n"
+        "    cudaDeviceSynchronize();\n"
+        "    cudaProfilerStop();\n"
+        "}"
     )
     instrumented = driver[: span[0]] + block + driver[span[1] :]
-    return "#include <cuda_profiler_api.h>\n" + instrumented
+    return (
+        "#include <cuda_profiler_api.h>\n"
+        "#include <cuda_runtime.h>\n"
+        + instrumented
+    )
 
 
 def percentile(values: Iterable[float], fraction: float) -> float:
@@ -356,3 +374,11 @@ def write_compilation_units(
     (directory / "main.cpp").write_text(main, encoding="utf-8")
     (directory / "cuda_model.cuh").write_text(header, encoding="utf-8")
     (directory / "cuda_model.cu").write_text(cuda, encoding="utf-8")
+    if '#include "correctness_metrics.h"' in main:
+        support_header = (
+            Path(__file__).resolve().parent
+            / "servers"
+            / "cuda_env"
+            / "correctness_metrics.h"
+        )
+        shutil.copy2(support_header, directory / support_header.name)

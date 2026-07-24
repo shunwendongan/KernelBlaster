@@ -16,6 +16,7 @@ from src.kernelblaster.servers.gpu import (
     sanitized_worker_environment,
 )
 from src.kernelblaster.servers.security import allowed_source_path
+from src.kernelblaster.servers.management import _worker_environment
 
 
 @pytest.mark.asyncio
@@ -56,6 +57,18 @@ def test_worker_environment_does_not_inherit_llm_credentials():
         }
     )
     assert sanitized == {"PATH": "/usr/bin", "CUDA_VISIBLE_DEVICES": "0"}
+
+
+def test_managed_worker_environment_keeps_only_the_worker_token(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "control-secret")
+    monkeypatch.setenv("KERNELBLASTER_LLM_API_KEY", "provider-secret")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    monkeypatch.setattr(config, "WORKER_TOKEN", "unit-worker-token")
+    environment = _worker_environment()
+    assert environment["PATH"] == "/usr/bin"
+    assert environment["KERNELBLASTER_WORKER_TOKEN"] == "unit-worker-token"
+    assert "OPENAI_API_KEY" not in environment
+    assert "KERNELBLASTER_LLM_API_KEY" not in environment
 
 
 def test_source_path_escape_is_rejected(tmp_path, monkeypatch):

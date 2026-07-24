@@ -3,15 +3,15 @@
 **English** | [简体中文](architecture.zh-CN.md)
 
 <!-- ARCHITECTURE_STATUS:START -->
-Current measured state (2026-07-21):
+Current measured state (2026-07-23):
 
 - RTX 3080 / `sm_86` CUDA build, correctness, and CUDA Events: **completed**
 - Same-GPU PyTorch eager/out/fused comparison: **completed**
 - Historical v1 manual Core 10 strict verified improvements: **4/10**
 - Full manual schema-v2 confirmation: **4 improved, 1 no improvement, 5 inconclusive**
-- LLM live smoke: **not rerun; historical result was HTTP 401**; no Agent Core 10 search claim
-- NCU counter attribution: **blocked by `ERR_NVGPUCTRPERM`**
-- Cross-GPU comparison: **not run; deferred Day 11–14**
+- LLM live smoke: **failed: current HTTP 401 (1 request, 0 retries, 0 tokens; 2026-07-22)**; no Agent Core 10 search claim
+- NCU counter attribution: **blocked by `ERR_NVGPUCTRPERM (non-root Docker/WSL; one no-network SYS_ADMIN retry also blocked; Windows native control passed)`**
+- Cross-GPU comparison: **blocked by `requires authorized A100/L40S rental`**
 
 Canonical status lives in `portfolio/status.json`; measured values are derived from the checked-in comparison JSON. `scripts/sync_portfolio_docs.py --check` rejects stale generated blocks and broken evidence links.
 <!-- ARCHITECTURE_STATUS:END -->
@@ -100,6 +100,56 @@ flowchart LR
 `benchmark_cuda.py` compiles and runs original and launcher-normalized sources for correctness before timing. It removes only explicit host synchronization from the launcher, records both source hashes, calibrates inner loops, alternates AB/BA order, captures telemetry, and performs one cooldown/retest when Session spread exceeds 5%.
 
 `benchmark_candidates.py` resolves `portfolio/case_studies/core10/candidates.json`, serializes all GPU work, retains failed or unstable candidates, and writes an incremental suite summary. `benchmark_pytorch.py` uses fresh processes per Session and exposes normal eager calls plus preallocated or fused alternatives where they materially change the comparison. `analyze_core10_comparison.py` keeps diagnostic medians separate from the strict fallback score.
+
+## Candidate capability boundary
+
+The Core 10 candidate manifest now uses schema 2.0. The standalone
+`launch_gpu_implementation(void*, ...)` functions are private implementations;
+the Python runner is the supported entry point because only it can validate
+architecture, dtype, layout, stream, graph, direction, target dtype, and shape
+metadata before compilation or CUDA initialization.
+
+```bash
+python scripts/benchmark_candidates.py \
+  --task-id 036 \
+  --describe-capabilities
+```
+
+Capability responses use the `KERNELBLASTER_CAPABILITY_JSON` marker. Exit code
+0 means supported/describe, 2 means a malformed request or unknown task, and 5
+means a well-formed but unsupported request. Rejections occur before the output
+directory or any subprocess is created. The hardened 004/007/036/040/095
+contracts are FP16 input with FP32 reference/accumulation, contiguous row-major,
+legacy default stream, one stream, inference-forward only, no graph capture,
+and no fallback. All other requests fail explicitly; none silently route to
+PyTorch.
+
+Canonical cases alone may enter the five-Session performance protocol. Edge
+cases are correctness-only and run three seeds with five deterministic launches.
+Mismatch, non-finite, mean, RMSE, and maximum errors cover every element;
+p50/p90/p99/p99.9 use a recorded deterministic-stride sample capped at
+1,048,576 elements per case. Aggregate quantiles are explicitly labeled as the
+maximum per-case quantile envelope, rather than a pooled distribution. Task 007
+keeps its very large upstream canonical baseline in the official driver and adds
+a candidate-only three-seed/five-launch canonical driver. This satisfies the
+strict candidate matrix without repeating the naive upstream 16K×16K path 15
+times; boundary/odd/neighbor cases remain in the shared edge driver.
+
+Tasks 007, 040, and 095 own cuBLAS/workspace state in per-host-thread,
+per-CUDA-device RAII contexts. Their fixed contracts are respectively one
+cuBLAS handle, 32,896 bytes, and 2,048 bytes; initialization occurs before
+formal timing and thread teardown releases the resources. Dedicated GPU drivers
+check five-call reuse, two simultaneous host threads on `cudaStreamLegacy`,
+thread-exit cleanup, bounded steady-state device memory, and independent FP32
+goldens. Release-build initialization/cleanup failures emit stable resource
+markers that the runner maps to `blocked`; execution errors remain `failed`.
+Profiler executables prewarm once before enabling collection. The manifest remains
+`production_ready=false`: arbitrary dtype/layout, non-default or multiple
+streams, CUDA Graph capture, backward, and arbitrary shapes are not supported.
+
+Cross-GPU validation must be explicit. `--portability-replay-from sm_86 --sm
+sm_80` labels an A100 run as `sm86_candidate_portability_replay_on_sm80`, forces
+correctness-only execution, and does not expand the advertised sm_86 contract.
 
 ## Living documentation pipeline
 

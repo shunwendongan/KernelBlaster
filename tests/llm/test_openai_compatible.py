@@ -19,11 +19,13 @@ def _response(
     content: str,
     *,
     request_id: str = "request-1",
+    completion_id: str = "completion-1",
     model: str = "gpt-5.6-terra",
     usage: dict | None = None,
 ):
     return SimpleNamespace(
-        id=request_id,
+        id=completion_id,
+        _request_id=request_id,
         model=model,
         choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
         usage=usage,
@@ -88,11 +90,30 @@ async def test_client_side_fanout_preserves_order_and_uses_n_one():
 
     assert result.generations == [f"candidate-{index}" for index in range(4)]
     assert result.response_models == ["gpt-5.6-terra"] * 4
+    assert result.request_ids == [f"request-{index}" for index in range(4)]
     assert result.usage["total_tokens"] == 20
     assert len(fake.completions.calls) == 4
     assert all(call["n"] == 1 for call in fake.completions.calls)
     assert all(call["reasoning_effort"] == "low" for call in fake.completions.calls)
     assert all(call["max_completion_tokens"] == 32 for call in fake.completions.calls)
+
+
+@pytest.mark.asyncio
+async def test_completion_id_is_not_reported_as_http_request_id():
+    async def behavior(_index, _kwargs):
+        response = _response(
+            "ok",
+            request_id="",
+            completion_id="chatcmpl-not-a-request-id",
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        )
+        del response._request_id
+        return response
+
+    provider = OpenAICompatibleProvider(_settings(), client=_client(behavior))
+    result = await provider.generate([{"role": "user", "content": "x"}], "model")
+
+    assert result.request_ids == []
 
 
 @pytest.mark.asyncio
@@ -128,7 +149,7 @@ async def test_concurrency_never_exceeds_configured_limit():
     assert maximum == 2
 
 
-@pytest.mark.parametrize("status_code", [408, 409, 429, 500, 503])
+@pytest.mark.parametrize("status_code", [429, 500, 503])
 @pytest.mark.asyncio
 async def test_retryable_statuses_are_retried(monkeypatch, status_code):
     async def no_sleep(_delay):
@@ -153,7 +174,7 @@ async def test_retryable_statuses_are_retried(monkeypatch, status_code):
     assert result.attempts == 2
 
 
-@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 422])
+@pytest.mark.parametrize("status_code", [400, 401, 403, 404, 408, 409, 422])
 @pytest.mark.asyncio
 async def test_non_retryable_statuses_fail_immediately(status_code):
     async def behavior(_index, _kwargs):

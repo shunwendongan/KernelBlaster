@@ -331,7 +331,10 @@ class RunRecorder:
             manifest["finished_at"] = self._summary["finished_at"]
             if cuda_summary["correctness_checks"]:
                 manifest["validation"]["cuda"] = "RUN"
-            if self._summary["llm"]["requests_completed"]:
+            llm_summary = self._summary["llm"]
+            if llm_summary["requests_failed"]:
+                manifest["validation"]["llm_smoke_test"] = "FAILED"
+            elif llm_summary["requests_completed"]:
                 manifest["validation"]["llm_smoke_test"] = "RUN"
             if cuda_summary["profiles"]:
                 manifest["validation"][
@@ -346,10 +349,13 @@ class RunRecorder:
                 if status in {"failed", "timeout", "blocked"}
             }
             manifest["budget"]["consumed"] = {
-                "requests": self._summary["llm"]["requests_completed"],
-                "prompt_tokens": self._summary["llm"]["prompt_tokens"],
-                "completion_tokens": self._summary["llm"]["completion_tokens"],
-                "total_tokens": self._summary["llm"]["total_tokens"],
+                # A failed HTTP attempt still consumes the request budget. The
+                # provider emits one request_started event for every attempt,
+                # including retries, so this is the auditable hard-cap count.
+                "requests": llm_summary["requests_started"],
+                "prompt_tokens": llm_summary["prompt_tokens"],
+                "completion_tokens": llm_summary["completion_tokens"],
+                "total_tokens": llm_summary["total_tokens"],
             }
             gates = manifest["validation"]["gates"]
             if cuda_summary["compilations"]:
@@ -360,7 +366,9 @@ class RunRecorder:
                 gates["events_stability"] = "RUN"
             if "ncu" in tasks["profiling_modes"]:
                 gates["ncu_permission"] = "RUN"
-            if self._summary["llm"]["requests_completed"]:
+            if llm_summary["requests_failed"]:
+                gates["api_smoke"] = "FAILED"
+            elif llm_summary["requests_completed"]:
                 gates["api_smoke"] = "RUN"
             _atomic_json_write(self.manifest_path, manifest)
 

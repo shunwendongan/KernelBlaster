@@ -3,10 +3,10 @@
 [简体中文](README.zh-CN.md) | **English**
 
 <!-- PORTFOLIO_PROGRESS:START -->
-**Last updated: 2026-07-21**
+**Last updated: 2026-07-23**
 
 - Days 1–2: provider, recorder, suite validation, dry-run, and CPU tests are complete.
-- Days 3–7: WSL2/RTX 3080, container, compilation, correctness, and CUDA Events infrastructure are complete; the historical API smoke returned 401 and the current credential has not been revalidated.
+- Days 3–7: WSL2/RTX 3080, container, compilation, correctness, and CUDA Events infrastructure are complete; API smoke status: failed: current HTTP 401 (1 request, 0 retries, 0 tokens; 2026-07-22).
 - Days 8–10: RMSNorm V0–V3c is complete, with 49.348× in the independent deep run and 52.772× in the unified Core 10 rerun.
 - Core 10 follow-up: full manual schema v2 passed 10/10 correctness and produced 4 improvements, 1 no-improvement result, and 5 inconclusive results; 9/10 tasks have a stable PyTorch method.
 - Schema-v2 PyTorch comparison: across the 9/10 comparable tasks with a correct and stable method, the strict geometric mean versus the fastest stable method is 1.053×; task 026 is excluded from that geometric mean.

@@ -60,6 +60,15 @@ void launch_gpu_implementation(void*, void*, int64_t) {
 '''
 
 
+CUDA_WITH_REQUIRE_CUDA_SYNC = r'''
+void require_cuda(const char*, cudaError_t);
+void launch_gpu_implementation(void*, void*, int64_t) {
+    kernel<<<1, 1>>>();
+    require_cuda("cudaDeviceSynchronize", cudaDeviceSynchronize());
+}
+'''
+
+
 def test_normalization_only_removes_host_synchronization():
     normalized, transformations = normalize_cuda_source(CUDA)
     assert "cudaDeviceSynchronize" not in normalized
@@ -76,6 +85,15 @@ def test_normalization_does_not_rewrite_unrelated_host_functions():
     assert "void helper() { cudaDeviceSynchronize(); }" in normalized
     assert normalized.count("cudaGetLastError") == 1
     assert transformations == ["cudaDeviceSynchronize"]
+
+
+def test_normalization_removes_fail_loud_synchronize_wrapper():
+    normalized, transformations = normalize_cuda_source(
+        CUDA_WITH_REQUIRE_CUDA_SYNC
+    )
+    assert "cudaDeviceSynchronize" not in normalized
+    assert 'require_cuda("cudaGetLastError", cudaGetLastError());' in normalized
+    assert transformations == ["cudaDeviceSynchronize via require_cuda"]
 
 
 def test_launch_call_parser_handles_multiline_arguments():
@@ -105,9 +123,16 @@ def test_profiler_driver_limits_collection_to_launcher_call():
     assert instrumented.startswith("#include <cuda_profiler_api.h>")
     assert "cudaProfilerStart();" in instrumented
     assert "cudaProfilerStop();" in instrumented
-    assert instrumented.index("cudaProfilerStart") < instrumented.index(
-        "launch_gpu_implementation(", instrumented.index("int main")
-    )
+    main = instrumented[instrumented.index("int main") :]
+    start = main.index("cudaProfilerStart")
+    launch_positions = [
+        index
+        for index in range(len(main))
+        if main.startswith("launch_gpu_implementation(", index)
+    ]
+    assert len(launch_positions) == 2
+    assert launch_positions[0] < start < launch_positions[1]
+    assert main.count("cudaDeviceSynchronize();") == 2
 
 
 def test_split_compilation_units_moves_declaration_to_header():

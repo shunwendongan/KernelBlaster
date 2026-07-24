@@ -1,9 +1,141 @@
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
 
-#include <cassert>
 #include <cfloat>
+#include <cstdio>
+#include <cstdlib>
 #include <cstdint>
+#include <memory>
+#include <unordered_map>
+
+namespace {
+
+constexpr int kMaxBatchSize = 4096;
+constexpr int kMaxPartialCount = (kMaxBatchSize + 7) / 8;
+constexpr size_t kWorkspaceBytes = kMaxPartialCount * sizeof(float);
+static_assert(kWorkspaceBytes == 2048, "Cross-entropy workspace contract changed.");
+
+[[noreturn]] void fail_cuda(
+    const char* operation,
+    cudaError_t status
+) noexcept {
+    std::fprintf(
+        stderr,
+        "KERNELBLASTER_CUDA_ERROR operation=%s status=%d message=%s\n",
+        operation,
+        static_cast<int>(status),
+        cudaGetErrorString(status)
+    );
+    std::fflush(stderr);
+    std::abort();
+}
+
+void require_cuda(const char* operation, cudaError_t status) noexcept {
+    if (status != cudaSuccess) {
+        fail_cuda(operation, status);
+    }
+}
+
+[[noreturn]] void fail_cuda_resource(
+    const char* operation,
+    cudaError_t status
+) noexcept {
+    std::fprintf(
+        stderr,
+        "KERNELBLASTER_RESOURCE_BLOCKED kind=cuda operation=%s status=%d message=%s\n",
+        operation,
+        static_cast<int>(status),
+        cudaGetErrorString(status)
+    );
+    std::fflush(stderr);
+    std::abort();
+}
+
+void require_cuda_resource(const char* operation, cudaError_t status) noexcept {
+    if (status != cudaSuccess) {
+        fail_cuda_resource(operation, status);
+    }
+}
+
+[[noreturn]] void fail_contract(const char* message) noexcept {
+    std::fprintf(stderr, "KERNELBLASTER_CONTRACT_ERROR message=%s\n", message);
+    std::fflush(stderr);
+    std::abort();
+}
+
+void require_contract(bool condition, const char* message) noexcept {
+    if (!condition) {
+        fail_contract(message);
+    }
+}
+
+void report_cuda_cleanup(const char* operation, cudaError_t status) noexcept {
+    if (status != cudaSuccess) {
+        std::fprintf(
+            stderr,
+            "KERNELBLASTER_RESOURCE_CLEANUP_BLOCKED kind=cuda operation=%s status=%d\n",
+            operation,
+            static_cast<int>(status)
+        );
+        std::fflush(stderr);
+    }
+}
+
+class CrossEntropyContext {
+public:
+    explicit CrossEntropyContext(int device) : device_(device), partials_(nullptr) {
+        require_cuda_resource("cudaSetDevice", cudaSetDevice(device_));
+        require_cuda_resource(
+            "cudaMalloc(cross_entropy_workspace)",
+            cudaMalloc(&partials_, kWorkspaceBytes)
+        );
+    }
+
+    ~CrossEntropyContext() noexcept {
+        int previous_device = -1;
+        const cudaError_t queried = cudaGetDevice(&previous_device);
+        const bool restore = queried == cudaSuccess;
+        report_cuda_cleanup("cudaGetDevice", queried);
+        const cudaError_t selected = cudaSetDevice(device_);
+        report_cuda_cleanup("cudaSetDevice", selected);
+        if (selected == cudaSuccess && partials_ != nullptr) {
+            report_cuda_cleanup(
+                "cudaFree(cross_entropy_workspace)", cudaFree(partials_)
+            );
+        }
+        if (restore && previous_device != device_) {
+            report_cuda_cleanup(
+                "cudaSetDevice(restore)", cudaSetDevice(previous_device)
+            );
+        }
+    }
+
+    CrossEntropyContext(const CrossEntropyContext&) = delete;
+    CrossEntropyContext& operator=(const CrossEntropyContext&) = delete;
+
+    float* partials() const { return partials_; }
+
+private:
+    int device_;
+    float* partials_;
+};
+
+CrossEntropyContext& thread_device_context() {
+    int device = -1;
+    require_cuda_resource("cudaGetDevice", cudaGetDevice(&device));
+    static thread_local std::unordered_map<
+        int, std::unique_ptr<CrossEntropyContext>
+    > contexts;
+    auto found = contexts.find(device);
+    if (found == contexts.end()) {
+        found = contexts.emplace(
+            device, std::make_unique<CrossEntropyContext>(device)
+        ).first;
+    }
+    return *found->second;
+}
+
+}  // namespace
 
 __device__ __forceinline__ float warp_max(float value) {
     for (int offset = 16; offset > 0; offset >>= 1) {
@@ -94,18 +226,17 @@ void launch_gpu_implementation(
     int64_t batch_size,
     int64_t num_classes
 ) {
-    assert(num_classes > 0 && num_classes <= 32);
+    require_contract(
+        batch_size > 0 && batch_size <= kMaxBatchSize,
+        "batch_size must be in [1, 4096]"
+    );
+    require_contract(
+        num_classes > 0 && num_classes <= 10,
+        "num_classes must be in [1, 10]"
+    );
     constexpr int threads = 256;
     const int blocks = static_cast<int>((batch_size + 7) / 8);
-    static float* partials = nullptr;
-    static int capacity = 0;
-    if (blocks > capacity) {
-        if (partials != nullptr) {
-            cudaFree(partials);
-        }
-        cudaMalloc(&partials, blocks * sizeof(float));
-        capacity = blocks;
-    }
+    float* const partials = thread_device_context().partials();
     cross_entropy_partials_kernel<<<blocks, threads>>>(
         partials,
         static_cast<const half*>(predictions),
@@ -119,5 +250,5 @@ void launch_gpu_implementation(
         blocks,
         static_cast<int>(batch_size)
     );
-    cudaDeviceSynchronize();
+    require_cuda("cudaDeviceSynchronize", cudaDeviceSynchronize());
 }

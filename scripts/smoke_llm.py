@@ -26,6 +26,9 @@ from src.kernelblaster.observability import (  # noqa: E402
 )
 
 
+SMOKE_MODEL = "gpt-5.6-sol"
+
+
 def _default_output_dir() -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return ROOT_DIR / "out" / "portfolio" / "smoke" / timestamp
@@ -134,7 +137,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Send one bounded OpenAI-compatible request without logging content."
     )
-    parser.add_argument("--model", default=os.getenv("MODEL", "gpt-5.6-terra"))
+    parser.add_argument(
+        "--model",
+        default=SMOKE_MODEL,
+        choices=(SMOKE_MODEL,),
+        help="Fixed trusted-smoke model; MODEL and alternate CLI values are ignored/rejected.",
+    )
     parser.add_argument(
         "--base-url",
         default=os.getenv("KERNELBLASTER_LLM_BASE_URL", "https://api.openai.com/v1"),
@@ -147,7 +155,7 @@ def main() -> int:
             else "OPENAI_API_KEY"
         ),
     )
-    parser.add_argument("--reasoning-effort", default="low")
+    parser.add_argument("--reasoning-effort", default="none")
     parser.add_argument("--max-completion-tokens", type=int, default=64)
     parser.add_argument("--max-total-tokens", type=int, default=10_000)
     parser.add_argument("--timeout-seconds", type=float, default=180.0)

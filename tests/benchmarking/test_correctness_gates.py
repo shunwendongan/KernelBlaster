@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -53,6 +54,86 @@ def test_correctness_error_gate_rejects_regression():
             },
             candidate_label="candidate",
         )
+
+
+def _distribution_case(case_id: str, seed: int):
+    return {
+        "case_id": case_id,
+        "seed": seed,
+        "shape": {"M": 1, "K": 1},
+        "deterministic": True,
+        "count": 1,
+        "quantile_sample_count": 1,
+        "quantile_sampling": "deterministic_stride",
+        "quantile_max_samples": 1048576,
+        "mismatch_count": 0,
+        "nonfinite_count": 0,
+        "normalized_max": 0.5,
+    }
+
+
+def _distribution():
+    payload = {
+        "count": 3,
+        "quantile_sample_count": 3,
+        "quantile_sampling": "deterministic_stride",
+        "quantile_max_samples": 1048576,
+        "aggregate_quantile_semantics": "max_per_case_quantile_envelope",
+        "mismatch_count": 0,
+        "nonfinite_count": 0,
+        "cases": [_distribution_case("boundary", seed) for seed in (0, 42, 20260721)],
+    }
+    for name in MODULE.CORRECTNESS_DISTRIBUTION_METRICS:
+        payload[name] = 0.5
+    return payload
+
+
+def test_correctness_distribution_requires_complete_three_seed_matrix():
+    MODULE._validate_correctness_distribution(_distribution())
+    payload = _distribution()
+    payload["cases"].pop()
+    payload["count"] = 2
+    payload["quantile_sample_count"] = 2
+    with pytest.raises(RuntimeError, match="seed set"):
+        MODULE._validate_correctness_distribution(payload)
+
+
+def test_correctness_distribution_rejects_tolerance_mismatch():
+    payload = _distribution()
+    payload["mismatch_count"] = 1
+    with pytest.raises(RuntimeError, match="mismatches"):
+        MODULE._validate_correctness_distribution(payload)
+
+
+def test_resource_lifecycle_marker_maps_to_blocked_path(tmp_path):
+    completed = subprocess.CompletedProcess(
+        ["candidate"],
+        -6,
+        stdout="",
+        stderr=(
+            "KERNELBLASTER_RESOURCE_BLOCKED kind=cuda "
+            "operation=cudaMalloc status=2\n"
+        ),
+    )
+    with pytest.raises(MODULE.BlockedResourceError, match="resource lifecycle blocked"):
+        MODULE._raise_if_resource_blocked(
+            completed, log_path=tmp_path / "correctness.log"
+        )
+
+
+def test_kernel_execution_error_is_not_mislabeled_as_resource_blocker(tmp_path):
+    completed = subprocess.CompletedProcess(
+        ["candidate"],
+        -6,
+        stdout="",
+        stderr=(
+            "KERNELBLASTER_CUDA_ERROR operation=cudaDeviceSynchronize "
+            "status=700\n"
+        ),
+    )
+    MODULE._raise_if_resource_blocked(
+        completed, log_path=tmp_path / "correctness.log"
+    )
 
 
 def _comparison(*, gate_passed: bool = True, formal_valid: bool = True):

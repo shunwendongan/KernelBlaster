@@ -7,15 +7,17 @@ This document is the living validation record for the portfolio fork. Historical
 <!-- VALIDATION_STATUS:START -->
 | Gate | Current status | Canonical evidence |
 | --- | --- | --- |
-| Provider/Recorder/Suite CPU tests | PASSED — 100 passed | `tests/` |
-| Real gateway smoke | NOT RUN — historical HTTP 401 has not been revalidated | historical `artifacts/portfolio-v1.0/results/analysis_summary.json` |
+| Provider/Recorder/Suite CPU tests | PASSED — 177 passed | `tests/` |
+| Real gateway smoke | failed: current HTTP 401 (1 request, 0 retries, 0 tokens; 2026-07-22) | `artifacts/portfolio-v2.1/issue-7/rtx3080/trusted-pilot-summary.json` |
 | RTX 3080 container and `sm_86` build | PASSED | `artifacts/portfolio-v1.0/environment/environment.json` |
 | Official candidate correctness | HISTORICAL V1 PASSED — 10/10; schema-v2 full 10/10 passed | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
 | RMSNorm edge correctness | PASSED | committed `edge_driver.cpp` and deep-case artifacts |
 | CUDA Events timing | schema-v2 full confirmation: 4 improved; 1 no improvement; 5 inconclusive | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
 | Same-GPU PyTorch comparison | schema-v2 full confirmation; 9/10 tasks have a stable method | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
-| NCU hardware counters | BLOCKED — `ERR_NVGPUCTRPERM` | environment manifest and historical validation report |
-| Cross-GPU comparison | NOT RUN — deferred Day 11–14 | no performance claim published |
+| Issue #10 capability/resource hardening | 4 formal improvements; 095 remains inconclusive because the upstream baseline spread is 24.37%, so the Issue stays open | `artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json` |
+| Portfolio v2.1 evidence integrity | Exact SHA256 index published | `artifacts/portfolio-v2.1/SHA256SUMS.json` |
+| NCU hardware counters | BLOCKED — `ERR_NVGPUCTRPERM (non-root Docker/WSL; one no-network SYS_ADMIN retry also blocked; Windows native control passed)` | `artifacts/portfolio-v2.1/issue-8/rtx3080/ncu-preflight-summary.json` |
+| Cross-GPU comparison | BLOCKED — `requires authorized A100/L40S rental` | no aggregate cross-GPU performance claim published |
 
 The historical manual follow-up validated all ten candidates and improved 4/10 under the old gate. Those claims remain immutable historical evidence. The full schema-v2 result still confirms manual candidates and must not be generalized to an Agent-search claim.
 <!-- VALIDATION_STATUS:END -->
@@ -91,5 +93,14 @@ python scripts/analyze_core10_comparison.py \
 python scripts/sync_portfolio_docs.py --write
 python scripts/sync_portfolio_docs.py --check
 ```
+
+The GPU/profiler worker is built from `docker/Dockerfile.gpu` and runs as a
+non-root user with `--network none --cap-drop ALL --security-opt
+no-new-privileges`; no API credential is passed into it. Only a one-shot NCU
+container that has already produced `ERR_NVGPUCTRPERM` may add
+`--cap-add SYS_ADMIN`. `--privileged` is never an accepted workaround. On WSL,
+the Nsys smoke also applies [NVIDIA's documented WSL timestamp fallback](https://archive.docs.nvidia.com/nsight-systems/2025.2/ReleaseNotes/index.html)
+(`CuptiUseRawGpuTimestamps=false`), prewarms RMSNorm, and
+accepts the run only when the GPU kernel table contains `rmsnorm_half2_rsqrt`.
 
 The language model remains an external inference service. Rollouts update trajectories and the optimization database; they do not train or fine-tune model weights.

@@ -13,6 +13,11 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
+NCU_PERMISSION_ERROR = "ERR_NVGPUCTRPERM"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+PILOT_MODEL = "gpt-5.6-sol"
+LLM_SECRET_ENV_VARS = ("KERNELBLASTER_LLM_API_KEY", "OPENAI_API_KEY")
+
 
 def _timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -72,11 +77,36 @@ def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
+def _environment_without_llm_secrets() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in LLM_SECRET_ENV_VARS:
+        environment.pop(name, None)
+    return environment
+
+
+def _classify_ncu_probe(
+    completed: subprocess.CompletedProcess[str],
+) -> tuple[str, str | None]:
+    """Classify the NCU gate without hiding setup or execution failures."""
+    if completed.returncode == 0:
+        return "available", "ncu"
+    if completed.returncode not in {124, 127} and NCU_PERMISSION_ERROR in (
+        completed.stdout + completed.stderr
+    ):
+        return "events_only", "events_only"
+    return "failed", None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Run the gated RMSNorm Agent Pilot in the required startup order."
     )
-    parser.add_argument("--model", default=os.getenv("MODEL", "gpt-5.6-terra"))
+    parser.add_argument(
+        "--model",
+        default=PILOT_MODEL,
+        choices=(PILOT_MODEL,),
+        help="Fixed trusted-pilot model; alternate model IDs are rejected.",
+    )
     parser.add_argument("--gpu", default="rtx3080")
     parser.add_argument(
         "--output-dir",
@@ -90,11 +120,13 @@ def main() -> int:
     output_dir.mkdir(parents=True)
 
     stages: list[dict[str, Any]] = []
+    profiler_environment = _environment_without_llm_secrets()
 
     # 1. Environment and dependency check.
     runtime = _run(
         [sys.executable, "scripts/check_runtime_versions.py", "--require-gpu"],
         log_path=output_dir / "01-runtime.log",
+        env=profiler_environment,
         timeout=120,
     )
     stages.append({"stage": "runtime", "returncode": runtime.returncode})
@@ -118,6 +150,7 @@ def main() -> int:
             str(events_dir),
         ],
         log_path=output_dir / "02-04-events.log",
+        env=profiler_environment,
         timeout=3600,
     )
     stages.append({"stage": "compile_correctness_events", "returncode": events.returncode})
@@ -125,7 +158,7 @@ def main() -> int:
         _atomic_json(output_dir / "preflight.json", {"schema_version": "2.0", "stages": stages})
         return 2
 
-    # 5. Optional NCU permission probe; ERR_NVGPUCTRPERM explicitly selects events_only.
+    # 5. NCU gate; only ERR_NVGPUCTRPERM may explicitly select events_only.
     executable = (
         events_dir
         / "036"
@@ -138,15 +171,10 @@ def main() -> int:
     ncu = _run(
         ["ncu", "--section", "SpeedOfLight", str(executable)],
         log_path=output_dir / "05-ncu-probe.log",
+        env=profiler_environment,
         timeout=600,
     )
-    ncu_text = ncu.stdout + ncu.stderr
-    profiling_mode = "ncu" if ncu.returncode == 0 else "events_only"
-    ncu_status = (
-        "blocked_permission"
-        if "ERR_NVGPUCTRPERM" in ncu_text
-        else ("available" if ncu.returncode == 0 else "unavailable")
-    )
+    ncu_status, profiling_mode = _classify_ncu_probe(ncu)
     stages.append(
         {
             "stage": "ncu_permission_probe",
@@ -155,6 +183,16 @@ def main() -> int:
             "profiling_mode": profiling_mode,
         }
     )
+    if profiling_mode is None:
+        _atomic_json(
+            output_dir / "preflight.json",
+            {
+                "schema_version": "2.0",
+                "profiling_mode": None,
+                "stages": stages,
+            },
+        )
+        return 2
 
     # 6. Exactly one bounded authentication smoke request.
     smoke = _run(
@@ -163,10 +201,14 @@ def main() -> int:
             "scripts/smoke_llm.py",
             "--model",
             args.model,
+            "--base-url",
+            OPENAI_BASE_URL,
             "--max-completion-tokens",
             "64",
             "--max-total-tokens",
             "10000",
+            "--reasoning-effort",
+            "none",
             "--output-dir",
             str(output_dir / "api-smoke"),
         ],
@@ -175,7 +217,14 @@ def main() -> int:
     )
     stages.append({"stage": "api_smoke", "returncode": smoke.returncode})
     if smoke.returncode:
-        _atomic_json(output_dir / "preflight.json", {"schema_version": "2.0", "stages": stages})
+        _atomic_json(
+            output_dir / "preflight.json",
+            {
+                "schema_version": "2.0",
+                "profiling_mode": profiling_mode,
+                "stages": stages,
+            },
+        )
         return 2
 
     # 7. RMSNorm Pilot only: 2 rollouts x 2 steps, bounded to 32 requests/250k tokens.
@@ -185,6 +234,11 @@ def main() -> int:
             "LLM_MAX_REQUESTS": "32",
             "LLM_MAX_TOTAL_TOKENS": "250000",
             "LLM_MAX_CONCURRENCY": "2",
+            "LLM_MAX_RETRIES": "2",
+            "LLM_REASONING_EFFORT": "low",
+            "KERNELBLASTER_LLM_PROVIDER": "openai_compatible",
+            "KERNELBLASTER_LLM_BASE_URL": OPENAI_BASE_URL,
+            "MODEL": args.model,
         }
     )
     pilot = _run(
@@ -212,6 +266,8 @@ def main() -> int:
             "1",
             "--problem-numbers",
             "36",
+            "--portfolio-suite",
+            "portfolio/suites/rmsnorm.json",
             "--subset",
             "level1",
             "--gpu",

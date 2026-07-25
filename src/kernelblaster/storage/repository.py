@@ -279,6 +279,67 @@ class JobRepository:
             )
             return result
 
+    def acquire_job_lease(
+        self, *, job_id: str, worker_id: str, ttl_seconds: int = 60
+    ) -> dict[str, Any]:
+        if not worker_id or not 1 <= ttl_seconds <= 3_600:
+            raise ValueError("worker_id and a TTL between 1 and 3600 seconds are required")
+        now_value = _utc_now()
+        now = _timestamp(now_value)
+        expires_at = _timestamp(now_value + timedelta(seconds=ttl_seconds))
+        with self._transaction(immediate=True) as connection:
+            self._recover_expired_leases(connection, now)
+            job = connection.execute(
+                "SELECT * FROM jobs WHERE id = ? AND status = 'pending'", (job_id,)
+            ).fetchone()
+            if job is None:
+                raise KeyError(f"pending job {job_id} does not exist")
+            ordinal = connection.execute(
+                "SELECT COALESCE(MAX(ordinal), 0) + 1 FROM job_attempts WHERE job_id = ?",
+                (job_id,),
+            ).fetchone()[0]
+            attempt = connection.execute(
+                """INSERT INTO job_attempts(job_id, ordinal, status, worker_id, started_at)
+                VALUES (?, ?, 'leased', ?, ?) RETURNING id""",
+                (job_id, ordinal, worker_id, now),
+            ).fetchone()
+            lease_id = uuid.uuid4().hex
+            connection.execute(
+                """INSERT INTO leases(id, job_id, attempt_id, worker_id, acquired_at, renewed_at, expires_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (lease_id, job_id, attempt["id"], worker_id, now, now, expires_at),
+            )
+            connection.execute(
+                "UPDATE jobs SET status = 'leased', updated_at = ? WHERE id = ?",
+                (now, job_id),
+            )
+        return {
+            **self._job_row(job),
+            "status": "leased",
+            "lease_id": lease_id,
+            "attempt_id": attempt["id"],
+            "worker_id": worker_id,
+            "expires_at": expires_at,
+        }
+
+    def cancel_pending_job(self, job_id: str, *, reason: str = "cancelled") -> dict[str, Any]:
+        now = _timestamp()
+        with self._transaction(immediate=True) as connection:
+            job = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if job is None:
+                raise KeyError(f"job {job_id} does not exist")
+            if job["status"] in TERMINAL_JOB_STATUSES:
+                return self._job_row(job)
+            if job["status"] != "pending":
+                raise ValueError("only pending jobs may be cancelled without an active lease")
+            connection.execute(
+                "UPDATE jobs SET status = 'cancelled', updated_at = ?, terminal_reason = ? WHERE id = ?",
+                (now, reason, job_id),
+            )
+            cancelled = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        assert cancelled is not None
+        return self._job_row(cancelled)
+
     def heartbeat_lease(self, *, lease_id: str, worker_id: str, ttl_seconds: int = 60) -> dict[str, Any]:
         if not worker_id or not 1 <= ttl_seconds <= 3_600:
             raise ValueError("worker_id and a TTL between 1 and 3600 seconds are required")
@@ -312,6 +373,7 @@ class JobRepository:
         status: str,
         result: dict[str, Any] | None = None,
         reason: str | None = None,
+        artifact_roles: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if status not in TERMINAL_JOB_STATUSES:
             raise ValueError(f"invalid terminal status: {status}")
@@ -321,6 +383,16 @@ class JobRepository:
             if job is None:
                 raise KeyError(f"job {job_id} does not exist")
             if job["status"] in TERMINAL_JOB_STATUSES:
+                attempt = connection.execute(
+                    "SELECT id FROM job_attempts WHERE job_id = ? ORDER BY ordinal DESC LIMIT 1",
+                    (job_id,),
+                ).fetchone()
+                self._link_job_artifacts(
+                    connection,
+                    job_id=job_id,
+                    attempt_id=attempt["id"] if attempt is not None else None,
+                    artifact_roles=artifact_roles or {},
+                )
                 return {"job": self._job_row(job), "idempotent": True}
             lease = connection.execute(
                 """SELECT * FROM leases WHERE id = ? AND job_id = ? AND worker_id = ?
@@ -341,9 +413,34 @@ class JobRepository:
                 "UPDATE jobs SET status = ?, updated_at = ?, terminal_reason = ? WHERE id = ?",
                 (status, now, reason, job_id),
             )
+            self._link_job_artifacts(
+                connection,
+                job_id=job_id,
+                attempt_id=lease["attempt_id"],
+                artifact_roles=artifact_roles or {},
+            )
             completed = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         assert completed is not None
         return {"job": self._job_row(completed), "idempotent": False}
+
+    @staticmethod
+    def _link_job_artifacts(
+        connection: sqlite3.Connection,
+        *,
+        job_id: str,
+        attempt_id: int | None,
+        artifact_roles: dict[str, str],
+    ) -> None:
+        for digest, role in artifact_roles.items():
+            if connection.execute(
+                "SELECT 1 FROM artifacts WHERE digest = ?", (digest,)
+            ).fetchone() is None:
+                raise KeyError(f"artifact {digest} does not exist")
+            connection.execute(
+                """INSERT OR IGNORE INTO job_artifacts(job_id, attempt_id, digest, role, created_at)
+                VALUES (?, ?, ?, ?, ?)""",
+                (job_id, attempt_id, digest, role, _timestamp()),
+            )
 
     def register_artifact(self, artifact: ArtifactMetadata) -> dict[str, Any]:
         with self._transaction(immediate=True) as connection:

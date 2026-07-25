@@ -61,7 +61,9 @@ TRUSTED_RMSNORM_STEPS = 2
 
 def resolve_target_gpu(gpu: str | None) -> GPUType:
     """Resolve the GPU whose server URL should be configured for this run."""
-    return GPUType(gpu) if gpu is not None else GPUType.current()
+    if gpu is None:
+        raise ValueError("--gpu or GPU_TYPE is required; target selection is explicit")
+    return GPUType(gpu)
 
 
 def _normalize_task_id(value: object) -> str:
@@ -653,36 +655,39 @@ async def async_main() -> int:
     )
     logger.info(f"Logging to {log_file}")
 
-    # initialize resources
-    try:
-        global COMPILE_SERVER, GPU_SERVER
-        COMPILE_SERVER = CompileServer(logger, OUT_DIR, port=args.compiler_port)
-        
-        # Use existing GPU server if URL provided, otherwise create new one
-        if args.gpu_server_url:
-            logger.info(f"Using existing GPU server at {args.gpu_server_url}")
-            config.set_gpu_server_url(resolve_target_gpu(args.gpu), args.gpu_server_url)
-            GPU_SERVER = None  # No need to manage our own server
-        else:
-            GPU_SERVER = GPUServer(logger, OUT_DIR, gpu=args.gpu, port=args.gpu_port)
-            GPU_SERVER.wait_for_connection()
-            if GPU_SERVER.is_managed:
-                assert (
-                    args.gpu is None or args.gpu == GPUType.current().value
-                ), f"GPU type mismatch: {args.gpu} != {GPUType.current().value}. Please supply your own GPU_SERVER_URL_<GPU_TYPE> since --gpu differs from the current GPU type."
-                config.set_gpu_server_url(GPUType.current(), GPU_SERVER.url)
-        
-        COMPILE_SERVER.wait_for_connection()
-        if COMPILE_SERVER.is_managed:
-            config.set_compile_server_url(COMPILE_SERVER.url)
-    except Exception as e:
-        logger.error(f"Failed to initialize resources: {e}")
-        record_event(
-            "runtime_initialization_failed",
-            status="error",
-            data={"error_type": type(e).__name__},
-        )
-        return 2
+    # Legacy workflows may use explicitly configured remote services during the
+    # transition, but Control must never spawn a local compiler or GPU server.
+    if args.cuda or args.cuda_perf or args.benchmark:
+        try:
+            global COMPILE_SERVER, GPU_SERVER
+            target_gpu = resolve_target_gpu(args.gpu)
+            if not config.COMPILE_SERVER_URL:
+                raise RuntimeError(
+                    "Control-local CompileServer startup is disabled. Submit gpu-job/v1 through "
+                    "the Control API, or explicitly configure a legacy COMPILE_SERVER_URL."
+                )
+            if args.gpu_server_url:
+                logger.info(f"Using existing GPU server at {args.gpu_server_url}")
+                config.set_gpu_server_url(target_gpu, args.gpu_server_url)
+            if config.get_gpu_server_url(target_gpu) is None:
+                raise RuntimeError(
+                    "Managed local GPU server startup is disabled. Use the Control gpu-job/v1 API "
+                    "or explicitly configure a legacy GPU server URL."
+                )
+            COMPILE_SERVER = None
+            GPU_SERVER = None
+            logger.info(
+                "Using explicitly configured legacy remote services; Control will not "
+                "create local compile or GPU server processes."
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize resources: {e}")
+            record_event(
+                "runtime_initialization_failed",
+                status="error",
+                data={"error_type": type(e).__name__},
+            )
+            return 2
 
     config.print_config(logger)
 

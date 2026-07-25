@@ -142,12 +142,13 @@ cp -n .env.example ../../secrets/KernelBlaster.control.env
 ```
 
 The root `compose.yaml` is the only deployment specification. Point Compose at
-the external file and give the two services different token audiences:
+the external file and configure distinct control, worker-callback, and
+supervisor-submit token audiences:
 
 ```bash
 export KERNELBLASTER_CONTROL_ENV_FILE="$HOME/secrets/KernelBlaster.control.env"
 export KERNELBLASTER_STATE_HOST_DIR="$HOME/runs/KernelBlaster/state"
-# The external file supplies both variables to Compose; they must be distinct.
+# The external file supplies all three token variables; they must be distinct.
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" config
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" up --wait
@@ -175,9 +176,45 @@ docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile dev run --
 sole container that receives LLM provider configuration. `gpu-supervisor`
 uses the pinned CUDA image, runs as UID 10001 with a read-only root filesystem,
 dropped capabilities, `no-new-privileges`, bounded memory/PIDs, and only the
-internal `worker-plane` network. It receives only
-`KERNELBLASTER_WORKER_TOKEN`, never an LLM key. The `dev` profile remains the
+internal `worker-plane` network. It receives worker-callback and
+supervisor-submit credentials, never an LLM key or control token. No credential
+is forwarded to compile/correctness/Events subprocesses. The `dev` profile remains the
 trusted place for `nvcc`, tests, and interactive debugging.
+
+### Hardware-portable GPU Job protocol
+
+Control submits strict `gpu-job/v1` manifests containing only CAS digests,
+stage, target architecture, protocol ID, bounded resources, and a deadline.
+The GPU Supervisor reports its actual device through `/v1/capabilities`; GPU
+product names are descriptive, while the detected compute capability is the
+source of truth. Local RTX 3080 validation therefore reports `sm_86`, but A100,
+L40S/RTX 4090, and H100 deployments use `sm_80`, `sm_89`, and `sm_90` without
+changing the API schema.
+
+PR 04 keeps single-GPU concurrency at one and disables generated-code jobs by
+default. Only source bundle digests listed in
+`portfolio/trusted-gpu-bundles.json` can reach the fixed compile/correctness/
+Events executor. The legacy arbitrary binary endpoint is not started by the
+default Supervisor process, and Control no longer starts local CompileServer or
+GPU Server processes.
+
+Register the reviewed vector-add smoke inputs in the local CAS before the first
+Supervisor smoke run:
+
+```bash
+python scripts/register_trusted_gpu_smoke.py \
+  --state-dir "$KERNELBLASTER_STATE_HOST_DIR"
+```
+
+The script verifies the deterministic bundle and driver digests against the
+checked-in allowlist before writing either payload.
+
+With Control and the GPU Supervisor running, exercise the complete digest-only
+compile → correctness → Events chain:
+
+```bash
+python scripts/run_trusted_gpu_smoke.py
+```
 
 ### Durable local state and experiment memory
 

@@ -21,9 +21,10 @@ def test_explicit_remote_gpu_does_not_probe_local_hardware():
         assert resolve_target_gpu("l40s") is GPUType.L40S
 
 
-def test_unspecified_remote_gpu_uses_local_hardware():
-    with patch.object(GPUType, "current", return_value=GPUType.RTX3080):
-        assert resolve_target_gpu(None) is GPUType.RTX3080
+def test_unspecified_remote_gpu_does_not_probe_control_hardware():
+    with patch.object(GPUType, "current", side_effect=AssertionError("unexpected probe")):
+        with pytest.raises(ValueError, match="target selection is explicit"):
+            resolve_target_gpu(None)
 
 
 def test_rmsnorm_portfolio_suite_resolves_exact_pilot_contract():

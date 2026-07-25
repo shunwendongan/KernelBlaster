@@ -24,11 +24,13 @@ def expect_status(url: str, token: str, expected: int) -> None:
 def main() -> int:
     control_token = os.environ["KERNELBLASTER_CONTROL_TOKEN"]
     worker_token = os.environ["KERNELBLASTER_WORKER_TOKEN"]
+    supervisor_token = os.environ["KERNELBLASTER_SUPERVISOR_TOKEN"]
     expect_status("http://control:8000/health", control_token, 200)
     expect_status("http://control:8000/health", worker_token, 401)
-    expect_status("http://gpu-supervisor:2002/ready", worker_token, 200)
+    expect_status("http://gpu-supervisor:2002/ready", supervisor_token, 200)
+    expect_status("http://gpu-supervisor:2002/ready", worker_token, 401)
     expect_status("http://gpu-supervisor:2002/ready", control_token, 401)
-    print("Compose control/worker token audiences are isolated.")
+    print("Compose control/worker/supervisor token audiences are isolated.")
     return 0
 
 

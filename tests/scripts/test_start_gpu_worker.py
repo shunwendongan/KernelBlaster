@@ -23,7 +23,7 @@ def test_worker_startup_uses_fixed_argv_for_probe_and_server():
     assert MODULE.gpu_server_command(["--host", "127.0.0.1"]) == [
         sys.executable,
         "-m",
-        "src.kernelblaster.servers.gpu",
+        "src.kernelblaster.gpu_jobs.supervisor",
         "--host",
         "127.0.0.1",
     ]

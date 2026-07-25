@@ -11,6 +11,7 @@ from src.kernelblaster.config import config
 from src.kernelblaster.servers import control
 from src.kernelblaster.servers.auth import (
     require_control_token,
+    require_supervisor_token,
     require_worker_token,
     validate_token_boundaries,
 )
@@ -21,6 +22,7 @@ from src.kernelblaster.storage import StateStore
 def _set_distinct_tokens(monkeypatch) -> None:
     monkeypatch.setattr(config, "CONTROL_TOKEN", "control-token")
     monkeypatch.setattr(config, "WORKER_TOKEN", "worker-token")
+    monkeypatch.setattr(config, "SUPERVISOR_TOKEN", "supervisor-token")
 
 
 def test_token_configuration_requires_both_distinct_audiences(monkeypatch):
@@ -32,7 +34,7 @@ def test_token_configuration_requires_both_distinct_audiences(monkeypatch):
         validate_token_boundaries()
 
     monkeypatch.setattr(config, "CONTROL_TOKEN", "same-token")
-    monkeypatch.setattr(config, "WORKER_TOKEN", "same-token")
+    monkeypatch.setattr(config, "SUPERVISOR_TOKEN", "same-token")
     with pytest.raises(RuntimeError, match="different values"):
         validate_token_boundaries()
 
@@ -42,12 +44,15 @@ async def test_token_audiences_are_not_interchangeable(monkeypatch):
     _set_distinct_tokens(monkeypatch)
     assert await require_control_token("Bearer control-token") is None
     assert await require_worker_token("Bearer worker-token") is None
+    assert await require_supervisor_token("Bearer supervisor-token") is None
     with pytest.raises(HTTPException) as control_rejection:
         await require_control_token("Bearer worker-token")
     with pytest.raises(HTTPException) as worker_rejection:
         await require_worker_token("Bearer control-token")
     assert control_rejection.value.status_code == 401
     assert worker_rejection.value.status_code == 401
+    with pytest.raises(HTTPException):
+        await require_supervisor_token("Bearer worker-token")
 
 
 def test_control_exposes_authenticated_health_and_job_boundaries(monkeypatch):
@@ -113,6 +118,20 @@ def test_control_and_worker_job_api_audiences_are_isolated(monkeypatch, tmp_path
     )
     assert completed.status_code == 200
     assert completed.json()["job"]["status"] == "succeeded"
+
+    control_artifact = client.put(
+        "/v1/control/artifacts",
+        content=b"trusted source bundle",
+        headers={**control_headers, "content-type": "application/x-tar"},
+    )
+    assert control_artifact.status_code == 200
+    digest = control_artifact.json()["digest"]
+    assert client.get(
+        f"/v1/worker/artifacts/{digest}", headers=worker_headers
+    ).content == b"trusted source bundle"
+    assert client.get(
+        f"/v1/worker/artifacts/{digest}", headers=control_headers
+    ).status_code == 401
 
 
 def test_legacy_workflow_routes_use_the_control_audience():

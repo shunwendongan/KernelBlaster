@@ -111,6 +111,52 @@ def test_parsers_distinguish_empty_metrics_and_missing_target_kernel():
     )[2] is ProfileReasonCode.KERNEL_NOT_FOUND
 
 
+def test_ncu_parser_accepts_recent_wide_raw_csv_and_normalizes_units():
+    payload = (
+        b'"Kernel Name","gpu__time_duration.sum",'
+        b'"sm__throughput.avg.pct_of_peak_sustained_elapsed",'
+        b'"launch__occupancy_limit_blocks",'
+        b'"sm__warps_active.avg.pct_of_peak_sustained_active"\n'
+        b'"","us","%","block","%"\n'
+        b'"vector_add_kernel(const float *, int)","7.84","2.79","16","49.81"\n'
+    )
+
+    kernel, metrics, reason = parse_profile_csv(
+        ProfilePlanId.NCU_TRIAGE_V1, payload, "vector_add_kernel"
+    )
+
+    assert kernel == "vector_add_kernel(const float *, int)"
+    assert reason is ProfileReasonCode.NONE
+    assert {metric.name: metric.value for metric in metrics} == {
+        "gpu_time": 7840.0,
+        "sm_throughput": 2.79,
+        "occupancy_limit_blocks": 16.0,
+        "achieved_occupancy": 49.81,
+    }
+    assert {metric.name: metric.unit for metric in metrics} == {
+        "gpu_time": "ns",
+        "sm_throughput": "percent",
+        "occupancy_limit_blocks": "count",
+        "achieved_occupancy": "percent",
+    }
+
+
+def test_ncu_wide_parser_distinguishes_missing_kernel_from_empty_metrics():
+    payload = (
+        b'"Kernel Name","gpu__time_duration.sum"\n'
+        b'"","us"\n'
+        b'"other_kernel","7.84"\n'
+    )
+    assert parse_profile_csv(
+        ProfilePlanId.NCU_TRIAGE_V1, payload, "vector_add_kernel"
+    )[2] is ProfileReasonCode.KERNEL_NOT_FOUND
+
+    empty_value = payload.replace(b'"other_kernel","7.84"', b'"vector_add_kernel",""')
+    assert parse_profile_csv(
+        ProfilePlanId.NCU_TRIAGE_V1, empty_value, "vector_add_kernel"
+    )[2] is ProfileReasonCode.METRICS_EMPTY
+
+
 def test_wsl_defaults_to_events_nsys_and_permission_blocked_ncu(monkeypatch):
     monkeypatch.setattr(worker_module, "_runtime_platform", lambda: "wsl")
     monkeypatch.setattr(worker_module.shutil, "which", lambda _tool: "/usr/bin/tool")

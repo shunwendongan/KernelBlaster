@@ -66,6 +66,32 @@ NCU_METRICS: dict[str, tuple[str, str]] = {
     "smsp__warps_active.avg.pct_of_peak_sustained_active": ("warp_active", "percent"),
 }
 
+_TIME_UNIT_TO_NS = {
+    "ns": 1.0,
+    "nsecond": 1.0,
+    "nseconds": 1.0,
+    "us": 1_000.0,
+    "usecond": 1_000.0,
+    "useconds": 1_000.0,
+    "ms": 1_000_000.0,
+    "msecond": 1_000_000.0,
+    "mseconds": 1_000_000.0,
+    "s": 1_000_000_000.0,
+    "second": 1_000_000_000.0,
+    "seconds": 1_000_000_000.0,
+}
+
+_BYTE_UNIT_TO_BYTES = {
+    "byte": 1.0,
+    "bytes": 1.0,
+    "kbyte": 1_000.0,
+    "kbytes": 1_000.0,
+    "mbyte": 1_000_000.0,
+    "mbytes": 1_000_000.0,
+    "gbyte": 1_000_000_000.0,
+    "gbytes": 1_000_000_000.0,
+}
+
 
 @dataclass(frozen=True)
 class ToolExecution:
@@ -355,12 +381,92 @@ def _number(value: str) -> float:
     return float(cleaned)
 
 
+def _canonical_metric_value(value: str, source_unit: str, target_unit: str) -> float:
+    number = _number(value)
+    unit = source_unit.strip().lower().replace("\u00b5", "u")
+    if target_unit == "ns":
+        return number * _TIME_UNIT_TO_NS[unit]
+    if target_unit == "bytes":
+        return number * _BYTE_UNIT_TO_BYTES[unit]
+    return number
+
+
+def _configured_metric(
+    raw_name: str, raw_value: str, raw_unit: str
+) -> ProfileMetric | None:
+    configured = NCU_METRICS.get(raw_name.strip())
+    if not configured or not raw_value.strip():
+        return None
+    name, unit = configured
+    try:
+        value = _canonical_metric_value(raw_value, raw_unit, unit)
+    except (KeyError, ValueError):
+        return None
+    return ProfileMetric(name=name, value=value, unit=unit)
+
+
 def _csv_rows(text: str, marker: str) -> list[dict[str, str]]:
     lines = text.splitlines()
     start = next((index for index, line in enumerate(lines) if marker in line), None)
     if start is None:
         return []
     return list(csv.DictReader(StringIO("\n".join(lines[start:]))))
+
+
+def _parse_ncu_wide_csv(
+    text: str, kernel_filter: str
+) -> tuple[str, tuple[ProfileMetric, ...], ProfileReasonCode] | None:
+    """Parse the wide raw CSV emitted by recent Nsight Compute releases."""
+    reader = csv.reader(StringIO(text))
+    try:
+        header = next(reader)
+    except StopIteration:
+        return None
+    try:
+        kernel_index = header.index("Kernel Name")
+    except ValueError:
+        return None
+    metric_indexes = [
+        (index, raw_name)
+        for index, raw_name in enumerate(header)
+        if raw_name in NCU_METRICS
+    ]
+    if not metric_indexes:
+        return None
+    records = list(reader)
+    if not records:
+        return "", (), ProfileReasonCode.METRICS_EMPTY
+
+    # The first record in NCU's wide form is a units row with no kernel name.
+    has_units_row = (
+        len(records[0]) > kernel_index and not records[0][kernel_index].strip()
+    )
+    units = records[0] if has_units_row else [""] * len(header)
+    data_rows = records[1:] if has_units_row else records
+    matching = [
+        row
+        for row in data_rows
+        if len(row) > kernel_index and kernel_filter in row[kernel_index]
+    ]
+    if not matching:
+        return "", (), (
+            ProfileReasonCode.KERNEL_NOT_FOUND
+            if data_rows
+            else ProfileReasonCode.METRICS_EMPTY
+        )
+
+    metrics: list[ProfileMetric] = []
+    for row in matching:
+        for index, raw_name in metric_indexes:
+            if index >= len(row):
+                continue
+            source_unit = units[index] if index < len(units) else ""
+            metric = _configured_metric(raw_name, row[index], source_unit)
+            if metric is not None:
+                metrics.append(metric)
+    return matching[0][kernel_index], tuple(metrics), (
+        ProfileReasonCode.NONE if metrics else ProfileReasonCode.METRICS_EMPTY
+    )
 
 
 def parse_profile_csv(
@@ -391,7 +497,8 @@ def parse_profile_csv(
         )
     rows = _csv_rows(text, "Metric Name")
     if not rows:
-        return "", (), ProfileReasonCode.METRICS_EMPTY
+        wide = _parse_ncu_wide_csv(text, kernel_filter)
+        return wide or ("", (), ProfileReasonCode.METRICS_EMPTY)
     matching = [
         row for row in rows if kernel_filter in str(row.get("Kernel Name", row.get("KernelName", "")))
     ]
@@ -400,14 +507,11 @@ def parse_profile_csv(
     metrics: list[ProfileMetric] = []
     for row in matching:
         raw_name = str(row.get("Metric Name", "")).strip()
-        configured = NCU_METRICS.get(raw_name)
         raw_value = str(row.get("Metric Value", "")).strip()
-        if configured and raw_value:
-            name, unit = configured
-            try:
-                metrics.append(ProfileMetric(name=name, value=_number(raw_value), unit=unit))
-            except ValueError:
-                continue
+        raw_unit = str(row.get("Metric Unit", "")).strip()
+        metric = _configured_metric(raw_name, raw_value, raw_unit)
+        if metric is not None:
+            metrics.append(metric)
     kernel_name = str(matching[0].get("Kernel Name", matching[0].get("KernelName", "")))
     return kernel_name, tuple(metrics), (
         ProfileReasonCode.NONE if metrics else ProfileReasonCode.METRICS_EMPTY

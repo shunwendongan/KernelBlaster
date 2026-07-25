@@ -19,8 +19,15 @@ from pydantic import BaseModel, Field
 from ..config import config
 from ..gpu_jobs.client import SupervisorClient
 from ..gpu_jobs.contracts import GpuJobManifest
+from ..profiler_jobs.client import ProfilerClient
+from ..profiler_jobs.contracts import ProfileRequest
 from ..storage import StateStore
-from .auth import require_control_token, require_worker_token, validate_token_boundaries
+from .auth import (
+    require_control_token,
+    require_profiler_token,
+    require_worker_token,
+    validate_token_boundaries,
+)
 
 
 app = FastAPI(title="KernelBlaster Control")
@@ -199,6 +206,13 @@ async def upload_control_artifact(
     return await _store_request_artifact(request, producer="control")
 
 
+@app.put("/v1/profiler/artifacts")
+async def upload_profiler_artifact(
+    request: Request, _authorized: None = Depends(require_profiler_token)
+) -> dict[str, Any]:
+    return await _store_request_artifact(request, producer="profiler-worker")
+
+
 @app.get("/v1/worker/artifacts/{digest}")
 async def download_worker_artifact(
     digest: str, _authorized: None = Depends(require_worker_token)
@@ -208,6 +222,25 @@ async def download_worker_artifact(
     except (FileNotFoundError, ValueError) as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     return FileResponse(path, media_type="application/octet-stream", filename=digest)
+
+
+@app.get("/v1/profiler/artifacts/{digest}")
+async def download_profiler_candidate(
+    digest: str, _authorized: None = Depends(require_profiler_token)
+) -> FileResponse:
+    try:
+        provenance = _state_store().repository.profiler_candidate(digest)
+        path = _state_store().cas.get_path(digest)
+    except (FileNotFoundError, KeyError) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return FileResponse(
+        path,
+        media_type="application/x-executable",
+        filename=digest,
+        headers={"x-kernelblaster-source-digest": provenance["source_digest"]},
+    )
 
 
 @app.get("/v1/artifacts/{digest}")
@@ -277,6 +310,32 @@ async def cancel_gpu_job(
 ) -> dict[str, Any]:
     client = SupervisorClient(config.GPU_SUPERVISOR_URL, config.SUPERVISOR_TOKEN)
     return await client.cancel(job_id)
+
+
+@app.get("/v1/profiler/capabilities")
+async def get_profiler_capabilities(
+    _authorized: None = Depends(require_control_token),
+) -> dict[str, Any]:
+    client = ProfilerClient(config.PROFILER_WORKER_URL, config.PROFILER_TOKEN)
+    return (await client.capabilities()).model_dump(mode="json")
+
+
+@app.post("/v1/profiles")
+async def submit_profile(
+    request: ProfileRequest,
+    _authorized: None = Depends(require_control_token),
+) -> dict[str, Any]:
+    try:
+        _state_store().cas.verify(request.artifact_digest)
+        _state_store().repository.profiler_candidate(request.artifact_digest)
+        client = ProfilerClient(config.PROFILER_WORKER_URL, config.PROFILER_TOKEN)
+        return (await client.profile(request)).model_dump(mode="json")
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="artifact_not_found") from error
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 def main() -> None:

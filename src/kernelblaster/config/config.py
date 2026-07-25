@@ -103,8 +103,12 @@ class SystemConfig:
     CONTROL_TOKEN = os.getenv("KERNELBLASTER_CONTROL_TOKEN", "").strip()
     WORKER_TOKEN = os.getenv("KERNELBLASTER_WORKER_TOKEN", "").strip()
     SUPERVISOR_TOKEN = os.getenv("KERNELBLASTER_SUPERVISOR_TOKEN", "").strip()
+    PROFILER_TOKEN = os.getenv("KERNELBLASTER_PROFILER_TOKEN", "").strip()
     GPU_SUPERVISOR_URL = os.getenv(
         "KERNELBLASTER_GPU_SUPERVISOR_URL", "http://gpu-supervisor:2002"
+    ).rstrip("/")
+    PROFILER_WORKER_URL = os.getenv(
+        "KERNELBLASTER_PROFILER_WORKER_URL", "http://profiler-worker:2003"
     ).rstrip("/")
     MAX_GPU_BINARY_BYTES = int(
         os.getenv("KERNELBLASTER_MAX_GPU_BINARY_BYTES", str(256 * 1024 * 1024))

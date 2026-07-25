@@ -488,3 +488,38 @@ class JobRepository:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM artifacts ORDER BY digest").fetchall()
         return [dict(row) for row in rows]
+
+    def profiler_candidate(self, executable_digest: str) -> dict[str, str]:
+        """Return provenance only for an executable that passed correctness.
+
+        Profiling is intentionally a new diagnostic job.  This lookup never
+        updates the compile/correctness jobs whose terminal state is evidence.
+        """
+        with self._connect() as connection:
+            artifact = connection.execute(
+                "SELECT digest FROM artifacts WHERE digest = ?", (executable_digest,)
+            ).fetchone()
+            compile_rows = connection.execute(
+                """SELECT jobs.payload_json FROM jobs
+                JOIN job_artifacts ON job_artifacts.job_id = jobs.id
+                WHERE job_artifacts.digest = ? AND job_artifacts.role = 'executable'
+                AND jobs.kind = 'gpu:compile' AND jobs.status = 'succeeded'""",
+                (executable_digest,),
+            ).fetchall()
+            correctness_rows = connection.execute(
+                """SELECT payload_json FROM jobs
+                WHERE kind = 'gpu:correctness' AND status = 'succeeded'"""
+            ).fetchall()
+        if artifact is None or not compile_rows:
+            raise KeyError("profiler candidate executable is not registered")
+        correctness = [json.loads(row["payload_json"]) for row in correctness_rows]
+        if not any(row.get("executable_digest") == executable_digest for row in correctness):
+            raise ValueError("profiler candidate has not passed correctness")
+        compile_payload = json.loads(compile_rows[0]["payload_json"])
+        source_digest = str(compile_payload.get("source_bundle_digest") or "")
+        if len(source_digest) != 64:
+            raise ValueError("profiler candidate source digest is unavailable")
+        return {
+            "artifact_digest": executable_digest,
+            "source_digest": source_digest,
+        }

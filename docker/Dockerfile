@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-# Keep the two runtime trust domains explicit.  `control` deliberately starts
-# from the official Python image, while `gpu-supervisor` keeps the existing
-# CUDA 12.8 NGC baseline pinned by tag and digest.
+# Keep runtime trust domains explicit. `control` starts from the official Python
+# image, while GPU Supervisor, ephemeral Jobs, and Profiler Worker use the CUDA
+# 12.8 NGC baseline pinned by tag and digest with different privileges.
 ARG CONTROL_BASE_IMAGE=python:3.12.13-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
 ARG GPU_BASE_IMAGE=nvcr.io/nvidia/pytorch:25.01-py3@sha256:0981807f1a51a156563e28b59dc2e7a9b5c1c7d85d1169d4965c5fd91fa38bcb
 
@@ -59,6 +59,23 @@ ENV HOME=/home/kernelblaster \
 USER kernelblaster
 EXPOSE 2002
 CMD ["python", "scripts/start_gpu_worker.py", "--host", "0.0.0.0", "--port", "2002"]
+
+FROM cuda-base AS profiler-worker
+
+COPY docker/requirements.profiler.txt /tmp/requirements.profiler.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements.profiler.txt
+COPY . /opt/kernelblaster
+RUN python -m pip install --no-cache-dir --no-deps /opt/kernelblaster \
+    && useradd --create-home --uid 10002 --shell /usr/sbin/nologin profiler \
+    && mkdir -p /tmp/kernelblaster-profiler \
+    && chown -R profiler:profiler /tmp/kernelblaster-profiler /opt/kernelblaster
+
+WORKDIR /opt/kernelblaster
+ENV HOME=/home/profiler CUDA_VISIBLE_DEVICES=0
+USER profiler
+EXPOSE 2003
+CMD ["python", "-m", "src.kernelblaster.profiler_jobs.worker", "--host", "0.0.0.0", "--port", "2003"]
 
 # This image is intentionally smaller in authority than gpu-supervisor.  It
 # contains only the fixed runner and CUDA toolchain; the Supervisor passes it

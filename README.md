@@ -142,15 +142,15 @@ cp -n .env.example ../../secrets/KernelBlaster.control.env
 ```
 
 The root `compose.yaml` is the only deployment specification. Point Compose at
-the external file and configure distinct control, worker-callback, and
-supervisor-submit token audiences:
+the external file and configure distinct control, worker-callback,
+supervisor-submit, and profiler token audiences:
 
 ```bash
 export KERNELBLASTER_CONTROL_ENV_FILE="$HOME/secrets/KernelBlaster.control.env"
 export KERNELBLASTER_STATE_HOST_DIR="$HOME/runs/KernelBlaster/state"
-# The external file supplies all three token variables; they must be distinct.
+# The external file supplies all four token variables; they must be distinct.
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" config
-docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor profiler-worker
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" up --wait
 
 # Verify health and the non-interchangeable token audiences, then clean up.
@@ -225,6 +225,28 @@ fixed limits are 2 vCPU, 8 GiB RAM, 64 PIDs, and 180/60/90 seconds respectively.
 The Supervisor imports only hash-verified allowlisted files and removes the Job
 container and staging volume on every exit path. Docker/GPU attack probes are
 marked `gpu_sandbox` and must run on an AutoDL or self-hosted GPU runner.
+
+### Independent fixed-plan Profiler Worker
+
+`profiler-worker` is a separate token audience and network boundary. Control
+routes only correctness-passed executable artifact digests, one of the fixed
+plan IDs below, a bounded kernel filter, and a deadline; executable paths,
+arbitrary argv, environment dictionaries, and caller-selected output paths are
+rejected by the schema.
+
+- `nsys_timeline_v1`: CUDA/NVTX trace, CPU sampling disabled; WSL may make one
+  controlled `CUDA_LAUNCH_BLOCKING=1` retry when the first report has no GPU rows.
+- `ncu_triage_v1`: SpeedOfLight, LaunchStats, and Occupancy.
+- `ncu_memory_v1`: MemoryWorkloadAnalysis.
+- `ncu_scheduler_v1`: SchedulerStats and WarpStateStats.
+
+CUDA Events remain the ranking source. NSYS/NCU summaries are marked
+`diagnostic_only`; raw report, CSV, and tool logs are stored in CAS and are
+never copied into an LLM prompt. WSL defaults to Events + NSYS and reports NCU
+as permission-blocked unless preflight explicitly succeeds. AutoDL/Linux enables
+single-session NCU when the tool and counter permission are available. Windows
+native profiling remains a manually approved Top-K diagnostic and is not
+automated by this service.
 
 Register the reviewed vector-add smoke inputs in the local CAS before the first
 Supervisor smoke run:

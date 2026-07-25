@@ -197,3 +197,55 @@ def test_run_recorder_indexes_manifest_events_and_summary_in_cas(tmp_path):
     assert all(store.cas.verify(reference["digest"]).size_bytes > 0 for reference in references)
     assert store.repository.get_run("recorded-run")["status"] == "completed"
     store.verify_artifact_index()
+
+
+def test_profiler_candidate_requires_passed_correctness_without_mutating_it(tmp_path):
+    store = _store(tmp_path)
+    store.repository.create_run("run-profile")
+    executable = store.cas.put_bytes(b"candidate", producer="gpu-supervisor")
+    store.repository.register_artifact(executable)
+    compile_job = store.repository.submit_job(
+        run_id="run-profile",
+        idempotency_key="compile",
+        kind="gpu:compile",
+        payload={"source_bundle_digest": "a" * 64},
+    )
+    compile_lease = store.repository.acquire_job_lease(
+        job_id=compile_job["id"], worker_id="supervisor"
+    )
+    store.repository.complete_job(
+        job_id=compile_job["id"],
+        lease_id=compile_lease["lease_id"],
+        worker_id="supervisor",
+        status="succeeded",
+        artifact_roles={executable.digest: "executable"},
+    )
+    with pytest.raises(ValueError, match="has not passed correctness"):
+        store.repository.profiler_candidate(executable.digest)
+
+    correctness = store.repository.submit_job(
+        run_id="run-profile",
+        idempotency_key="correctness",
+        kind="gpu:correctness",
+        payload={"executable_digest": executable.digest},
+    )
+    correctness_lease = store.repository.acquire_job_lease(
+        job_id=correctness["id"], worker_id="supervisor"
+    )
+    store.repository.complete_job(
+        job_id=correctness["id"],
+        lease_id=correctness_lease["lease_id"],
+        worker_id="supervisor",
+        status="succeeded",
+    )
+    assert store.repository.profiler_candidate(executable.digest) == {
+        "artifact_digest": executable.digest,
+        "source_digest": "a" * 64,
+    }
+    # A failed profiler attempt is a separate diagnostic and cannot rewrite
+    # the correctness evidence row.
+    with store.repository._connect() as connection:
+        status = connection.execute(
+            "SELECT status FROM jobs WHERE id = ?", (correctness["id"],)
+        ).fetchone()[0]
+    assert status == "succeeded"

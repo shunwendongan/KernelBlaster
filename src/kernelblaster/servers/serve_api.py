@@ -42,7 +42,7 @@ from ..agents.utils.file_operations import get_agent_status
 from ..config import config, WorkflowConfig, GPUType
 from ..resources import *
 from ..workflow import *
-from .auth import require_worker_token
+from .auth import require_control_token, validate_token_boundaries
 
 
 app = FastAPI(title="KernelBlaster API")
@@ -495,7 +495,7 @@ async def create_task(task_id: str, params: WorkflowRequest):
 async def submit_workflow(
     request: WorkflowRequest,
     background_tasks: BackgroundTasks,
-    _authorized: None = Depends(require_worker_token),
+    _authorized: None = Depends(require_control_token),
 ):
     """
     提交 `submit_workflow` 对应的领域操作，并返回调用方所需的标准化结果。
@@ -537,7 +537,7 @@ async def submit_workflow(
 @app.get("/status/{task_id}")
 async def get_task_status(
     task_id: str,
-    _authorized: None = Depends(require_worker_token),
+    _authorized: None = Depends(require_control_token),
 ):
     """
     用于获取任务状态的 HTTP 端点。
@@ -561,7 +561,7 @@ async def get_task_status(
 @app.post("/cancel/{task_id}", response_model=TaskResponse)
 async def cancel_task(
     task_id: str,
-    _authorized: None = Depends(require_worker_token),
+    _authorized: None = Depends(require_control_token),
 ):
     """
     取消 `cancel_task` 对应的领域操作，并返回调用方所需的标准化结果。
@@ -680,6 +680,7 @@ def run_server(host, port, output_dir, gpu: Optional[GPUType]):
 
 def main():
     """处理 `main` 对应的领域操作，并返回调用方所需的标准化结果。"""
+    validate_token_boundaries()
     global OUTPUT_DIR
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host to bind to")

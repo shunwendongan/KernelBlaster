@@ -40,6 +40,26 @@ def sanitized_worker_environment(
     }
 
 
+def validate_worker_environment(source: dict[str, str] | None = None) -> None:
+    """Fail closed if a worker process receives a control-plane credential.
+
+    A worker token is its single allowed credential.  The check intentionally
+    matches credential *classes* rather than values, so it also catches a newly
+    introduced provider variable without adding it to the Compose file first.
+    """
+
+    source = source if source is not None else os.environ
+    violations = sorted(
+        str(key)
+        for key in source
+        if str(key).upper() != "KERNELBLASTER_WORKER_TOKEN"
+        and any(marker in str(key).upper() for marker in SECRET_ENVIRONMENT_MARKERS)
+    )
+    if violations:
+        names = ", ".join(violations)
+        raise RuntimeError(f"Worker environment contains control-plane credentials: {names}")
+
+
 def allowed_source_path(path: str, *, cwd: Path | None = None) -> Path:
     """
     处理 `allowed_source_path` 对应的领域操作，并返回调用方所需的标准化结果。
@@ -66,4 +86,8 @@ def allowed_source_path(path: str, *, cwd: Path | None = None) -> Path:
     return resolved
 
 
-__all__ = ["allowed_source_path", "sanitized_worker_environment"]
+__all__ = [
+    "allowed_source_path",
+    "sanitized_worker_environment",
+    "validate_worker_environment",
+]

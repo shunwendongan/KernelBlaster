@@ -16,7 +16,6 @@
 """集中定义服务地址、实验开关和优化工作流的可配置参数。"""
 
 import os
-import secrets
 from dotenv import load_dotenv
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,7 +97,11 @@ class SystemConfig:
         "y",
         "on",
     )
-    WORKER_TOKEN = os.getenv("KERNELBLASTER_WORKER_TOKEN") or secrets.token_urlsafe(32)
+    # Tokens are deliberately separate audiences. Neither may be generated at
+    # import time: a service must fail closed when its deployment secret is
+    # missing rather than silently accepting a process-local random token.
+    CONTROL_TOKEN = os.getenv("KERNELBLASTER_CONTROL_TOKEN", "").strip()
+    WORKER_TOKEN = os.getenv("KERNELBLASTER_WORKER_TOKEN", "").strip()
     MAX_GPU_BINARY_BYTES = int(
         os.getenv("KERNELBLASTER_MAX_GPU_BINARY_BYTES", str(256 * 1024 * 1024))
     )

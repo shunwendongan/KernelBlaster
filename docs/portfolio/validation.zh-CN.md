@@ -94,8 +94,8 @@ python scripts/sync_portfolio_docs.py --write
 python scripts/sync_portfolio_docs.py --check
 ```
 
-GPU/profiler worker 由 `docker/Dockerfile.gpu` 构建，并以非 root 用户运行，固定
-使用 `--network none --cap-drop ALL --security-opt no-new-privileges`；不会向其中
+GPU/profiler worker 使用根目录权威 `compose.yaml` 中的 `gpu-supervisor` target，并以非 root 用户运行，固定
+使用内部 worker 网络、`--cap-drop ALL --security-opt no-new-privileges`；不会向其中
 传入任何 API 凭据。只有已经明确返回 `ERR_NVGPUCTRPERM` 的一次性 NCU 容器才可
 增加 `--cap-add SYS_ADMIN`，永远不接受 `--privileged` 作为规避方案。WSL 下的
 Nsys smoke 还会采用 [NVIDIA 官方 WSL 时间戳回退配置](https://archive.docs.nvidia.com/nsight-systems/2025.2/ReleaseNotes/index.html)

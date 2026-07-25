@@ -11,6 +11,15 @@ from .contracts import (
     GpuJobStatus,
     ResourceLimits,
 )
+from .sandbox import (
+    DockerSandboxRuntime,
+    PrivateEvaluationProfile,
+    PrivateEvaluationProfileManifest,
+    SandboxConfiguration,
+    SandboxPolicy,
+    SandboxStageExecutor,
+    public_generated_feedback,
+)
 
 __all__ = [
     "GpuCapabilities",
@@ -20,7 +29,14 @@ __all__ = [
     "GpuJobStage",
     "GpuJobStatus",
     "ResourceLimits",
+    "DockerSandboxRuntime",
+    "PrivateEvaluationProfile",
+    "PrivateEvaluationProfileManifest",
+    "SandboxConfiguration",
+    "SandboxPolicy",
+    "SandboxStageExecutor",
     "build_deterministic_bundle",
     "detect_gpu_capabilities",
     "validate_bundle",
+    "public_generated_feedback",
 ]

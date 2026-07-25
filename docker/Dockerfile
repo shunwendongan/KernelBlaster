@@ -60,6 +60,21 @@ USER kernelblaster
 EXPOSE 2002
 CMD ["python", "scripts/start_gpu_worker.py", "--host", "0.0.0.0", "--port", "2002"]
 
+# This image is intentionally smaller in authority than gpu-supervisor.  It
+# contains only the fixed runner and CUDA toolchain; the Supervisor passes it
+# no credentials, repository checkout, control-plane state, or Docker socket.
+FROM cuda-base AS gpu-job
+
+RUN useradd --uid 65532 --no-create-home --shell /usr/sbin/nologin sandbox
+COPY src/kernelblaster/gpu_jobs/sandbox_runner.py /opt/kernelblaster/sandbox_runner.py
+RUN chmod 0555 /opt/kernelblaster/sandbox_runner.py \
+    && mkdir -p /work /tmp \
+    && chown -R 65532:65532 /work /tmp
+
+WORKDIR /work
+USER 65532:65532
+ENTRYPOINT ["python", "/opt/kernelblaster/sandbox_runner.py"]
+
 FROM cuda-base AS dev
 
 COPY . /opt/kernelblaster

@@ -161,7 +161,7 @@ docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile dev run --
 | `~/caches/{huggingface,torch,triton}` | `/cache/...` | 读写 |
 | `~/secrets/KernelBlaster.control.env` | 仅注入 `control` | 永不复制进镜像 |
 
-`control` 是仅使用 CPU 的 Python 镜像，只绑定 `127.0.0.1:8000`，也是唯一接收 LLM Provider 配置的容器。`gpu-supervisor` 使用固定的 CUDA 镜像，以 UID 10001 运行，根文件系统只读，移除 capabilities，启用 `no-new-privileges`，并限制内存、PID 和仅内部可见的 `worker-plane` 网络。它只接收 Worker 回调和 Supervisor 提交凭据，绝不会接收 LLM Key 或 Control token；编译、正确性与 Events 子进程不会继承任何凭据。`dev` profile 保留为 `nvcc`、测试和交互式调试的可信路径。
+`control` 是仅使用 CPU 的 Python 镜像，只绑定 `127.0.0.1:8000`，也是唯一接收 LLM Provider 配置的容器。`gpu-supervisor` 使用固定的 CUDA 镜像，以 UID 10001 运行，根文件系统只读，移除 capabilities，启用 `no-new-privileges`，并限制内存、PID 和仅内部可见的 `worker-plane` 网络。它只接收 Worker 回调和 Supervisor 提交凭据，绝不会接收 LLM Key 或 Control token；编译、正确性与 Events 子进程不会继承任何凭据。启用生成 Job 时，只有这个可信服务获得 Docker socket，Job 容器永远不会获得它。`dev` profile 保留为 `nvcc`、测试和交互式调试的可信路径。
 
 ### 硬件可迁移的 GPU Job 协议
 
@@ -175,6 +175,20 @@ PR 04 保持单 GPU 并发 1，并默认关闭自动生成代码 Job。只有列
 `portfolio/trusted-gpu-bundles.json` 的 source bundle digest 才能进入固定的
 compile/correctness/Events executor。默认 Supervisor 不再启动旧的任意二进制上传端点，
 Control 也不再启动本地 CompileServer 或 GPU Server 进程。
+
+### 一次性生成候选沙箱
+
+在配置本地不可变 Job 镜像与仅供 Supervisor 读取的私有评估 profile 前，自动生成代码仍保持关闭。构建专用镜像、固定其 inspect 得到的 digest（绝不能使用 tag）、读取 Linux/AutoDL host 的 Docker socket group，然后再打开开关：
+
+```bash
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile build build gpu-job-image
+export KERNELBLASTER_GPU_JOB_IMAGE="$(docker image inspect --format '{{.Id}}' local/kernelblaster-gpu-job:cuda12.8-dev)"
+export KERNELBLASTER_DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+export KERNELBLASTER_PRIVATE_EVALUATION_PROFILES_HOST="$HOME/secrets/private-evaluation-profiles.json"
+export KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS=true
+```
+
+私有 manifest 将公开的 `private_evaluation_profile_id` 映射到 CAS bundle 和 driver 路径。它仅以只读方式挂载给 Supervisor；driver 和 seed 内容不属于生成 manifest、LLM prompt 或公开反馈 payload。每个生成候选的 compile、correctness、Events 阶段都会启动一个新的非 root 容器：只读 rootfs、无网络、无 capabilities、只读的单 Job 输入卷及 512 MiB tmpfs。固定限额是 2 vCPU、8 GiB RAM、64 PID，以及分别为 180/60/90 秒。Supervisor 只导入已验证 hash 的白名单输出，并在所有退出路径删除 Job 容器和 staging volume。Docker/GPU 攻击探针使用 `gpu_sandbox` 标记，必须在 AutoDL 或 self-hosted GPU runner 上执行。
 
 第一次运行 Supervisor smoke 前，将已审核的 vector-add 输入注册进本地 CAS：
 

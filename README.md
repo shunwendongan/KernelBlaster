@@ -178,8 +178,10 @@ uses the pinned CUDA image, runs as UID 10001 with a read-only root filesystem,
 dropped capabilities, `no-new-privileges`, bounded memory/PIDs, and only the
 internal `worker-plane` network. It receives worker-callback and
 supervisor-submit credentials, never an LLM key or control token. No credential
-is forwarded to compile/correctness/Events subprocesses. The `dev` profile remains the
-trusted place for `nvcc`, tests, and interactive debugging.
+is forwarded to compile/correctness/Events subprocesses. When generated jobs
+are enabled, this trusted service alone receives the Docker socket; the Job
+container never receives it. The `dev` profile remains the trusted place for
+`nvcc`, tests, and interactive debugging.
 
 ### Hardware-portable GPU Job protocol
 
@@ -197,6 +199,32 @@ default. Only source bundle digests listed in
 Events executor. The legacy arbitrary binary endpoint is not started by the
 default Supervisor process, and Control no longer starts local CompileServer or
 GPU Server processes.
+
+### Ephemeral generated-candidate sandbox
+
+Generated code remains disabled until a local immutable Job image and a
+Supervisor-only private evaluation profile are configured. Build the dedicated
+image, pin its inspected digest (never a tag), set the Docker socket group from
+the Linux/AutoDL host, and then enable the flag:
+
+```bash
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile build build gpu-job-image
+export KERNELBLASTER_GPU_JOB_IMAGE="$(docker image inspect --format '{{.Id}}' local/kernelblaster-gpu-job:cuda12.8-dev)"
+export KERNELBLASTER_DOCKER_GID="$(stat -c '%g' /var/run/docker.sock)"
+export KERNELBLASTER_PRIVATE_EVALUATION_PROFILES_HOST="$HOME/secrets/private-evaluation-profiles.json"
+export KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS=true
+```
+
+The private manifest maps a public `private_evaluation_profile_id` to a CAS
+bundle and driver path. It is mounted read-only only in the Supervisor; driver
+and seed contents are not part of a generated manifest, LLM prompt, or public
+feedback payload. Each generated compile, correctness, and Events stage runs in
+a newly created non-root container with a read-only root filesystem, no network,
+no capabilities, a read-only per-Job input volume, and a 512 MiB tmpfs. The
+fixed limits are 2 vCPU, 8 GiB RAM, 64 PIDs, and 180/60/90 seconds respectively.
+The Supervisor imports only hash-verified allowlisted files and removes the Job
+container and staging volume on every exit path. Docker/GPU attack probes are
+marked `gpu_sandbox` and must run on an AutoDL or self-hosted GPU runner.
 
 Register the reviewed vector-add smoke inputs in the local CAS before the first
 Supervisor smoke run:

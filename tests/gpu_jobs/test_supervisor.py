@@ -47,6 +47,9 @@ def _manifest(job_id: str, key: str, **updates) -> GpuJobManifest:
         "deadline": datetime.now(timezone.utc) + timedelta(minutes=5),
     }
     payload.update(updates)
+    if payload.get("trusted_bundle_kind") == "generated_v1":
+        payload.pop("driver_digest", None)
+        payload.setdefault("private_evaluation_profile_id", "private-v1")
     return GpuJobManifest.model_validate(payload)
 
 

@@ -57,14 +57,25 @@ services:
       KERNELBLASTER_GPU_DEVICE: ${KERNELBLASTER_GPU_DEVICE:-0}
       KERNELBLASTER_GPU_MAX_CONCURRENCY: "1"
       KERNELBLASTER_ALLOWED_TARGET_ARCHES: ${KERNELBLASTER_ALLOWED_TARGET_ARCHES:-}
-      KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS: "false"
+      KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS: ${KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS:-false}
+      # Generated jobs fail closed unless this is an immutable sha256 image
+      # reference (repository@sha256:... or a locally inspected sha256 image ID).
+      KERNELBLASTER_GPU_JOB_IMAGE: ${KERNELBLASTER_GPU_JOB_IMAGE:-}
+      KERNELBLASTER_PRIVATE_EVALUATION_PROFILES: /run/kernelblaster/private-evaluation-profiles.json
       KERNELBLASTER_TRUSTED_BUNDLE_MANIFEST: /opt/kernelblaster/portfolio/trusted-gpu-bundles.json
       HOME: /tmp/home
+    group_add:
+      - "${KERNELBLASTER_DOCKER_GID:-0}"
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 256
     mem_limit: 16g
     networks: [worker-plane]
+    volumes:
+      # The trusted Supervisor creates and tears down ephemeral Job containers.
+      # Job containers never receive this Docker API socket.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ${KERNELBLASTER_PRIVATE_EVALUATION_PROFILES_HOST:-./portfolio/private-evaluation-profiles.empty.json}:/run/kernelblaster/private-evaluation-profiles.json:ro
     healthcheck:
       test:
         ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:2002/health', timeout=3).read()\""]
@@ -72,6 +83,16 @@ services:
       timeout: 3s
       retries: 12
       start_period: 15s
+
+  # Build-only target.  Inspect the resulting immutable image ID and provide it
+  # as KERNELBLASTER_GPU_JOB_IMAGE before enabling generated GPU jobs.
+  gpu-job-image:
+    image: local/kernelblaster-gpu-job:cuda12.8-${IMAGE_TAG:-dev}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: gpu-job
+    profiles: [build]
 
   dev:
     image: local/kernelblaster-dev:cuda12.8-${IMAGE_TAG:-dev}

@@ -78,6 +78,7 @@ class InMemoryGpuSupervisor:
         executor: Executor = _safe_default_executor,
         trusted_source_digests: set[str] | None = None,
         benchmark_protocol_ids: set[str] | None = None,
+        generated_profile_ids: set[str] | None = None,
         recent_limit: int = 256,
         reporter: Any | None = None,
     ) -> None:
@@ -85,6 +86,7 @@ class InMemoryGpuSupervisor:
         self.executor = executor
         self.trusted_source_digests = trusted_source_digests or set()
         self.benchmark_protocol_ids = benchmark_protocol_ids or {"trusted-smoke-v1"}
+        self.generated_profile_ids = generated_profile_ids or set()
         self.recent_limit = recent_limit
         self.reporter = reporter
         self._jobs: dict[str, SupervisorJob] = {}
@@ -104,6 +106,11 @@ class InMemoryGpuSupervisor:
             and not self.capabilities.generated_jobs_enabled
         ):
             raise ValueError("generated_jobs_disabled")
+        if (
+            manifest.trusted_bundle_kind == "generated_v1"
+            and manifest.private_evaluation_profile_id not in self.generated_profile_ids
+        ):
+            raise ValueError("private_evaluation_profile_unknown")
         if manifest.trusted_bundle_kind == "trusted_smoke_v1":
             source = manifest.source_bundle_digest
             if source not in self.trusted_source_digests:
@@ -164,7 +171,9 @@ class InMemoryGpuSupervisor:
                     job.lease_id = lease_id
                 now = datetime.now(timezone.utc)
                 deadline_seconds = (job.manifest.deadline.astimezone(timezone.utc) - now).total_seconds()
-                timeout = min(float(job.manifest.resource_limits.wall_seconds), deadline_seconds)
+                timeout = deadline_seconds
+                if job.manifest.trusted_bundle_kind == "trusted_smoke_v1":
+                    timeout = min(float(job.manifest.resource_limits.wall_seconds), timeout)
                 if timeout <= 0:
                     job.status = GpuJobStatus.TIMED_OUT
                     job.result = self._terminal_result(
@@ -287,16 +296,39 @@ def _supervisor() -> InMemoryGpuSupervisor:
                 control_url, worker_token, capabilities.supervisor_id
             )
         executor = _safe_default_executor
+        generated_profile_ids: set[str] = set()
         if reporter is not None:
             from .executor import TrustedStageExecutor
 
             executor = TrustedStageExecutor(reporter)
+        if capabilities.generated_jobs_enabled:
+            if reporter is None:
+                raise RuntimeError("generated GPU jobs require a Control worker client")
+            from .sandbox import DockerSandboxRuntime, SandboxStageExecutor
+
+            runtime = DockerSandboxRuntime.from_environment()
+            runtime.validate()
+            sandbox_executor = SandboxStageExecutor(
+                reporter, runtime, runtime.configuration.profiles
+            )
+            generated_profile_ids = runtime.configuration.profiles.ids
+            trusted_executor = executor
+
+            async def executor(
+                manifest: GpuJobManifest,
+                supervisor_capabilities: GpuCapabilities,
+                cancelled: asyncio.Event,
+            ) -> GpuJobResult:
+                if manifest.trusted_bundle_kind == "generated_v1":
+                    return await sandbox_executor(manifest, supervisor_capabilities, cancelled)
+                return await trusted_executor(manifest, supervisor_capabilities, cancelled)
         supervisor = InMemoryGpuSupervisor(
             capabilities,
             executor=executor,
             reporter=reporter,
             trusted_source_digests=trusted,
             benchmark_protocol_ids=protocols,
+            generated_profile_ids=generated_profile_ids,
         )
         APP.state.supervisor = supervisor
     return supervisor

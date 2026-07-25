@@ -42,6 +42,11 @@ class GpuReasonCode(str, Enum):
     CANCELLED = "cancelled"
     INTERNAL_ERROR = "internal_error"
     CONTROL_CALLBACK_FAILED = "control_callback_failed"
+    STAGE_TIMEOUT = "stage_timeout"
+    GPU_OOM = "gpu_oom"
+    SANDBOX_VIOLATION = "sandbox_violation"
+    GPU_RECOVERY_FAILED = "gpu_recovery_failed"
+    SANDBOX_UNAVAILABLE = "sandbox_unavailable"
 
 
 class ResourceLimits(BaseModel):
@@ -64,6 +69,9 @@ class GpuJobManifest(BaseModel):
     source_bundle_digest: str | None = None
     driver_digest: str | None = None
     executable_digest: str | None = None
+    private_evaluation_profile_id: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
     target_arch: str
     benchmark_protocol_id: str = Field(min_length=1, max_length=128)
     resource_limits: ResourceLimits = Field(default_factory=ResourceLimits)
@@ -82,14 +90,32 @@ class GpuJobManifest(BaseModel):
             raise ValueError("deadline must be timezone-aware")
         if self.deadline.astimezone(timezone.utc) <= datetime.now(timezone.utc):
             raise ValueError("deadline_exceeded")
+        if self.trusted_bundle_kind == "generated_v1":
+            if self.private_evaluation_profile_id is None:
+                raise ValueError("generated jobs require private_evaluation_profile_id")
+            if self.driver_digest is not None:
+                raise ValueError("generated jobs may not accept driver_digest")
+        elif self.private_evaluation_profile_id is not None:
+            raise ValueError("trusted jobs may not accept private_evaluation_profile_id")
+
         if self.stage is GpuJobStage.COMPILE:
-            if self.source_bundle_digest is None or self.driver_digest is None:
-                raise ValueError("compile requires source_bundle_digest and driver_digest")
+            if self.source_bundle_digest is None:
+                raise ValueError("compile requires source_bundle_digest")
+            if (
+                self.trusted_bundle_kind == "trusted_smoke_v1"
+                and self.driver_digest is None
+            ):
+                raise ValueError("trusted compile requires driver_digest")
             if self.executable_digest is not None:
                 raise ValueError("compile may not accept executable_digest")
         elif self.stage is GpuJobStage.CORRECTNESS:
-            if self.executable_digest is None or self.driver_digest is None:
-                raise ValueError("correctness requires executable_digest and driver_digest")
+            if self.executable_digest is None:
+                raise ValueError("correctness requires executable_digest")
+            if (
+                self.trusted_bundle_kind == "trusted_smoke_v1"
+                and self.driver_digest is None
+            ):
+                raise ValueError("trusted correctness requires driver_digest")
         elif self.stage is GpuJobStage.EVENTS and self.executable_digest is None:
             raise ValueError("events requires executable_digest")
         return self
@@ -107,7 +133,7 @@ class GpuJobManifest(BaseModel):
             digest
             for digest in (
                 self.source_bundle_digest,
-                self.driver_digest,
+                self.driver_digest if self.trusted_bundle_kind == "trusted_smoke_v1" else None,
                 self.executable_digest,
             )
             if digest is not None

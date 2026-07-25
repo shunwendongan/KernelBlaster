@@ -11,6 +11,7 @@ from src.kernelblaster.observability import (
     redact_secrets,
     set_run_recorder,
 )
+from src.kernelblaster.measurements import Measurement, MeasurementSource, MeasurementUnit
 
 
 def _recorder(tmp_path) -> RunRecorder:
@@ -124,3 +125,26 @@ def test_failed_request_is_counted_and_marks_smoke_failed(tmp_path):
     assert manifest["budget"]["consumed"]["requests"] == 1
     assert manifest["validation"]["llm_smoke_test"] == "FAILED"
     assert manifest["validation"]["gates"]["api_smoke"] == "FAILED"
+
+
+def test_task_outcome_records_a_structured_measurement(tmp_path):
+    recorder = _recorder(tmp_path)
+    measurement = Measurement(
+        value=12.5,
+        unit=MeasurementUnit.MICROSECONDS,
+        source=MeasurementSource.CUDA_EVENTS,
+        protocol_id="events-v1",
+        hardware_fingerprint="gpu-a",
+    )
+    recorder.record_event(
+        "task_outcome",
+        data={
+            "outcome": "no_improvement",
+            "measurement": measurement,
+            "timing_status": "measured",
+        },
+    )
+    recorder.close()
+    summary = json.loads(recorder.summary_path.read_text())
+    assert summary["tasks"]["results"][0]["measurement"]["unit"] == "us"
+    assert summary["tasks"]["results"][0]["measurement"]["source"] == "cuda_events"

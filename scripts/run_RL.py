@@ -478,6 +478,15 @@ async def process_problem(
                 "outcome": result.outcome.status.value,
                 "profiling_mode": result.outcome.profiling_mode,
                 "reason": result.outcome.reason,
+                "reason_code": result.outcome.reason_code.value,
+                "execution_status": result.outcome.execution_status.value,
+                "correctness_status": result.outcome.correctness_status.value,
+                "timing_status": result.outcome.timing_status.value,
+                "diagnostic_status": result.outcome.diagnostic_status.value,
+                "measurement": (
+                    result.outcome.measurement.to_dict()
+                    if result.outcome.measurement is not None else None
+                ),
                 "metrics": result.outcome.metrics,
             },
         )

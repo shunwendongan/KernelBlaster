@@ -12,9 +12,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""导出统一的 LLM Provider 接口、配置异常与工厂函数。"""
+
 from .base import LLMBudgetExceeded, LLMConfigurationError, LLMProvider, LLMResponse
 from .factory import get_llm_provider, reset_llm_provider
-from .openai_compatible import OpenAICompatibleProvider, OpenAICompatibleSettings
 
 __all__ = [
     "LLMBudgetExceeded",
@@ -26,3 +28,14 @@ __all__ = [
     "get_llm_provider",
     "reset_llm_provider",
 ]
+
+
+def __getattr__(name: str):
+    if name in {"OpenAICompatibleProvider", "OpenAICompatibleSettings"}:
+        from .openai_compatible import OpenAICompatibleProvider, OpenAICompatibleSettings
+
+        return {
+            "OpenAICompatibleProvider": OpenAICompatibleProvider,
+            "OpenAICompatibleSettings": OpenAICompatibleSettings,
+        }[name]
+    raise AttributeError(name)

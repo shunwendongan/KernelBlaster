@@ -12,6 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""导出可复现 Benchmark Portfolio 的能力清单与 Suite 加载接口。"""
+
 from .capabilities import (
     CAPABILITY_MARKER,
     CapabilityResult,

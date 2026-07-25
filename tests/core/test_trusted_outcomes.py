@@ -14,7 +14,15 @@ from src.kernelblaster.agents.database import GPUOptimizationDatabase
 from src.kernelblaster.agents.opt_ncu_rl import RLNCUAgent
 from src.kernelblaster.agents.rl_agents import ReplayBuffer, Trajectory
 from src.kernelblaster.config import GPUType, WorkflowConfig
-from src.kernelblaster.outcomes import RunOutcome, RunStatus
+from src.kernelblaster.outcomes import (
+    CorrectnessStatus,
+    DiagnosticStatus,
+    ExecutionStatus,
+    ReasonCode,
+    RunOutcome,
+    RunStatus,
+    TimingStatus,
+)
 from src.kernelblaster.profiling import (
     EventsProfilerBackend,
     NCUFallbackProfilerBackend,
@@ -158,7 +166,7 @@ def test_database_persistence_is_atomic_schema_v2(tmp_path):
     db.llm_interface = SimpleNamespace(logger=None)
     db._persist_database()
     payload = json.loads(db._persist_json_fp.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "2.0"
+    assert payload["schema_version"] == "3.0"
     assert not list(tmp_path.glob("*.tmp"))
 
 
@@ -195,3 +203,18 @@ async def test_ncu_permission_failure_downgrades_to_events():
     assert result.available is True
     assert result.mode is ProfilingMode.EVENTS_ONLY
     assert result.elapsed_us == 12.5
+
+
+def test_run_outcome_v3_preserves_independent_statuses():
+    outcome = RunOutcome(
+        status=RunStatus.NO_IMPROVEMENT,
+        execution_status=ExecutionStatus.SUCCEEDED,
+        correctness_status=CorrectnessStatus.PASSED,
+        timing_status=TimingStatus.MEASURED,
+        diagnostic_status=DiagnosticStatus.UNAVAILABLE,
+        reason_code=ReasonCode.PERFORMANCE_GATE_FAILED,
+    )
+    payload = outcome.to_dict()
+    assert payload["profiling_mode"] is None
+    assert payload["timing_status"] == "measured"
+    assert RunOutcome.from_dict(payload).reason_code is ReasonCode.PERFORMANCE_GATE_FAILED

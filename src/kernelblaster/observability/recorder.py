@@ -12,6 +12,9 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""以可复现和可脱敏的方式记录配置、Prompt、事件、产物及源码指纹。"""
+
 from __future__ import annotations
 
 import atexit
@@ -28,8 +31,10 @@ import threading
 from typing import Any
 import uuid
 
+from ..measurements import Measurement
 
-SCHEMA_VERSION = "2.0"
+
+SCHEMA_VERSION = "3.0"
 _SENSITIVE_KEY_PARTS = (
     "api_key",
     "apikey",
@@ -63,11 +68,26 @@ _URL_USERINFO_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
 
 
 def utc_now() -> str:
+    """
+    处理 `utc_now` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def redact_secrets(value: Any, key: str = "") -> Any:
-    """Recursively redact values whose field names conventionally hold secrets."""
+    """
+    递归地编辑字段名称通常包含秘密的值。
+
+    参数:
+        value: 需要转换、保存或校验的值。
+        key: 调用方提供的 `key` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     normalized_key = key.lower()
     if any(part in normalized_key for part in _SENSITIVE_KEY_PARTS):
         if normalized_key in _SAFE_USAGE_KEYS:
@@ -85,7 +105,27 @@ def redact_secrets(value: Any, key: str = "") -> Any:
     return value
 
 
+def _serialize_measurements(value: Any) -> Any:
+    if isinstance(value, Measurement):
+        return value.to_dict()
+    if isinstance(value, dict):
+        return {str(key): _serialize_measurements(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialize_measurements(item) for item in value]
+    return value
+
+
 def prompt_metadata(messages: list[dict], include_content: bool = False) -> dict[str, Any]:
+    """
+    处理 `prompt_metadata` 对应的领域操作，并返回调用方所需的标准化结果。
+
+    参数:
+        messages: 按对话顺序排列的 LLM 消息。
+        include_content: 调用方提供的 `include_content` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     canonical = json.dumps(
         messages,
         ensure_ascii=False,
@@ -106,6 +146,15 @@ def prompt_metadata(messages: list[dict], include_content: bool = False) -> dict
 
 
 def _git_commit(repo_root: Path) -> str | None:
+    """
+    处理 `git_commit` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+    参数:
+        repo_root: 调用方提供的 `repo_root` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     try:
         return subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -119,7 +168,15 @@ def _git_commit(repo_root: Path) -> str | None:
 
 
 def _source_tree_sha256(repo_root: Path) -> str | None:
-    """Hash tracked working-tree content, including local modifications."""
+    """
+    哈希跟踪工作树内容，包括本地修改。
+
+    参数:
+        repo_root: 调用方提供的 `repo_root` 参数。
+
+    返回:
+        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+    """
     try:
         completed = subprocess.run(
             ["git", "ls-files", "-z"],
@@ -146,6 +203,13 @@ def _source_tree_sha256(repo_root: Path) -> str | None:
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
+    """
+    处理 `atomic_json_write` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+    参数:
+        path: 待读取、写入或校验的文件系统路径。
+        payload: 跨接口传递的序列化载荷。
+    """
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
@@ -157,7 +221,7 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
 
 
 class RunRecorder:
-    """Append-only event recorder with manifest and summary snapshots."""
+    """具有清单和摘要快照的仅附加事件记录器。"""
 
     def __init__(
         self,
@@ -171,6 +235,19 @@ class RunRecorder:
         dry_run: bool = False,
         repo_root: str | Path | None = None,
     ) -> None:
+        """
+        初始化 RunRecorder 实例，并保存后续流程所需的配置与依赖。
+
+        参数:
+            output_dir: 调用方提供的 `output_dir` 参数。
+            model: 生成候选时使用的模型标识。
+            provider_config: 调用方提供的 `provider_config` 参数。
+            suite: 调用方提供的 `suite` 参数。
+            gpu_target: 调用方提供的 `gpu_target` 参数。
+            run_id: 调用方提供的 `run_id` 参数。
+            dry_run: 调用方提供的 `dry_run` 参数。
+            repo_root: 调用方提供的 `repo_root` 参数。
+        """
         self.output_dir = Path(output_dir).expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.output_dir / "run_manifest.json"
@@ -284,6 +361,19 @@ class RunRecorder:
         attempt: int | None = None,
         data: dict[str, Any] | None = None,
     ) -> None:
+        """
+        记录 `record_event` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+            event_type: 调用方提供的 `event_type` 参数。
+            status: 调用方提供的 `status` 参数。
+            task_id: 调用方分配的任务唯一标识。
+            rollout_id: 调用方提供的 `rollout_id` 参数。
+            stage: 调用方提供的 `stage` 参数。
+            candidate_id: 调用方提供的 `candidate_id` 参数。
+            attempt: 调用方提供的 `attempt` 参数。
+            data: 待处理的结构化数据。
+        """
         with self._lock:
             if self._closed:
                 return
@@ -300,7 +390,7 @@ class RunRecorder:
                 "stage": stage,
                 "candidate_id": candidate_id,
                 "attempt": attempt,
-                "data": redact_secrets(data or {}),
+                "data": redact_secrets(_serialize_measurements(data or {})),
             }
             with self.events_path.open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps(event, sort_keys=True, ensure_ascii=False) + "\n")
@@ -308,6 +398,12 @@ class RunRecorder:
             _atomic_json_write(self.summary_path, self._summary)
 
     def close(self, status: str | None = None) -> None:
+        """
+        处理 `close` 对应的领域操作，并返回调用方所需的标准化结果。
+
+        参数:
+            status: 调用方提供的 `status` 参数。
+        """
         with self._lock:
             if self._closed:
                 return
@@ -349,9 +445,9 @@ class RunRecorder:
                 if status in {"failed", "timeout", "blocked"}
             }
             manifest["budget"]["consumed"] = {
-                # A failed HTTP attempt still consumes the request budget. The
-                # provider emits one request_started event for every attempt,
-                # including retries, so this is the auditable hard-cap count.
+                # 失败的 HTTP 尝试仍然会消耗请求预算。这
+                # 提供者每次尝试都会发出一个 request_started 事件，
+                # 包括重试，因此这是可审计的硬上限计数。
                 "requests": llm_summary["requests_started"],
                 "prompt_tokens": llm_summary["prompt_tokens"],
                 "completion_tokens": llm_summary["completion_tokens"],
@@ -378,6 +474,14 @@ class RunRecorder:
         status: str,
         data: dict[str, Any],
     ) -> None:
+        """
+        更新 `update_summary` 所表示的内部步骤；该函数不属于稳定的公开接口。
+
+        参数:
+            event_type: 调用方提供的 `event_type` 参数。
+            status: 调用方提供的 `status` 参数。
+            data: 待处理的结构化数据。
+        """
         llm = self._summary["llm"]
         if event_type == "llm_request_started":
             llm["requests_started"] += 1
@@ -412,6 +516,12 @@ class RunRecorder:
                     "outcome": outcome,
                     "profiling_mode": profiling_mode,
                     "reason": data.get("reason"),
+                    "reason_code": data.get("reason_code", "none"),
+                    "execution_status": data.get("execution_status", "not_run"),
+                    "correctness_status": data.get("correctness_status", "not_run"),
+                    "timing_status": data.get("timing_status", "not_run"),
+                    "diagnostic_status": data.get("diagnostic_status", "not_requested"),
+                    "measurement": data.get("measurement"),
                     "metrics": data.get("metrics", {}),
                 }
             )

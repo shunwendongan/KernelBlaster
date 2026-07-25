@@ -11,6 +11,7 @@ from src.kernelblaster.config import config
 from src.kernelblaster.servers import control
 from src.kernelblaster.servers.auth import (
     require_control_token,
+    require_profiler_token,
     require_supervisor_token,
     require_worker_token,
     validate_token_boundaries,
@@ -23,6 +24,7 @@ def _set_distinct_tokens(monkeypatch) -> None:
     monkeypatch.setattr(config, "CONTROL_TOKEN", "control-token")
     monkeypatch.setattr(config, "WORKER_TOKEN", "worker-token")
     monkeypatch.setattr(config, "SUPERVISOR_TOKEN", "supervisor-token")
+    monkeypatch.setattr(config, "PROFILER_TOKEN", "profiler-token")
 
 
 def test_token_configuration_requires_both_distinct_audiences(monkeypatch):
@@ -45,6 +47,7 @@ async def test_token_audiences_are_not_interchangeable(monkeypatch):
     assert await require_control_token("Bearer control-token") is None
     assert await require_worker_token("Bearer worker-token") is None
     assert await require_supervisor_token("Bearer supervisor-token") is None
+    assert await require_profiler_token("Bearer profiler-token") is None
     with pytest.raises(HTTPException) as control_rejection:
         await require_control_token("Bearer worker-token")
     with pytest.raises(HTTPException) as worker_rejection:
@@ -53,6 +56,8 @@ async def test_token_audiences_are_not_interchangeable(monkeypatch):
     assert worker_rejection.value.status_code == 401
     with pytest.raises(HTTPException):
         await require_supervisor_token("Bearer worker-token")
+    with pytest.raises(HTTPException):
+        await require_profiler_token("Bearer worker-token")
 
 
 def test_control_exposes_authenticated_health_and_job_boundaries(monkeypatch):
@@ -75,6 +80,7 @@ def test_control_and_worker_job_api_audiences_are_isolated(monkeypatch, tmp_path
     client = TestClient(control.app)
     control_headers = {"Authorization": "Bearer control-token"}
     worker_headers = {"Authorization": "Bearer worker-token"}
+    profiler_headers = {"Authorization": "Bearer profiler-token"}
 
     created = client.post("/v1/runs", json={"run_id": "run-1"}, headers=control_headers)
     assert created.status_code == 200
@@ -131,6 +137,20 @@ def test_control_and_worker_job_api_audiences_are_isolated(monkeypatch, tmp_path
     ).content == b"trusted source bundle"
     assert client.get(
         f"/v1/worker/artifacts/{digest}", headers=control_headers
+    ).status_code == 401
+    assert client.get(
+        f"/v1/profiler/artifacts/{digest}", headers=worker_headers
+    ).status_code == 401
+    profiler_output = client.put(
+        "/v1/profiler/artifacts",
+        content=b"raw ncu report",
+        headers={**profiler_headers, "content-type": "application/octet-stream"},
+    )
+    assert profiler_output.status_code == 200
+    assert client.put(
+        "/v1/profiler/artifacts",
+        content=b"forbidden",
+        headers={**worker_headers, "content-type": "application/octet-stream"},
     ).status_code == 401
 
 

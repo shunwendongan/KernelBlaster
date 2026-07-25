@@ -132,14 +132,14 @@ cp -n .env.example ../../secrets/KernelBlaster.control.env
 # 仅在本机编辑 ../../secrets/KernelBlaster.control.env，绝不能提交到 Git。
 ```
 
-根目录 `compose.yaml` 是唯一的部署规范。将 Compose 指向外部文件，并配置彼此不同的 Control、Worker 回调和 Supervisor 提交 token audience：
+根目录 `compose.yaml` 是唯一的部署规范。将 Compose 指向外部文件，并配置彼此不同的 Control、Worker 回调、Supervisor 提交和 Profiler token audience：
 
 ```bash
 export KERNELBLASTER_CONTROL_ENV_FILE="$HOME/secrets/KernelBlaster.control.env"
 export KERNELBLASTER_STATE_HOST_DIR="$HOME/runs/KernelBlaster/state"
-# 外部文件向 Compose 提供三个 token 变量；它们的值必须两两不同。
+# 外部文件向 Compose 提供四个 token 变量；它们的值必须两两不同。
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" config
-docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor profiler-worker
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" up --wait
 
 # 验证 health 和不可互换的 token audience 后清理。
@@ -189,6 +189,17 @@ export KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS=true
 ```
 
 私有 manifest 将公开的 `private_evaluation_profile_id` 映射到 CAS bundle 和 driver 路径。它仅以只读方式挂载给 Supervisor；driver 和 seed 内容不属于生成 manifest、LLM prompt 或公开反馈 payload。每个生成候选的 compile、correctness、Events 阶段都会启动一个新的非 root 容器：只读 rootfs、无网络、无 capabilities、只读的单 Job 输入卷及 512 MiB tmpfs。固定限额是 2 vCPU、8 GiB RAM、64 PID，以及分别为 180/60/90 秒。Supervisor 只导入已验证 hash 的白名单输出，并在所有退出路径删除 Job 容器和 staging volume。Docker/GPU 攻击探针使用 `gpu_sandbox` 标记，必须在 AutoDL 或 self-hosted GPU runner 上执行。
+
+### 独立固定计划 Profiler Worker
+
+`profiler-worker` 使用独立 token audience 与网络边界。Control 只路由已通过 correctness 的 executable artifact digest、下列固定 plan ID、受限 kernel filter 和 deadline；schema 会拒绝 executable 路径、任意 argv、环境字典和调用方指定的输出路径。
+
+- `nsys_timeline_v1`：CUDA/NVTX trace，关闭 CPU sampling；WSL 首次报告没有 GPU 行时允许一次受控的 `CUDA_LAUNCH_BLOCKING=1` 重试。
+- `ncu_triage_v1`：SpeedOfLight、LaunchStats、Occupancy。
+- `ncu_memory_v1`：MemoryWorkloadAnalysis。
+- `ncu_scheduler_v1`：SchedulerStats、WarpStateStats。
+
+CUDA Events 始终是排名来源。NSYS/NCU 摘要标记为 `diagnostic_only`；原始 report、CSV 和工具日志写入 CAS，绝不直接进入 LLM prompt。WSL 默认使用 Events + NSYS，除非 preflight 明确通过，否则 NCU 报告 permission blocked。AutoDL/Linux 在工具与 counter permission 可用时启用单 session NCU。Windows 原生 profiling 仍是人工批准的 Top-K 同卡诊断，不由该服务自动执行。
 
 第一次运行 Supervisor smoke 前，将已审核的 vector-add 输入注册进本地 CAS：
 

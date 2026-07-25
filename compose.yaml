@@ -19,7 +19,9 @@ services:
       KERNELBLASTER_CONTROL_TOKEN: ${KERNELBLASTER_CONTROL_TOKEN:?set a control token}
       KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a distinct worker token}
       KERNELBLASTER_SUPERVISOR_TOKEN: ${KERNELBLASTER_SUPERVISOR_TOKEN:?set a distinct supervisor token}
+      KERNELBLASTER_PROFILER_TOKEN: ${KERNELBLASTER_PROFILER_TOKEN:?set a distinct profiler token}
       KERNELBLASTER_GPU_SUPERVISOR_URL: http://gpu-supervisor:2002
+      KERNELBLASTER_PROFILER_WORKER_URL: http://profiler-worker:2003
       KERNELBLASTER_STATE_DIR: /state
     command: ["python", "-m", "src.kernelblaster.servers.control", "--host", "0.0.0.0", "--port", "8000"]
     ports:
@@ -27,7 +29,9 @@ services:
     depends_on:
       gpu-supervisor:
         condition: service_healthy
-    networks: [control-plane, worker-plane]
+      profiler-worker:
+        condition: service_healthy
+    networks: [control-plane, worker-plane, profiler-plane]
     volumes:
       - ${KERNELBLASTER_STATE_HOST_DIR:-./out/state}:/state
     healthcheck:
@@ -79,6 +83,40 @@ services:
     healthcheck:
       test:
         ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:2002/health', timeout=3).read()\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  profiler-worker:
+    image: local/kernelblaster-profiler-worker:cuda12.8-${IMAGE_TAG:-dev}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: profiler-worker
+    gpus: all
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=2g
+    environment:
+      KERNELBLASTER_PROFILER_TOKEN: ${KERNELBLASTER_PROFILER_TOKEN:?set a distinct profiler token}
+      KERNELBLASTER_CONTROL_URL: http://control:8000
+      KERNELBLASTER_GPU_DEVICE: ${KERNELBLASTER_GPU_DEVICE:-0}
+      KERNELBLASTER_NCU_PREFLIGHT_STATUS: ${KERNELBLASTER_NCU_PREFLIGHT_STATUS:-auto}
+      KERNELBLASTER_PROFILER_IMAGE_DIGEST: ${KERNELBLASTER_PROFILER_IMAGE_DIGEST:-}
+      HOME: /tmp/home
+    # Counter permission is isolated here; ordinary generated Job containers
+    # and gpu-supervisor never receive SYS_ADMIN.
+    cap_add: [SYS_ADMIN]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 16g
+    networks: [profiler-plane]
+    healthcheck:
+      test:
+        ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:2003/health', timeout=3).read()\""]
       interval: 5s
       timeout: 3s
       retries: 12
@@ -138,15 +176,20 @@ services:
       KERNELBLASTER_CONTROL_TOKEN: ${KERNELBLASTER_CONTROL_TOKEN:?set a control token}
       KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a distinct worker token}
       KERNELBLASTER_SUPERVISOR_TOKEN: ${KERNELBLASTER_SUPERVISOR_TOKEN:?set a distinct supervisor token}
+      KERNELBLASTER_PROFILER_TOKEN: ${KERNELBLASTER_PROFILER_TOKEN:?set a distinct profiler token}
     depends_on:
       control:
         condition: service_healthy
       gpu-supervisor:
         condition: service_healthy
-    networks: [control-plane, worker-plane]
+      profiler-worker:
+        condition: service_healthy
+    networks: [control-plane, worker-plane, profiler-plane]
     command: ["python", "scripts/compose_smoke.py"]
 
 networks:
   control-plane: {}
   worker-plane:
+    internal: true
+  profiler-plane:
     internal: true

@@ -1,0 +1,616 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Independent, single-session Profiler Worker with fixed NSYS/NCU plans."""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import csv
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import hashlib
+from io import StringIO
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import signal
+import subprocess
+import tempfile
+from typing import Any
+
+from fastapi import Depends, FastAPI, Header
+import uvicorn
+
+from .client import ControlProfilerClient
+from .contracts import (
+    ProfileMetric,
+    ProfilePlanId,
+    ProfileProvenance,
+    ProfileReasonCode,
+    ProfileRequest,
+    ProfileResult,
+    ProfileStatus,
+    ProfileSummary,
+    ProfilerCapabilities,
+)
+
+
+PLAN_SECTIONS: dict[ProfilePlanId, tuple[str, ...]] = {
+    ProfilePlanId.NCU_TRIAGE_V1: ("SpeedOfLight", "LaunchStats", "Occupancy"),
+    ProfilePlanId.NCU_MEMORY_V1: ("MemoryWorkloadAnalysis",),
+    ProfilePlanId.NCU_SCHEDULER_V1: ("SchedulerStats", "WarpStateStats"),
+}
+PLAN_TIMEOUTS = {
+    ProfilePlanId.NSYS_TIMELINE_V1: 300,
+    ProfilePlanId.NCU_TRIAGE_V1: 600,
+    ProfilePlanId.NCU_MEMORY_V1: 600,
+    ProfilePlanId.NCU_SCHEDULER_V1: 600,
+}
+OUTPUT_LIMIT = 8 * 1024 * 1024
+
+NCU_METRICS: dict[str, tuple[str, str]] = {
+    "gpu__time_duration.sum": ("gpu_time", "ns"),
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed": ("sm_throughput", "percent"),
+    "launch__occupancy_limit_blocks": ("occupancy_limit_blocks", "count"),
+    "sm__warps_active.avg.pct_of_peak_sustained_active": ("achieved_occupancy", "percent"),
+    "dram__throughput.avg.pct_of_peak_sustained_elapsed": ("dram_throughput", "percent"),
+    "l1tex__t_bytes.sum": ("l1_bytes", "bytes"),
+    "smsp__issue_active.avg.pct_of_peak_sustained_active": ("issue_active", "percent"),
+    "smsp__warps_active.avg.pct_of_peak_sustained_active": ("warp_active", "percent"),
+}
+
+
+@dataclass(frozen=True)
+class ToolExecution:
+    tool: str
+    version: str
+    returncode: int
+    stdout: bytes
+    stderr: bytes
+    csv_output: bytes
+    report: bytes
+    timed_out: bool = False
+    used_timestamp_workaround: bool = False
+
+
+def _runtime_platform() -> str:
+    system = platform.system().lower()
+    if system == "windows":
+        return "windows"
+    if system != "linux":
+        return "unsupported"
+    release = platform.release().lower()
+    proc_version = ""
+    try:
+        proc_version = Path("/proc/version").read_text(encoding="utf-8").lower()
+    except OSError:
+        pass
+    return "wsl" if "microsoft" in release or "microsoft" in proc_version else "linux"
+
+
+def detect_capabilities() -> ProfilerCapabilities:
+    runtime = _runtime_platform()
+    if runtime in {"windows", "unsupported"}:
+        return ProfilerCapabilities(
+            platform=runtime,
+            nsys_status="unsupported",
+            ncu_status="unsupported",
+            supported_plans=(),
+            automatic_execution=False,
+        )
+    nsys = "available" if shutil.which("nsys") else "tool_missing"
+    configured_ncu = os.getenv("KERNELBLASTER_NCU_PREFLIGHT_STATUS", "auto").lower()
+    if not shutil.which("ncu"):
+        ncu = "tool_missing"
+    elif configured_ncu == "permission_denied" or (
+        configured_ncu == "auto" and runtime == "wsl"
+    ):
+        ncu = "permission_denied"
+    else:
+        ncu = "available"
+    plans: list[ProfilePlanId] = []
+    if nsys == "available":
+        plans.append(ProfilePlanId.NSYS_TIMELINE_V1)
+    if ncu == "available":
+        plans.extend(PLAN_SECTIONS)
+    return ProfilerCapabilities(
+        platform=runtime,
+        nsys_status=nsys,
+        ncu_status=ncu,
+        supported_plans=tuple(plans),
+        automatic_execution=True,
+    )
+
+
+def profile_commands(
+    request: ProfileRequest, executable: Path, report_base: Path
+) -> tuple[list[str], list[str], Path]:
+    """Return fixed argv; caller data occupies values, never command structure."""
+    if request.plan_id is ProfilePlanId.NSYS_TIMELINE_V1:
+        report = report_base.with_suffix(".nsys-rep")
+        profile = [
+            "nsys",
+            "profile",
+            "--trace=cuda,nvtx",
+            "--sample=none",
+            "--cpuctxsw=none",
+            "--force-overwrite=true",
+            "--output",
+            str(report_base),
+            str(executable),
+            "--mode",
+            "events",
+        ]
+        export = [
+            "nsys",
+            "stats",
+            "--report",
+            "cuda_gpu_kern_sum",
+            "--format",
+            "csv",
+            str(report),
+        ]
+        return profile, export, report
+    report = report_base.with_suffix(".ncu-rep")
+    sections = [value for section in PLAN_SECTIONS[request.plan_id] for value in ("--section", section)]
+    profile = [
+        "ncu",
+        *sections,
+        "--kernel-name-base",
+        "demangled",
+        "--kernel-name",
+        f"regex:{request.kernel_filter}",
+        "--export",
+        str(report_base),
+        "--force-overwrite",
+        str(executable),
+        "--mode",
+        "events",
+    ]
+    export = ["ncu", "--import", str(report), "--csv", "--page", "raw"]
+    return profile, export, report
+
+
+def _child_environment(root: Path, *, timestamp_workaround: bool = False) -> dict[str, str]:
+    environment = {
+        "HOME": str(root),
+        "PATH": os.getenv("PATH", "/usr/local/cuda/bin:/usr/bin:/bin"),
+        "TMPDIR": str(root),
+        "CUDA_VISIBLE_DEVICES": os.getenv("KERNELBLASTER_GPU_DEVICE", "0"),
+    }
+    if timestamp_workaround:
+        environment["CUDA_LAUNCH_BLOCKING"] = "1"
+    return environment
+
+
+async def _run_process(
+    command: list[str], *, root: Path, timeout: float, timestamp_workaround: bool = False
+) -> tuple[int, bytes, bytes, bool]:
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=root,
+        env=_child_environment(root, timestamp_workaround=timestamp_workaround),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        await process.wait()
+        return -1, b"", b"profile timed out", True
+    return process.returncode or 0, stdout[:OUTPUT_LIMIT], stderr[:OUTPUT_LIMIT], False
+
+
+class FixedToolRunner:
+    async def run(
+        self, request: ProfileRequest, executable: Path, root: Path, timeout: float
+    ) -> ToolExecution:
+        profile, export, report_path = profile_commands(request, executable, root / "profile")
+        tool = "nsys" if request.plan_id is ProfilePlanId.NSYS_TIMELINE_V1 else "ncu"
+        version_process = subprocess.run(
+            [tool, "--version"], check=False, capture_output=True, text=True, timeout=10
+        )
+        version = (version_process.stdout or version_process.stderr).strip().splitlines()[0]
+        code, stdout, stderr, timed_out = await _run_process(
+            profile, root=root, timeout=timeout
+        )
+        csv_output = b""
+        workaround = False
+        if code == 0 and not timed_out:
+            export_code, csv_output, export_stderr, export_timeout = await _run_process(
+                export, root=root, timeout=min(timeout, 120)
+            )
+            stderr += b"\n" + export_stderr
+            timed_out = export_timeout
+            if export_code != 0:
+                code = export_code
+        if (
+            tool == "nsys"
+            and code == 0
+            and not _csv_rows(
+                csv_output.decode("utf-8", errors="replace"), "Total Time"
+            )
+            and not timed_out
+        ):
+            workaround = True
+            code, retry_stdout, retry_stderr, timed_out = await _run_process(
+                profile, root=root, timeout=timeout, timestamp_workaround=True
+            )
+            stdout += b"\n" + retry_stdout
+            stderr += b"\n" + retry_stderr
+            if code == 0 and not timed_out:
+                code, csv_output, export_stderr, export_timeout = await _run_process(
+                    export, root=root, timeout=min(timeout, 120)
+                )
+                stderr += b"\n" + export_stderr
+                timed_out = export_timeout
+        report = report_path.read_bytes() if report_path.is_file() else b""
+        return ToolExecution(
+            tool=tool,
+            version=version or "unknown",
+            returncode=code,
+            stdout=stdout,
+            stderr=stderr,
+            csv_output=csv_output,
+            report=report,
+            timed_out=timed_out,
+            used_timestamp_workaround=workaround,
+        )
+
+
+def _number(value: str) -> float:
+    cleaned = value.strip().replace(",", "").replace("%", "")
+    return float(cleaned)
+
+
+def _csv_rows(text: str, marker: str) -> list[dict[str, str]]:
+    lines = text.splitlines()
+    start = next((index for index, line in enumerate(lines) if marker in line), None)
+    if start is None:
+        return []
+    return list(csv.DictReader(StringIO("\n".join(lines[start:]))))
+
+
+def parse_profile_csv(
+    plan_id: ProfilePlanId, csv_payload: bytes, kernel_filter: str
+) -> tuple[str, tuple[ProfileMetric, ...], ProfileReasonCode]:
+    try:
+        text = csv_payload.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return "", (), ProfileReasonCode.METRICS_EMPTY
+    if plan_id is ProfilePlanId.NSYS_TIMELINE_V1:
+        rows = _csv_rows(text, "Total Time")
+        if not rows:
+            return "", (), ProfileReasonCode.METRICS_EMPTY
+        matching = [row for row in rows if kernel_filter in str(row.get("Name", ""))]
+        if not matching:
+            return "", (), ProfileReasonCode.KERNEL_NOT_FOUND
+        row = matching[0]
+        metrics: list[ProfileMetric] = []
+        for column, name, unit in (
+            ("Total Time (ns)", "gpu_time_total", "ns"),
+            ("Avg (ns)", "gpu_time_average", "ns"),
+            ("Instances", "instances", "count"),
+        ):
+            if row.get(column, "").strip():
+                metrics.append(ProfileMetric(name=name, value=_number(row[column]), unit=unit))
+        return str(row.get("Name", "")), tuple(metrics), (
+            ProfileReasonCode.NONE if metrics else ProfileReasonCode.METRICS_EMPTY
+        )
+    rows = _csv_rows(text, "Metric Name")
+    if not rows:
+        return "", (), ProfileReasonCode.METRICS_EMPTY
+    matching = [
+        row for row in rows if kernel_filter in str(row.get("Kernel Name", row.get("KernelName", "")))
+    ]
+    if not matching:
+        return "", (), ProfileReasonCode.KERNEL_NOT_FOUND
+    metrics: list[ProfileMetric] = []
+    for row in matching:
+        raw_name = str(row.get("Metric Name", "")).strip()
+        configured = NCU_METRICS.get(raw_name)
+        raw_value = str(row.get("Metric Value", "")).strip()
+        if configured and raw_value:
+            name, unit = configured
+            try:
+                metrics.append(ProfileMetric(name=name, value=_number(raw_value), unit=unit))
+            except ValueError:
+                continue
+    kernel_name = str(matching[0].get("Kernel Name", matching[0].get("KernelName", "")))
+    return kernel_name, tuple(metrics), (
+        ProfileReasonCode.NONE if metrics else ProfileReasonCode.METRICS_EMPTY
+    )
+
+
+def _hardware() -> tuple[str, str]:
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=name,driver_version",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        name, driver = [field.strip() for field in result.stdout.strip().split(",", 1)]
+        return name, driver
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return "unknown", "unknown"
+
+
+class FixedPlanProfiler:
+    def __init__(
+        self,
+        control: Any,
+        *,
+        capabilities: ProfilerCapabilities,
+        runner: Any | None = None,
+    ) -> None:
+        self.control = control
+        self.capabilities = capabilities
+        self.runner = runner or FixedToolRunner()
+        self._gpu = asyncio.Semaphore(1)
+
+    def _blocked_reason(self, plan: ProfilePlanId) -> ProfileReasonCode | None:
+        if not self.capabilities.automatic_execution:
+            return ProfileReasonCode.UNSUPPORTED
+        if plan is ProfilePlanId.NSYS_TIMELINE_V1:
+            return (
+                None
+                if self.capabilities.nsys_status == "available"
+                else ProfileReasonCode.TOOL_MISSING
+            )
+        return {
+            "available": None,
+            "permission_denied": ProfileReasonCode.PERMISSION_DENIED,
+            "tool_missing": ProfileReasonCode.TOOL_MISSING,
+            "unsupported": ProfileReasonCode.UNSUPPORTED,
+        }[self.capabilities.ncu_status]
+
+    async def _upload(
+        self,
+        payload: bytes,
+        *,
+        media_type: str,
+        schema: str,
+        source_digest: str,
+    ) -> str:
+        expected = hashlib.sha256(payload).hexdigest()
+        uploaded = await self.control.upload(
+            payload,
+            media_type=media_type,
+            schema=schema,
+            source_digest=source_digest,
+        )
+        if uploaded.get("digest") != expected:
+            raise ValueError("Control returned an invalid profiler artifact digest")
+        return expected
+
+    async def profile(self, request: ProfileRequest) -> ProfileResult:
+        blocked = self._blocked_reason(request.plan_id)
+        if blocked is not None:
+            return ProfileResult(
+                status=ProfileStatus.BLOCKED, reason_code=blocked, plan_id=request.plan_id
+            )
+        remaining = (request.deadline.astimezone(timezone.utc) - datetime.now(timezone.utc)).total_seconds()
+        timeout = min(float(PLAN_TIMEOUTS[request.plan_id]), remaining)
+        if timeout <= 0:
+            return ProfileResult(
+                status=ProfileStatus.TIMED_OUT,
+                reason_code=ProfileReasonCode.TIMEOUT,
+                plan_id=request.plan_id,
+            )
+        async with self._gpu:
+            try:
+                executable, source_digest = await self.control.download(request.artifact_digest)
+                if hashlib.sha256(executable).hexdigest() != request.artifact_digest:
+                    raise ValueError("candidate artifact digest mismatch")
+                with tempfile.TemporaryDirectory(prefix="kernelblaster-profile-") as temporary:
+                    root = Path(temporary)
+                    candidate = root / "candidate"
+                    candidate.write_bytes(executable)
+                    candidate.chmod(0o500)
+                    execution = await self.runner.run(request, candidate, root, timeout)
+                artifacts: dict[str, str] = {}
+                for payload, role, media_type, schema in (
+                    (execution.report, "raw_report", "application/octet-stream", "profiler-report/v1"),
+                    (execution.csv_output, "raw_csv", "text/csv", "profiler-csv/v1"),
+                    (execution.stdout + b"\n" + execution.stderr, "tool_log", "text/plain", "profiler-log/v1"),
+                ):
+                    if payload:
+                        digest = await self._upload(
+                            payload,
+                            media_type=media_type,
+                            schema=schema,
+                            source_digest=source_digest,
+                        )
+                        artifacts[digest] = role
+                if execution.timed_out:
+                    return ProfileResult(
+                        status=ProfileStatus.TIMED_OUT,
+                        reason_code=ProfileReasonCode.TIMEOUT,
+                        plan_id=request.plan_id,
+                        artifact_roles=artifacts,
+                    )
+                combined = (execution.stderr + b"\n" + execution.stdout).decode(
+                    "utf-8", errors="replace"
+                )
+                if "ERR_NVGPUCTRPERM" in combined:
+                    reason = ProfileReasonCode.PERMISSION_DENIED
+                elif execution.returncode != 0:
+                    reason = ProfileReasonCode.EXECUTION_FAILED
+                elif not execution.report:
+                    reason = ProfileReasonCode.EXECUTION_FAILED
+                else:
+                    _kernel, _metrics, reason = parse_profile_csv(
+                        request.plan_id, execution.csv_output, request.kernel_filter
+                    )
+                if reason is not ProfileReasonCode.NONE:
+                    status = (
+                        ProfileStatus.BLOCKED
+                        if reason in {ProfileReasonCode.PERMISSION_DENIED, ProfileReasonCode.TOOL_MISSING, ProfileReasonCode.UNSUPPORTED}
+                        else ProfileStatus.FAILED
+                    )
+                    return ProfileResult(
+                        status=status,
+                        reason_code=reason,
+                        plan_id=request.plan_id,
+                        artifact_roles=artifacts,
+                    )
+                kernel, metrics, _reason = parse_profile_csv(
+                    request.plan_id, execution.csv_output, request.kernel_filter
+                )
+                summary = ProfileSummary(
+                    plan_id=request.plan_id, kernel_name=kernel, metrics=metrics
+                )
+                gpu_name, driver_version = _hardware()
+                provenance = ProfileProvenance(
+                    candidate_artifact_digest=request.artifact_digest,
+                    source_digest=source_digest,
+                    tool=execution.tool,
+                    tool_version=execution.version,
+                    gpu_name=gpu_name,
+                    driver_version=driver_version,
+                    image_digest=os.getenv("KERNELBLASTER_PROFILER_IMAGE_DIGEST") or None,
+                    workarounds=(
+                        ("nsys_timestamp_retry",)
+                        if execution.used_timestamp_workaround
+                        else ()
+                    ),
+                )
+                summary_payload = json.dumps(
+                    {
+                        "summary": summary.model_dump(mode="json"),
+                        "provenance": provenance.model_dump(mode="json"),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+                summary_digest = await self._upload(
+                    summary_payload,
+                    media_type="application/json",
+                    schema="profiler-summary/v1",
+                    source_digest=source_digest,
+                )
+                artifacts[summary_digest] = "structured_summary"
+                return ProfileResult(
+                    status=ProfileStatus.SUCCEEDED,
+                    plan_id=request.plan_id,
+                    summary=summary,
+                    provenance=provenance,
+                    artifact_roles=artifacts,
+                )
+            except FileNotFoundError:
+                reason = ProfileReasonCode.TOOL_MISSING
+            except PermissionError:
+                reason = ProfileReasonCode.PERMISSION_DENIED
+            except Exception:
+                reason = ProfileReasonCode.INTERNAL_ERROR
+            return ProfileResult(
+                status=(
+                    ProfileStatus.BLOCKED
+                    if reason in {
+                        ProfileReasonCode.TOOL_MISSING,
+                        ProfileReasonCode.PERMISSION_DENIED,
+                    }
+                    else ProfileStatus.FAILED
+                ),
+                reason_code=reason,
+                plan_id=request.plan_id,
+            )
+
+
+APP = FastAPI(title="KernelBlaster Profiler Worker")
+
+
+async def _require_profiler_token(
+    authorization: str | None = Header(default=None),
+) -> None:
+    from ..servers.auth import require_profiler_token
+
+    await require_profiler_token(authorization)
+
+
+def _profiler() -> FixedPlanProfiler:
+    worker = getattr(APP.state, "profiler", None)
+    if worker is None:
+        from ..servers.auth import validate_profiler_token
+
+        token = validate_profiler_token()
+        control_url = os.getenv("KERNELBLASTER_CONTROL_URL", "").strip()
+        if not control_url:
+            raise RuntimeError("KERNELBLASTER_CONTROL_URL is required")
+        capabilities = detect_capabilities()
+        worker = FixedPlanProfiler(
+            ControlProfilerClient(control_url, token), capabilities=capabilities
+        )
+        APP.state.profiler = worker
+    return worker
+
+
+@APP.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "healthy", "service": "profiler-worker"}
+
+
+@APP.get("/ready")
+async def ready(
+    _authorized: None = Depends(_require_profiler_token),
+) -> dict[str, str]:
+    _profiler()
+    return {"status": "ready", "service": "profiler-worker"}
+
+
+@APP.get("/v1/capabilities")
+async def capabilities(
+    _authorized: None = Depends(_require_profiler_token),
+) -> dict[str, object]:
+    return _profiler().capabilities.model_dump(mode="json")
+
+
+@APP.post("/v1/profiles")
+async def profile(
+    request: ProfileRequest,
+    _authorized: None = Depends(_require_profiler_token),
+) -> dict[str, object]:
+    return (await _profiler().profile(request)).model_dump(mode="json")
+
+
+def main() -> None:
+    from ..servers.auth import validate_profiler_token
+
+    parser = argparse.ArgumentParser(description="Run the fixed-plan Profiler Worker")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=2003)
+    args = parser.parse_args()
+    validate_profiler_token()
+    _profiler()
+    uvicorn.run(APP, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()
+
+
+__all__ = [
+    "APP",
+    "FixedPlanProfiler",
+    "FixedToolRunner",
+    "ToolExecution",
+    "detect_capabilities",
+    "parse_profile_csv",
+    "profile_commands",
+]

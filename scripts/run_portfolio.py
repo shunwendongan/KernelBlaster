@@ -30,6 +30,7 @@ sys.path.insert(0, str(ROOT_DIR))
 from src.kernelblaster.config import config  # noqa: E402
 from src.kernelblaster.observability import RunRecorder  # noqa: E402
 from src.kernelblaster.portfolio import load_suite  # noqa: E402
+from src.kernelblaster.storage import StateStore, state_storage_requested  # noqa: E402
 
 
 GPU_TARGETS = (
@@ -82,7 +83,7 @@ def _ensure_new_artifact_dir(output_dir: Path) -> None:
 
 def _build_command(args, suite, output_dir: Path, rollouts: int, steps: int) -> list[str]:
     experiment_name = f"portfolio-{suite.name}-{output_dir.name}"
-    return [
+    command = [
         sys.executable,
         str(ROOT_DIR / "scripts" / "run_RL.py"),
         "--experiment-name",
@@ -117,6 +118,14 @@ def _build_command(args, suite, output_dir: Path, rollouts: int, steps: int) -> 
         "--portfolio-suite",
         str(suite.source_path),
     ]
+    for option, value in (
+        ("--state-dir", args.state_dir),
+        ("--sqlite-path", args.sqlite_path),
+        ("--cas-dir", args.cas_dir),
+    ):
+        if value is not None:
+            command.extend((option, str(value)))
+    return command
 
 
 def main() -> int:
@@ -133,6 +142,9 @@ def main() -> int:
     parser.add_argument("--rollouts", type=int, default=None)
     parser.add_argument("--steps", type=int, default=None)
     parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--state-dir", type=Path, default=None)
+    parser.add_argument("--sqlite-path", type=Path, default=None)
+    parser.add_argument("--cas-dir", type=Path, default=None)
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -162,6 +174,22 @@ def main() -> int:
     resolved_suite["source"] = suite_source
     resolved_suite["resolved"] = {"rollouts": rollouts, "steps": steps}
 
+    state_store = None
+    if (
+        args.state_dir is not None
+        or args.sqlite_path is not None
+        or args.cas_dir is not None
+        or state_storage_requested()
+    ):
+        try:
+            state_store = StateStore(
+                state_dir=args.state_dir,
+                sqlite_path=args.sqlite_path,
+                cas_dir=args.cas_dir,
+            )
+        except (OSError, PermissionError, ValueError) as error:
+            parser.error(str(error))
+
     if args.dry_run:
         recorder = RunRecorder(
             output_dir,
@@ -171,6 +199,7 @@ def main() -> int:
             gpu_target=args.gpu,
             dry_run=True,
             repo_root=ROOT_DIR,
+            state_store=state_store,
         )
         recorder.record_event(
             "portfolio_dry_run_resolved",

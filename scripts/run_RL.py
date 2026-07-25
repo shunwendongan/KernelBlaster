@@ -38,6 +38,7 @@ from src.kernelblaster.observability import (
 )
 from src.kernelblaster.outcomes import RunStatus
 from src.kernelblaster.resources import *
+from src.kernelblaster.storage import StateStore, state_storage_requested
 from src.kernelblaster.workflow import run_workflow
 from src.kernelblaster.agents.database import LLMInterface, OptimizationDatabase
 
@@ -538,6 +539,9 @@ async def async_main() -> int:
         default=None,
         help="Resolved portfolio suite JSON to embed in the run manifest.",
     )
+    parser.add_argument("--state-dir", type=Path, default=None)
+    parser.add_argument("--sqlite-path", type=Path, default=None)
+    parser.add_argument("--cas-dir", type=Path, default=None)
     args = parser.parse_args()
     validate_common_arguments(parser, args)
 
@@ -554,6 +558,22 @@ async def async_main() -> int:
         except ValueError as error:
             parser.error(str(error))
 
+    state_store = None
+    if (
+        args.state_dir is not None
+        or args.sqlite_path is not None
+        or args.cas_dir is not None
+        or state_storage_requested()
+    ):
+        try:
+            state_store = StateStore(
+                state_dir=args.state_dir,
+                sqlite_path=args.sqlite_path,
+                cas_dir=args.cas_dir,
+            )
+        except (OSError, PermissionError, ValueError) as error:
+            parser.error(str(error))
+
     if args.run_record_dir is not None:
         global RUN_RECORDER
         config.MODEL = args.model
@@ -565,6 +585,7 @@ async def async_main() -> int:
             suite=suite_config,
             gpu_target=args.gpu,
             repo_root=ROOT_DIR,
+            state_store=state_store,
         )
         set_run_recorder(RUN_RECORDER)
         record_event(

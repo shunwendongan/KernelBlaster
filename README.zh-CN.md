@@ -126,6 +126,7 @@ KernelBlaster 从 KernelBench-CUDA 的初始输入产物开始工作。每个问
 
 ```bash
 mkdir -p ../../{datasets,checkpoints,runs}/KernelBlaster
+mkdir -p ../../runs/KernelBlaster/state
 mkdir -p ../../caches/{huggingface,torch,triton} ../../secrets
 cp -n .env.example ../../secrets/KernelBlaster.control.env
 # 仅在本机编辑 ../../secrets/KernelBlaster.control.env，绝不能提交到 Git。
@@ -135,6 +136,7 @@ cp -n .env.example ../../secrets/KernelBlaster.control.env
 
 ```bash
 export KERNELBLASTER_CONTROL_ENV_FILE="$HOME/secrets/KernelBlaster.control.env"
+export KERNELBLASTER_STATE_HOST_DIR="$HOME/runs/KernelBlaster/state"
 # 外部文件同时向 Compose 提供两个变量；它们的值必须不同。
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" config
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor
@@ -155,10 +157,32 @@ docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile dev run --
 | `~/datasets/KernelBlaster` | `/data` | 只读 |
 | `~/checkpoints/KernelBlaster` | `/checkpoints` | 读写 |
 | `~/runs/KernelBlaster` | `/runs` | 读写 |
+| `~/runs/KernelBlaster/state` | 仅映射到 `control` 的 `/state` | SQLite/CAS 读写 |
 | `~/caches/{huggingface,torch,triton}` | `/cache/...` | 读写 |
 | `~/secrets/KernelBlaster.control.env` | 仅注入 `control` | 永不复制进镜像 |
 
 `control` 是仅使用 CPU 的 Python 镜像，只绑定 `127.0.0.1:8000`，也是唯一接收 LLM Provider 配置的容器。`gpu-supervisor` 使用固定的 CUDA 镜像，以 UID 10001 运行，根文件系统只读，移除 capabilities，启用 `no-new-privileges`，并限制内存、PID 和仅内部可见的 `worker-plane` 网络。它只接收 `KERNELBLASTER_WORKER_TOKEN`，绝不会接收 LLM Key。`dev` profile 保留为 `nvcc`、测试和交互式调试的可信路径。
+
+### 持久化本地状态与实验记忆
+
+Control 服务在 `KERNELBLASTER_STATE_HOST_DIR` 下独占本地 SQLite 任务库和
+SHA-256 内容寻址存储（CAS）。该目录必须位于 WSL ext4 或 AutoDL 本地磁盘；服务会拒绝
+已识别的 NFS、SMB/CIFS 和 `drvfs` 挂载。GPU supervisor 不挂载此目录，也不直接打开
+SQLite，只能通过带鉴权的 Control API 获取 lease 和上报结果。
+
+SQLite 只保存 run/job 状态、lease、attempt 和小型元数据；源码、日志、profile 与报告都
+以 CAS digest 的形式引用。这是为后续检索层准备的、可审计的实验长期记忆，并不是
+embedding 数据库或 RAG 本身。
+
+已有状态库迁移前请先停止 Control 并备份：
+
+```bash
+cp "$KERNELBLASTER_STATE_HOST_DIR/control.sqlite3" \
+  "$KERNELBLASTER_STATE_HOST_DIR/control.sqlite3.backup-$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+Control 启动时只执行向前 migration。CLI 中的 `--state-dir`、`--sqlite-path` 与
+`--cas-dir` 优先于相应的 `KERNELBLASTER_*` 环境变量，因此无需把机器绝对路径硬编码到代码中。
 
 普通 CUDA Events 路径不需要 host network、`--privileged` 或 `SYS_ADMIN`。
 如果本地 NCU 计数器仍不可用，运行会明确记录为 `events_only`；需要硬件计数器时应部署单独授权的 Profiler Worker，而不是提升控制容器权限。

@@ -41,13 +41,17 @@ class ControlProfilerClient:
         self.base_url = base_url.rstrip("/")
         self.headers = {"Authorization": f"Bearer {token}"}
 
-    async def download(self, digest: str) -> tuple[bytes, str]:
+    async def download(self, digest: str) -> tuple[bytes, str, str]:
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{self.base_url}/v1/profiler/artifacts/{digest}", headers=self.headers
             ) as response:
                 response.raise_for_status()
-                return await response.read(), response.headers["x-kernelblaster-source-digest"]
+                return (
+                    await response.read(),
+                    response.headers["x-kernelblaster-source-digest"],
+                    response.headers["x-kernelblaster-benchmark-protocol-id"],
+                )
 
     async def upload(
         self,

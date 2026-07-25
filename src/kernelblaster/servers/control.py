@@ -239,7 +239,12 @@ async def download_profiler_candidate(
         path,
         media_type="application/x-executable",
         filename=digest,
-        headers={"x-kernelblaster-source-digest": provenance["source_digest"]},
+        headers={
+            "x-kernelblaster-source-digest": provenance["source_digest"],
+            "x-kernelblaster-benchmark-protocol-id": provenance[
+                "benchmark_protocol_id"
+            ],
+        },
     )
 
 

@@ -1,6 +1,7 @@
 # Fixed-plan Profiler Worker runtime. NSYS/NCU/CUDA come from the pinned NGC image.
 aiohttp>=3.11,<4
 fastapi>=0.115,<1
+loguru==0.7.3
 pydantic>=2.10,<3
 python-dotenv>=1,<2
 uvicorn[standard]>=0.34,<1

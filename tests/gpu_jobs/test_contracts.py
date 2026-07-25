@@ -51,6 +51,10 @@ def test_manifest_validates_digest_arch_deadline_and_stage_inputs():
         GpuJobManifest.model_validate(
             _manifest(stage="events", source_bundle_digest=None, driver_digest=None)
         )
+    with pytest.raises(ValidationError, match="benchmark_protocol_id"):
+        GpuJobManifest.model_validate(
+            _manifest(benchmark_protocol_id="trusted-smoke-v1\r\ninjected: value")
+        )
 
 
 def test_deterministic_bundle_rejects_path_traversal_and_links():

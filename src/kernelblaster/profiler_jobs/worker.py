@@ -52,6 +52,8 @@ PLAN_TIMEOUTS = {
     ProfilePlanId.NCU_SCHEDULER_V1: 600,
 }
 OUTPUT_LIMIT = 8 * 1024 * 1024
+NCU_PREFLIGHT_TIMEOUT = 60
+NCU_PREFLIGHT_BINARY = Path("/opt/kernelblaster/bin/ncu-preflight")
 
 NCU_METRICS: dict[str, tuple[str, str]] = {
     "gpu__time_duration.sum": ("gpu_time", "ns"),
@@ -62,6 +64,32 @@ NCU_METRICS: dict[str, tuple[str, str]] = {
     "l1tex__t_bytes.sum": ("l1_bytes", "bytes"),
     "smsp__issue_active.avg.pct_of_peak_sustained_active": ("issue_active", "percent"),
     "smsp__warps_active.avg.pct_of_peak_sustained_active": ("warp_active", "percent"),
+}
+
+_TIME_UNIT_TO_NS = {
+    "ns": 1.0,
+    "nsecond": 1.0,
+    "nseconds": 1.0,
+    "us": 1_000.0,
+    "usecond": 1_000.0,
+    "useconds": 1_000.0,
+    "ms": 1_000_000.0,
+    "msecond": 1_000_000.0,
+    "mseconds": 1_000_000.0,
+    "s": 1_000_000_000.0,
+    "second": 1_000_000_000.0,
+    "seconds": 1_000_000_000.0,
+}
+
+_BYTE_UNIT_TO_BYTES = {
+    "byte": 1.0,
+    "bytes": 1.0,
+    "kbyte": 1_000.0,
+    "kbytes": 1_000.0,
+    "mbyte": 1_000_000.0,
+    "mbytes": 1_000_000.0,
+    "gbyte": 1_000_000_000.0,
+    "gbytes": 1_000_000_000.0,
 }
 
 
@@ -107,12 +135,15 @@ def detect_capabilities() -> ProfilerCapabilities:
     configured_ncu = os.getenv("KERNELBLASTER_NCU_PREFLIGHT_STATUS", "auto").lower()
     if not shutil.which("ncu"):
         ncu = "tool_missing"
-    elif configured_ncu == "permission_denied" or (
-        configured_ncu == "auto" and runtime == "wsl"
-    ):
-        ncu = "permission_denied"
+    elif configured_ncu == "auto":
+        ncu = probe_ncu_counters()
+    elif configured_ncu in {"available", "permission_denied", "unsupported"}:
+        ncu = configured_ncu
     else:
-        ncu = "available"
+        raise RuntimeError(
+            "KERNELBLASTER_NCU_PREFLIGHT_STATUS must be auto, available, "
+            "permission_denied, or unsupported"
+        )
     plans: list[ProfilePlanId] = []
     if nsys == "available":
         plans.append(ProfilePlanId.NSYS_TIMELINE_V1)
@@ -127,8 +158,65 @@ def detect_capabilities() -> ProfilerCapabilities:
     )
 
 
+def probe_ncu_counters() -> str:
+    """Run a fixed, bounded counter probe as the Profiler service identity."""
+    if not shutil.which("ncu"):
+        return "tool_missing"
+    executable = Path(
+        os.getenv("KERNELBLASTER_NCU_PREFLIGHT_BINARY", str(NCU_PREFLIGHT_BINARY))
+    )
+    if not executable.is_file():
+        return "unsupported"
+    try:
+        with tempfile.TemporaryDirectory(prefix="kernelblaster-ncu-preflight-") as temporary:
+            root = Path(temporary)
+            report_base = root / "preflight"
+            result = subprocess.run(
+                [
+                    "ncu",
+                    "--metrics",
+                    "gpu__time_duration.sum",
+                    "--kernel-name-base",
+                    "demangled",
+                    "--kernel-name",
+                    "regex:kernelblaster_ncu_preflight",
+                    "--launch-count",
+                    "1",
+                    "--cache-control",
+                    "none",
+                    "--clock-control",
+                    "none",
+                    "--export",
+                    str(report_base),
+                    "--force-overwrite",
+                    str(executable),
+                ],
+                cwd=root,
+                env=_child_environment(root),
+                check=False,
+                capture_output=True,
+                timeout=NCU_PREFLIGHT_TIMEOUT,
+            )
+            output = (result.stdout + result.stderr).decode(
+                "utf-8", errors="replace"
+            )
+            if "ERR_NVGPUCTRPERM" in output:
+                return "permission_denied"
+            if result.returncode == 0 and report_base.with_suffix(".ncu-rep").is_file():
+                return "available"
+    except FileNotFoundError:
+        return "tool_missing"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unsupported"
+    return "unsupported"
+
+
 def profile_commands(
-    request: ProfileRequest, executable: Path, report_base: Path
+    request: ProfileRequest,
+    executable: Path,
+    report_base: Path,
+    *,
+    benchmark_protocol_id: str,
 ) -> tuple[list[str], list[str], Path]:
     """Return fixed argv; caller data occupies values, never command structure."""
     if request.plan_id is ProfilePlanId.NSYS_TIMELINE_V1:
@@ -145,6 +233,8 @@ def profile_commands(
             str(executable),
             "--mode",
             "events",
+            "--protocol",
+            benchmark_protocol_id,
         ]
         export = [
             "nsys",
@@ -153,6 +243,7 @@ def profile_commands(
             "cuda_gpu_kern_sum",
             "--format",
             "csv",
+            "--force-export=true",
             str(report),
         ]
         return profile, export, report
@@ -171,30 +262,36 @@ def profile_commands(
         str(executable),
         "--mode",
         "events",
+        "--protocol",
+        benchmark_protocol_id,
     ]
     export = ["ncu", "--import", str(report), "--csv", "--page", "raw"]
     return profile, export, report
 
 
-def _child_environment(root: Path, *, timestamp_workaround: bool = False) -> dict[str, str]:
+def _child_environment(root: Path) -> dict[str, str]:
     environment = {
         "HOME": str(root),
         "PATH": os.getenv("PATH", "/usr/local/cuda/bin:/usr/bin:/bin"),
         "TMPDIR": str(root),
         "CUDA_VISIBLE_DEVICES": os.getenv("KERNELBLASTER_GPU_DEVICE", "0"),
     }
-    if timestamp_workaround:
-        environment["CUDA_LAUNCH_BLOCKING"] = "1"
     return environment
 
 
+def _configure_wsl_nsys_timestamps(root: Path) -> None:
+    config = root / ".config" / "NVIDIA Corporation" / "nsys-config.ini"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("CuptiUseRawGpuTimestamps=false\n", encoding="utf-8")
+
+
 async def _run_process(
-    command: list[str], *, root: Path, timeout: float, timestamp_workaround: bool = False
+    command: list[str], *, root: Path, timeout: float
 ) -> tuple[int, bytes, bytes, bool]:
     process = await asyncio.create_subprocess_exec(
         *command,
         cwd=root,
-        env=_child_environment(root, timestamp_workaround=timestamp_workaround),
+        env=_child_environment(root),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
@@ -213,9 +310,19 @@ async def _run_process(
 
 class FixedToolRunner:
     async def run(
-        self, request: ProfileRequest, executable: Path, root: Path, timeout: float
+        self,
+        request: ProfileRequest,
+        executable: Path,
+        benchmark_protocol_id: str,
+        root: Path,
+        timeout: float,
     ) -> ToolExecution:
-        profile, export, report_path = profile_commands(request, executable, root / "profile")
+        profile, export, report_path = profile_commands(
+            request,
+            executable,
+            root / "profile",
+            benchmark_protocol_id=benchmark_protocol_id,
+        )
         tool = "nsys" if request.plan_id is ProfilePlanId.NSYS_TIMELINE_V1 else "ncu"
         version_process = subprocess.run(
             [tool, "--version"], check=False, capture_output=True, text=True, timeout=10
@@ -232,19 +339,20 @@ class FixedToolRunner:
             )
             stderr += b"\n" + export_stderr
             timed_out = export_timeout
-            if export_code != 0:
-                code = export_code
+            code = export_code
         if (
             tool == "nsys"
-            and code == 0
+            and report_path.is_file()
+            and _runtime_platform() == "wsl"
             and not _csv_rows(
                 csv_output.decode("utf-8", errors="replace"), "Total Time"
             )
             and not timed_out
         ):
             workaround = True
+            _configure_wsl_nsys_timestamps(root)
             code, retry_stdout, retry_stderr, timed_out = await _run_process(
-                profile, root=root, timeout=timeout, timestamp_workaround=True
+                profile, root=root, timeout=timeout
             )
             stdout += b"\n" + retry_stdout
             stderr += b"\n" + retry_stderr
@@ -273,12 +381,92 @@ def _number(value: str) -> float:
     return float(cleaned)
 
 
+def _canonical_metric_value(value: str, source_unit: str, target_unit: str) -> float:
+    number = _number(value)
+    unit = source_unit.strip().lower().replace("\u00b5", "u")
+    if target_unit == "ns":
+        return number * _TIME_UNIT_TO_NS[unit]
+    if target_unit == "bytes":
+        return number * _BYTE_UNIT_TO_BYTES[unit]
+    return number
+
+
+def _configured_metric(
+    raw_name: str, raw_value: str, raw_unit: str
+) -> ProfileMetric | None:
+    configured = NCU_METRICS.get(raw_name.strip())
+    if not configured or not raw_value.strip():
+        return None
+    name, unit = configured
+    try:
+        value = _canonical_metric_value(raw_value, raw_unit, unit)
+    except (KeyError, ValueError):
+        return None
+    return ProfileMetric(name=name, value=value, unit=unit)
+
+
 def _csv_rows(text: str, marker: str) -> list[dict[str, str]]:
     lines = text.splitlines()
     start = next((index for index, line in enumerate(lines) if marker in line), None)
     if start is None:
         return []
     return list(csv.DictReader(StringIO("\n".join(lines[start:]))))
+
+
+def _parse_ncu_wide_csv(
+    text: str, kernel_filter: str
+) -> tuple[str, tuple[ProfileMetric, ...], ProfileReasonCode] | None:
+    """Parse the wide raw CSV emitted by recent Nsight Compute releases."""
+    reader = csv.reader(StringIO(text))
+    try:
+        header = next(reader)
+    except StopIteration:
+        return None
+    try:
+        kernel_index = header.index("Kernel Name")
+    except ValueError:
+        return None
+    metric_indexes = [
+        (index, raw_name)
+        for index, raw_name in enumerate(header)
+        if raw_name in NCU_METRICS
+    ]
+    if not metric_indexes:
+        return None
+    records = list(reader)
+    if not records:
+        return "", (), ProfileReasonCode.METRICS_EMPTY
+
+    # The first record in NCU's wide form is a units row with no kernel name.
+    has_units_row = (
+        len(records[0]) > kernel_index and not records[0][kernel_index].strip()
+    )
+    units = records[0] if has_units_row else [""] * len(header)
+    data_rows = records[1:] if has_units_row else records
+    matching = [
+        row
+        for row in data_rows
+        if len(row) > kernel_index and kernel_filter in row[kernel_index]
+    ]
+    if not matching:
+        return "", (), (
+            ProfileReasonCode.KERNEL_NOT_FOUND
+            if data_rows
+            else ProfileReasonCode.METRICS_EMPTY
+        )
+
+    metrics: list[ProfileMetric] = []
+    for row in matching:
+        for index, raw_name in metric_indexes:
+            if index >= len(row):
+                continue
+            source_unit = units[index] if index < len(units) else ""
+            metric = _configured_metric(raw_name, row[index], source_unit)
+            if metric is not None:
+                metrics.append(metric)
+    return matching[0][kernel_index], tuple(metrics), (
+        ProfileReasonCode.NONE if metrics else ProfileReasonCode.METRICS_EMPTY
+    )
 
 
 def parse_profile_csv(
@@ -309,7 +497,8 @@ def parse_profile_csv(
         )
     rows = _csv_rows(text, "Metric Name")
     if not rows:
-        return "", (), ProfileReasonCode.METRICS_EMPTY
+        wide = _parse_ncu_wide_csv(text, kernel_filter)
+        return wide or ("", (), ProfileReasonCode.METRICS_EMPTY)
     matching = [
         row for row in rows if kernel_filter in str(row.get("Kernel Name", row.get("KernelName", "")))
     ]
@@ -318,14 +507,11 @@ def parse_profile_csv(
     metrics: list[ProfileMetric] = []
     for row in matching:
         raw_name = str(row.get("Metric Name", "")).strip()
-        configured = NCU_METRICS.get(raw_name)
         raw_value = str(row.get("Metric Value", "")).strip()
-        if configured and raw_value:
-            name, unit = configured
-            try:
-                metrics.append(ProfileMetric(name=name, value=_number(raw_value), unit=unit))
-            except ValueError:
-                continue
+        raw_unit = str(row.get("Metric Unit", "")).strip()
+        metric = _configured_metric(raw_name, raw_value, raw_unit)
+        if metric is not None:
+            metrics.append(metric)
     kernel_name = str(matching[0].get("Kernel Name", matching[0].get("KernelName", "")))
     return kernel_name, tuple(metrics), (
         ProfileReasonCode.NONE if metrics else ProfileReasonCode.METRICS_EMPTY
@@ -415,7 +601,9 @@ class FixedPlanProfiler:
             )
         async with self._gpu:
             try:
-                executable, source_digest = await self.control.download(request.artifact_digest)
+                executable, source_digest, benchmark_protocol_id = (
+                    await self.control.download(request.artifact_digest)
+                )
                 if hashlib.sha256(executable).hexdigest() != request.artifact_digest:
                     raise ValueError("candidate artifact digest mismatch")
                 with tempfile.TemporaryDirectory(prefix="kernelblaster-profile-") as temporary:
@@ -423,7 +611,13 @@ class FixedPlanProfiler:
                     candidate = root / "candidate"
                     candidate.write_bytes(executable)
                     candidate.chmod(0o500)
-                    execution = await self.runner.run(request, candidate, root, timeout)
+                    execution = await self.runner.run(
+                        request,
+                        candidate,
+                        benchmark_protocol_id,
+                        root,
+                        timeout,
+                    )
                 artifacts: dict[str, str] = {}
                 for payload, role, media_type, schema in (
                     (execution.report, "raw_report", "application/octet-stream", "profiler-report/v1"),
@@ -612,5 +806,6 @@ __all__ = [
     "ToolExecution",
     "detect_capabilities",
     "parse_profile_csv",
+    "probe_ncu_counters",
     "profile_commands",
 ]

@@ -519,7 +519,13 @@ class JobRepository:
         source_digest = str(compile_payload.get("source_bundle_digest") or "")
         if len(source_digest) != 64:
             raise ValueError("profiler candidate source digest is unavailable")
+        benchmark_protocol_id = str(
+            compile_payload.get("benchmark_protocol_id") or ""
+        )
+        if not benchmark_protocol_id:
+            raise ValueError("profiler candidate benchmark protocol is unavailable")
         return {
             "artifact_digest": executable_digest,
             "source_digest": source_digest,
+            "benchmark_protocol_id": benchmark_protocol_id,
         }

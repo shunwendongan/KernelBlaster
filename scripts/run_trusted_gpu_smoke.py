@@ -22,6 +22,12 @@ from src.kernelblaster.gpu_jobs import build_deterministic_bundle  # noqa: E402
 
 
 TERMINAL = {"succeeded", "failed", "blocked", "timed_out", "cancelled"}
+PROFILE_PLANS = (
+    "nsys_timeline_v1",
+    "ncu_triage_v1",
+    "ncu_memory_v1",
+    "ncu_scheduler_v1",
+)
 
 
 class ControlClient:
@@ -73,6 +79,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--control-url", default="http://127.0.0.1:8000")
     parser.add_argument("--token", default=os.getenv("KERNELBLASTER_CONTROL_TOKEN"))
+    parser.add_argument(
+        "--profile-plan",
+        action="append",
+        choices=PROFILE_PLANS,
+        default=[],
+        help="Run a fixed diagnostic plan after correctness and Events pass.",
+    )
     args = parser.parse_args()
     if not args.token:
         parser.error("--token or KERNELBLASTER_CONTROL_TOKEN is required")
@@ -153,7 +166,39 @@ def main() -> int:
     events = client.wait(events_id)
     if events["status"] != "succeeded":
         raise RuntimeError(f"trusted Events failed: {events}")
-    print(json.dumps({"run_id": run_id, "target_arch": target_arch, "measurement": events["result"]["measurement"]}))
+
+    profiles: dict[str, dict] = {}
+    for plan_id in args.profile_plan:
+        profiles[plan_id] = client.request(
+            "POST",
+            "/v1/profiles",
+            json_payload={
+                "artifact_digest": executable,
+                "plan_id": plan_id,
+                "kernel_filter": "vector_add_kernel",
+                "deadline": (
+                    datetime.now(timezone.utc) + timedelta(minutes=10)
+                ).isoformat(),
+            },
+        )
+    output = {
+        "run_id": run_id,
+        "target_arch": target_arch,
+        "executable_digest": executable,
+        "measurement": events["result"]["measurement"],
+        "profiles": profiles,
+    }
+    print(json.dumps(output))
+    failed_profiles = {
+        plan_id: result
+        for plan_id, result in profiles.items()
+        if result.get("status") != "succeeded"
+    }
+    if failed_profiles:
+        raise RuntimeError(
+            "trusted profiler smoke failed: "
+            + json.dumps(failed_profiles, sort_keys=True)
+        )
     return 0
 
 

@@ -1,5 +1,6 @@
 # Minimal runtime for the untrusted GPU worker. PyTorch/CUDA are supplied by
 # the pinned nvcr.io/nvidia/pytorch:25.01-py3 base image.
+aiohttp>=3.11,<4
 fastapi>=0.115,<1
 loguru==0.7.3
 psutil>=6,<8

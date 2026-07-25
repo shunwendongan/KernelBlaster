@@ -132,12 +132,12 @@ cp -n .env.example ../../secrets/KernelBlaster.control.env
 # 仅在本机编辑 ../../secrets/KernelBlaster.control.env，绝不能提交到 Git。
 ```
 
-根目录 `compose.yaml` 是唯一的部署规范。将 Compose 指向外部文件，并为两个服务设置不同的 token audience：
+根目录 `compose.yaml` 是唯一的部署规范。将 Compose 指向外部文件，并配置彼此不同的 Control、Worker 回调和 Supervisor 提交 token audience：
 
 ```bash
 export KERNELBLASTER_CONTROL_ENV_FILE="$HOME/secrets/KernelBlaster.control.env"
 export KERNELBLASTER_STATE_HOST_DIR="$HOME/runs/KernelBlaster/state"
-# 外部文件同时向 Compose 提供两个变量；它们的值必须不同。
+# 外部文件向 Compose 提供三个 token 变量；它们的值必须两两不同。
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" config
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" up --wait
@@ -161,7 +161,36 @@ docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile dev run --
 | `~/caches/{huggingface,torch,triton}` | `/cache/...` | 读写 |
 | `~/secrets/KernelBlaster.control.env` | 仅注入 `control` | 永不复制进镜像 |
 
-`control` 是仅使用 CPU 的 Python 镜像，只绑定 `127.0.0.1:8000`，也是唯一接收 LLM Provider 配置的容器。`gpu-supervisor` 使用固定的 CUDA 镜像，以 UID 10001 运行，根文件系统只读，移除 capabilities，启用 `no-new-privileges`，并限制内存、PID 和仅内部可见的 `worker-plane` 网络。它只接收 `KERNELBLASTER_WORKER_TOKEN`，绝不会接收 LLM Key。`dev` profile 保留为 `nvcc`、测试和交互式调试的可信路径。
+`control` 是仅使用 CPU 的 Python 镜像，只绑定 `127.0.0.1:8000`，也是唯一接收 LLM Provider 配置的容器。`gpu-supervisor` 使用固定的 CUDA 镜像，以 UID 10001 运行，根文件系统只读，移除 capabilities，启用 `no-new-privileges`，并限制内存、PID 和仅内部可见的 `worker-plane` 网络。它只接收 Worker 回调和 Supervisor 提交凭据，绝不会接收 LLM Key 或 Control token；编译、正确性与 Events 子进程不会继承任何凭据。`dev` profile 保留为 `nvcc`、测试和交互式调试的可信路径。
+
+### 硬件可迁移的 GPU Job 协议
+
+Control 只提交严格的 `gpu-job/v1` manifest，输入仅包含 CAS digest、stage、目标架构、
+protocol ID、受限资源和 deadline。GPU Supervisor 通过 `/v1/capabilities` 报告真实设备；
+GPU 商品名只用于说明，实际检测到的 compute capability 才是事实来源。因此本地 RTX 3080
+返回 `sm_86`，A100、L40S/RTX 4090、H100 部署分别使用 `sm_80`、`sm_89`、`sm_90`，
+而 API schema 无需变化。
+
+PR 04 保持单 GPU 并发 1，并默认关闭自动生成代码 Job。只有列入
+`portfolio/trusted-gpu-bundles.json` 的 source bundle digest 才能进入固定的
+compile/correctness/Events executor。默认 Supervisor 不再启动旧的任意二进制上传端点，
+Control 也不再启动本地 CompileServer 或 GPU Server 进程。
+
+第一次运行 Supervisor smoke 前，将已审核的 vector-add 输入注册进本地 CAS：
+
+```bash
+python scripts/register_trusted_gpu_smoke.py \
+  --state-dir "$KERNELBLASTER_STATE_HOST_DIR"
+```
+
+脚本会先根据仓库内 allowlist 验证确定性 bundle 与 driver digest，再写入两个 payload。
+
+Control 与 GPU Supervisor 启动后，可执行完整的 digest-only
+compile → correctness → Events 链路：
+
+```bash
+python scripts/run_trusted_gpu_smoke.py
+```
 
 ### 持久化本地状态与实验记忆
 

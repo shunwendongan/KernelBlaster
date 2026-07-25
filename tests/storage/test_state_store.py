@@ -88,6 +88,61 @@ def test_only_one_worker_receives_a_lease_for_one_pending_job(tmp_path):
     assert sum(lease is not None for lease in leases) == 1
 
 
+def test_completion_and_artifact_linkage_are_atomic_and_idempotent(tmp_path):
+    store = _store(tmp_path)
+    store.repository.create_run("run-1")
+    job = store.repository.submit_job(
+        run_id="run-1", idempotency_key="candidate-1", kind="gpu:compile"
+    )
+    lease = store.repository.acquire_lease(worker_id="supervisor")
+    assert lease is not None
+    artifact = store.cas.put_bytes(b"binary", producer="gpu-supervisor")
+    store.repository.register_artifact(artifact)
+
+    first = store.repository.complete_job(
+        job_id=job["id"],
+        lease_id=lease["lease_id"],
+        worker_id="supervisor",
+        status="succeeded",
+        artifact_roles={artifact.digest: "executable"},
+    )
+    second = store.repository.complete_job(
+        job_id=job["id"],
+        lease_id=lease["lease_id"],
+        worker_id="supervisor",
+        status="succeeded",
+        artifact_roles={artifact.digest: "executable"},
+    )
+    with store.repository._connect() as connection:
+        links = connection.execute(
+            "SELECT COUNT(*) FROM job_artifacts WHERE job_id = ?", (job["id"],)
+        ).fetchone()[0]
+    assert first["idempotent"] is False
+    assert second["idempotent"] is True
+    assert links == 1
+
+
+def test_specific_job_lease_and_pending_cancel_are_stable(tmp_path):
+    store = _store(tmp_path)
+    store.repository.create_run("run-1")
+    first = store.repository.submit_job(
+        run_id="run-1", idempotency_key="first", kind="gpu:compile"
+    )
+    second = store.repository.submit_job(
+        run_id="run-1", idempotency_key="second", kind="gpu:compile"
+    )
+    lease = store.repository.acquire_job_lease(
+        job_id=second["id"], worker_id="supervisor"
+    )
+    cancelled = store.repository.cancel_pending_job(first["id"])
+    duplicate = store.repository.cancel_pending_job(first["id"])
+
+    assert lease["id"] == second["id"]
+    assert cancelled["status"] == duplicate["status"] == "cancelled"
+    with pytest.raises(ValueError, match="only pending"):
+        store.repository.cancel_pending_job(second["id"])
+
+
 def test_cas_deduplicates_detects_corruption_and_restricts_exports(tmp_path):
     store = _store(tmp_path)
     first = store.cas.put_bytes(b"same payload", media_type="text/plain", producer="test")

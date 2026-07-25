@@ -5,7 +5,7 @@ name: kernelblaster
 
 services:
   control:
-    image: local/kernelblaster-control:pr03-${IMAGE_TAG:-dev}
+    image: local/kernelblaster-control:pr04-${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -18,7 +18,8 @@ services:
     environment:
       KERNELBLASTER_CONTROL_TOKEN: ${KERNELBLASTER_CONTROL_TOKEN:?set a control token}
       KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a distinct worker token}
-      GPU_SERVER_URL_RTX3080: http://gpu-supervisor:2002
+      KERNELBLASTER_SUPERVISOR_TOKEN: ${KERNELBLASTER_SUPERVISOR_TOKEN:?set a distinct supervisor token}
+      KERNELBLASTER_GPU_SUPERVISOR_URL: http://gpu-supervisor:2002
       KERNELBLASTER_STATE_DIR: /state
     command: ["python", "-m", "src.kernelblaster.servers.control", "--host", "0.0.0.0", "--port", "8000"]
     ports:
@@ -50,9 +51,14 @@ services:
       - /tmp:rw,exec,nosuid,nodev,size=2g
     environment:
       KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a distinct worker token}
+      KERNELBLASTER_SUPERVISOR_TOKEN: ${KERNELBLASTER_SUPERVISOR_TOKEN:?set a distinct supervisor token}
+      KERNELBLASTER_CONTROL_URL: http://control:8000
       KERNELBLASTER_MAX_GPU_BINARY_BYTES: ${KERNELBLASTER_MAX_GPU_BINARY_BYTES:-268435456}
-      TORCH_CUDA_ARCH_LIST: "8.6"
-      CUDAARCHS: "86"
+      KERNELBLASTER_GPU_DEVICE: ${KERNELBLASTER_GPU_DEVICE:-0}
+      KERNELBLASTER_GPU_MAX_CONCURRENCY: "1"
+      KERNELBLASTER_ALLOWED_TARGET_ARCHES: ${KERNELBLASTER_ALLOWED_TARGET_ARCHES:-}
+      KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS: "false"
+      KERNELBLASTER_TRUSTED_BUNDLE_MANIFEST: /opt/kernelblaster/portfolio/trusted-gpu-bundles.json
       HOME: /tmp/home
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
@@ -85,9 +91,6 @@ services:
       HF_HOME: /cache/huggingface
       TORCH_HOME: /cache/torch
       TRITON_CACHE_DIR: /cache/triton
-      TORCH_CUDA_ARCH_LIST: "8.6"
-      CMAKE_CUDA_ARCHITECTURES: "86"
-      CUDAARCHS: "86"
       PYTHONPATH: /workspace
     volumes:
       - .:/workspace
@@ -100,7 +103,7 @@ services:
     command: bash
 
   smoke:
-    image: local/kernelblaster-control:pr03-${IMAGE_TAG:-dev}
+    image: local/kernelblaster-control:pr04-${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -113,6 +116,7 @@ services:
     environment:
       KERNELBLASTER_CONTROL_TOKEN: ${KERNELBLASTER_CONTROL_TOKEN:?set a control token}
       KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a distinct worker token}
+      KERNELBLASTER_SUPERVISOR_TOKEN: ${KERNELBLASTER_SUPERVISOR_TOKEN:?set a distinct supervisor token}
     depends_on:
       control:
         condition: service_healthy

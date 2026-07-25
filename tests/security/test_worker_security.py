@@ -59,11 +59,12 @@ def test_worker_environment_does_not_inherit_llm_credentials():
     assert sanitized == {"PATH": "/usr/bin", "CUDA_VISIBLE_DEVICES": "0"}
 
 
-def test_worker_environment_allows_only_its_dedicated_token():
+def test_trusted_supervisor_environment_allows_only_service_tokens():
     validate_worker_environment(
         {
             "PATH": "/usr/bin",
             "KERNELBLASTER_WORKER_TOKEN": "worker-secret",
+            "KERNELBLASTER_SUPERVISOR_TOKEN": "supervisor-secret",
             "CUDA_VISIBLE_DEVICES": "0",
         }
     )

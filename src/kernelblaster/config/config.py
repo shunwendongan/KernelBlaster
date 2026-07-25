@@ -102,6 +102,10 @@ class SystemConfig:
     # missing rather than silently accepting a process-local random token.
     CONTROL_TOKEN = os.getenv("KERNELBLASTER_CONTROL_TOKEN", "").strip()
     WORKER_TOKEN = os.getenv("KERNELBLASTER_WORKER_TOKEN", "").strip()
+    SUPERVISOR_TOKEN = os.getenv("KERNELBLASTER_SUPERVISOR_TOKEN", "").strip()
+    GPU_SUPERVISOR_URL = os.getenv(
+        "KERNELBLASTER_GPU_SUPERVISOR_URL", "http://gpu-supervisor:2002"
+    ).rstrip("/")
     MAX_GPU_BINARY_BYTES = int(
         os.getenv("KERNELBLASTER_MAX_GPU_BINARY_BYTES", str(256 * 1024 * 1024))
     )
@@ -265,6 +269,7 @@ class SystemConfig:
 - Parallel generations per attempt: {cls.NUM_PARALLEL_GENERATIONS_PER_ATTEMPT}
 - Maximum attempts: {cls.MAX_ATTEMPTS}
 - Compiler server: {cls.COMPILE_SERVER_URL}
+- GPU Supervisor: {cls.GPU_SUPERVISOR_URL}
 - GPU servers:
 {cls.get_all_gpu_server_urls()}
 - Experimental features: {cls.EXPERIMENTAL_FEATURES.dict()}

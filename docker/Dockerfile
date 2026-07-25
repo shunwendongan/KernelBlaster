@@ -31,9 +31,6 @@ ENV DEBIAN_FRONTEND=noninteractive \
     CUDA_HOME=/usr/local/cuda \
     CUDACXX=/usr/local/cuda/bin/nvcc \
     PATH=/usr/local/cuda/bin:${PATH} \
-    TORCH_CUDA_ARCH_LIST=8.6 \
-    CMAKE_CUDA_ARCHITECTURES=86 \
-    CUDAARCHS=86 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 

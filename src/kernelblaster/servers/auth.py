@@ -1,5 +1,5 @@
 
-"""Validate distinct bearer-token audiences for control and worker services."""
+"""Validate distinct bearer-token audiences across trusted services."""
 
 from __future__ import annotations
 
@@ -25,11 +25,17 @@ def validate_control_token() -> str:
     return _configured_token("CONTROL_TOKEN", "CONTROL")
 
 
+def validate_supervisor_token() -> str:
+    return _configured_token("SUPERVISOR_TOKEN", "SUPERVISOR")
+
+
 def validate_token_boundaries() -> None:
     control_token = validate_control_token()
     worker_token = validate_worker_token()
-    if hmac.compare_digest(control_token, worker_token):
-        raise RuntimeError("Control and worker tokens must be different values")
+    supervisor_token = validate_supervisor_token()
+    tokens = (control_token, worker_token, supervisor_token)
+    if any(hmac.compare_digest(left, right) for index, left in enumerate(tokens) for right in tokens[index + 1 :]):
+        raise RuntimeError("Control, worker, and supervisor tokens must be different values")
 
 
 def worker_authorization_header() -> dict[str, str]:
@@ -44,6 +50,10 @@ def worker_authorization_header() -> dict[str, str]:
 
 def control_authorization_header() -> dict[str, str]:
     return {"Authorization": f"Bearer {validate_control_token()}"}
+
+
+def supervisor_authorization_header() -> dict[str, str]:
+    return {"Authorization": f"Bearer {validate_supervisor_token()}"}
 
 
 def _require_token(
@@ -82,12 +92,23 @@ async def require_control_token(authorization: str | None = Header(default=None)
     )
 
 
+async def require_supervisor_token(authorization: str | None = Header(default=None)) -> None:
+    _require_token(
+        authorization,
+        token=validate_supervisor_token(),
+        audience="Supervisor",
+    )
+
+
 __all__ = [
     "control_authorization_header",
     "require_control_token",
+    "require_supervisor_token",
     "require_worker_token",
     "validate_control_token",
     "validate_token_boundaries",
+    "validate_supervisor_token",
     "validate_worker_token",
+    "supervisor_authorization_header",
     "worker_authorization_header",
 ]

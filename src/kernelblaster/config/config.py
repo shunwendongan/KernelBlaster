@@ -110,6 +110,9 @@ class SystemConfig:
     PROFILER_WORKER_URL = os.getenv(
         "KERNELBLASTER_PROFILER_WORKER_URL", "http://profiler-worker:2003"
     ).rstrip("/")
+    CONTROL_URL = os.getenv(
+        "KERNELBLASTER_CONTROL_URL", "http://127.0.0.1:8000"
+    ).rstrip("/")
     MAX_GPU_BINARY_BYTES = int(
         os.getenv("KERNELBLASTER_MAX_GPU_BINARY_BYTES", str(256 * 1024 * 1024))
     )

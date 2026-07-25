@@ -37,6 +37,10 @@ from src.kernelblaster.observability import (
     set_run_recorder,
 )
 from src.kernelblaster.outcomes import RunStatus
+from src.kernelblaster.preflight.backends import build_backend_bundle
+from src.kernelblaster.preflight.client import ControlPlaneClient
+from src.kernelblaster.preflight.contracts import CapabilityReport, ExecutionBackend
+from src.kernelblaster.preflight.runner import capability_hardware_fingerprint
 from src.kernelblaster.resources import *
 from src.kernelblaster.storage import StateStore, state_storage_requested
 from src.kernelblaster.workflow import run_workflow
@@ -398,6 +402,7 @@ async def process_problem(
     semaphore,
     workflow_config,
     timeout_minutes,
+    runtime=None,
 ) -> tuple[dict[str, Path], RunStatus]:
     problem_id = entry["id"]
     user_message = entry.get("user_message", "")
@@ -458,6 +463,7 @@ async def process_problem(
                 job_logger=job_logger,
                 timeout_seconds=timeout_minutes * 60,
                 shared_database=workflow_config.shared_optimization_database,
+                runtime=runtime,
             )
         if result.success:
             logger.info(
@@ -544,6 +550,22 @@ async def async_main() -> int:
     parser.add_argument("--state-dir", type=Path, default=None)
     parser.add_argument("--sqlite-path", type=Path, default=None)
     parser.add_argument("--cas-dir", type=Path, default=None)
+    parser.add_argument(
+        "--execution-backend",
+        choices=tuple(backend.value for backend in ExecutionBackend),
+        default=ExecutionBackend.SANDBOX.value,
+        help="Generated candidates default to the sandbox; trusted_local is explicit.",
+    )
+    parser.add_argument(
+        "--capability-report-digest",
+        default=None,
+        help="Control CAS digest of the validated capability-report/v1.",
+    )
+    parser.add_argument(
+        "--control-url",
+        default=config.CONTROL_URL,
+        help="Authenticated Control endpoint used by the sandbox backend.",
+    )
     args = parser.parse_args()
     validate_common_arguments(parser, args)
 
@@ -575,6 +597,36 @@ async def async_main() -> int:
             )
         except (OSError, PermissionError, ValueError) as error:
             parser.error(str(error))
+
+    runtime = None
+    requested_backend = ExecutionBackend(args.execution_backend)
+    gpu_work_requested = bool(args.cuda or args.cuda_perf or args.benchmark)
+    if gpu_work_requested:
+        if requested_backend is ExecutionBackend.SANDBOX:
+            if not args.capability_report_digest:
+                parser.error("sandbox execution requires --capability-report-digest")
+            if not config.CONTROL_TOKEN:
+                parser.error("sandbox execution requires KERNELBLASTER_CONTROL_TOKEN")
+            try:
+                control = ControlPlaneClient(args.control_url, config.CONTROL_TOKEN)
+                report_payload = await control.download(args.capability_report_digest)
+                report = CapabilityReport.model_validate_json(report_payload)
+                current_capabilities = await control.gpu_capabilities()
+                report.validate_for_run(
+                    digest=args.capability_report_digest,
+                    hardware_fingerprint=capability_hardware_fingerprint(
+                        current_capabilities
+                    ),
+                )
+                runtime = build_backend_bundle(
+                    requested=requested_backend,
+                    report=report,
+                    control=control,
+                )
+            except Exception as error:
+                parser.error(f"invalid capability report: {error}")
+        else:
+            runtime = build_backend_bundle(requested=requested_backend)
 
     if args.run_record_dir is not None:
         global RUN_RECORDER
@@ -657,7 +709,7 @@ async def async_main() -> int:
 
     # Legacy workflows may use explicitly configured remote services during the
     # transition, but Control must never spawn a local compiler or GPU server.
-    if args.cuda or args.cuda_perf or args.benchmark:
+    if gpu_work_requested and requested_backend is ExecutionBackend.TRUSTED_LOCAL:
         try:
             global COMPILE_SERVER, GPU_SERVER
             target_gpu = resolve_target_gpu(args.gpu)
@@ -733,6 +785,7 @@ async def async_main() -> int:
                 semaphore,
                 workflow_config,
                 args.timeout,
+                runtime,
             )
         )
         logger.debug(f"Created task for {problem_id}")

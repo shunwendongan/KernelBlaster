@@ -141,6 +141,12 @@ def _stage_reason(stage: str, stderr: bytes) -> str:
     }[stage]
 
 
+def _wait_for_supervisor_export() -> None:
+    """Keep tmpfs mounted until the Supervisor copies the approved outputs."""
+    while True:
+        time.sleep(3600)
+
+
 def main() -> int:
     try:
         request = json.loads((INPUT / "request.json").read_text(encoding="utf-8"))
@@ -176,7 +182,8 @@ def main() -> int:
             json.dumps({"reason": reason, "returncode": returncode}, sort_keys=True),
             encoding="utf-8",
         )
-        return 0 if reason == "none" else 1
+        _wait_for_supervisor_export()
+        return 0 if reason == "none" else 1  # pragma: no cover - Supervisor kills us
     except Exception as error:
         OUTPUT.mkdir(parents=True, exist_ok=True)
         (OUTPUT / "stdout.log").write_bytes(b"")
@@ -184,7 +191,8 @@ def main() -> int:
         (OUTPUT / "result.json").write_text(
             json.dumps({"reason": "sandbox_violation"}, sort_keys=True), encoding="utf-8"
         )
-        return 1
+        _wait_for_supervisor_export()
+        return 1  # pragma: no cover - Supervisor kills us
 
 
 if __name__ == "__main__":  # pragma: no cover - exercised in Docker integration

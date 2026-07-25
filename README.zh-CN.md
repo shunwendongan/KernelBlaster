@@ -122,27 +122,30 @@ KernelBlaster 从 KernelBench-CUDA 的初始输入产物开始工作。每个问
 
 仓库源码和活动实验数据保存在 Ubuntu ext4 文件系统中。Windows 负责 NVIDIA 驱动、WSL、Docker Desktop 和编辑器；项目容器负责 CUDA 12.8、`nvcc`、PyTorch 与 Python 依赖。不要在 Ubuntu 中再安装一套 Docker Engine，也不要在 WSL 内安装 Linux NVIDIA 显示驱动。
 
-在 `~/workspace/KernelBlaster` 这样的常规克隆目录中，先准备容器外部的持久化目录和本地密钥文件：
+在 `~/workspace/KernelBlaster` 这样的常规克隆目录中，先准备容器外部的持久化目录和仅供 Control 使用的密钥文件：
 
 ```bash
 mkdir -p ../../{datasets,checkpoints,runs}/KernelBlaster
 mkdir -p ../../caches/{huggingface,torch,triton} ../../secrets
-cp -n .env.example ../../secrets/KernelBlaster.env
-# 仅在本机编辑 ../../secrets/KernelBlaster.env，绝不能提交到 Git。
+cp -n .env.example ../../secrets/KernelBlaster.control.env
+# 仅在本机编辑 ../../secrets/KernelBlaster.control.env，绝不能提交到 Git。
 ```
 
-构建并运行 RTX 3080 本地工作流：
+根目录 `compose.yaml` 是唯一的部署规范。将 Compose 指向外部文件，并为两个服务设置不同的 token audience：
 
 ```bash
-./scripts/container.sh build dev
-./scripts/container.sh --profile distributed build gpu-worker
-./scripts/container.sh --profile test run --rm smoke
+export KERNELBLASTER_CONTROL_ENV_FILE="$HOME/secrets/KernelBlaster.control.env"
+# 外部文件同时向 Compose 提供两个变量；它们的值必须不同。
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" config
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" up --wait
 
-# 交互式开发 Shell
-./scripts/container.sh run --rm dev
+# 验证 health 和不可互换的 token audience 后清理。
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile smoke run --rm smoke
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" down --remove-orphans
 
-# 示例：将运行元数据与日志持久化到 /runs
-./scripts/container.sh run --rm dev \
+# 可信的交互式 CUDA 开发环境按需显式启动。
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile dev run --rm dev \
   bash scripts/run-with-metadata.sh python -m pytest -q
 ```
 
@@ -153,40 +156,16 @@ cp -n .env.example ../../secrets/KernelBlaster.env
 | `~/checkpoints/KernelBlaster` | `/checkpoints` | 读写 |
 | `~/runs/KernelBlaster` | `/runs` | 读写 |
 | `~/caches/{huggingface,torch,triton}` | `/cache/...` | 读写 |
-| `~/secrets/KernelBlaster.env` | 仅注入环境变量 | 永不复制进镜像 |
+| `~/secrets/KernelBlaster.control.env` | 仅注入 `control` | 永不复制进镜像 |
 
-`gpu-worker` target 使用 UID 10001、只读根文件系统、删除全部 Linux capabilities、启用 `no-new-privileges`，并限制内存、PID 和内部 worker 网络。`dev` 容器用于 `nvcc`、测试和交互式调试。
-
-### 旧版手工容器方式
-
-#### 1. 构建容器
-
-```bash
-docker build . -t kernelblaster -f docker/Dockerfile
-```
-
-#### 2. 启动容器
-
-```bash
-docker run --rm -it --name=kernelblaster \
-    --gpus all \
-    --ulimit memlock=-1 --ulimit stack=67108864 \
-    -e USER_NAME=$(whoami) \
-    -e USER_ID=$(id -u) \
-    -e GROUP_ID=$(id -g) \
-    -v $(pwd):/kernelblaster \
-    kernelblaster \
-    dev
-```
+`control` 是仅使用 CPU 的 Python 镜像，只绑定 `127.0.0.1:8000`，也是唯一接收 LLM Provider 配置的容器。`gpu-supervisor` 使用固定的 CUDA 镜像，以 UID 10001 运行，根文件系统只读，移除 capabilities，启用 `no-new-privileges`，并限制内存、PID 和仅内部可见的 `worker-plane` 网络。它只接收 `KERNELBLASTER_WORKER_TOKEN`，绝不会接收 LLM Key。`dev` profile 保留为 `nvcc`、测试和交互式调试的可信路径。
 
 普通 CUDA Events 路径不需要 host network、`--privileged` 或 `SYS_ADMIN`。
 如果本地 NCU 计数器仍不可用，运行会明确记录为 `events_only`；需要硬件计数器时应部署单独授权的 Profiler Worker，而不是提升控制容器权限。
 
-如需隔离 LLM 控制进程和不可信 CUDA 二进制，请生成新的
-`KERNELBLASTER_WORKER_TOKEN` 并使用 `docker/compose.worker.yml`。其中 GPU
-Worker 不接收 LLM Key，仅连接内部网络，根文件系统只读，并限制 tmpfs、能力、进程数和内存。
+`docker/compose.worker.yml` 仅是包含根 Compose 文件的弃用兼容 wrapper，不要再在其中增加第二套部署定义。
 
-#### 3. 设置 API Key 并运行默认示例
+#### 设置 API Key 并运行默认示例
 
 ```bash
 export OPENAI_API_KEY=<your_api_key>

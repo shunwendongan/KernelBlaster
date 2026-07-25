@@ -94,9 +94,9 @@ python scripts/sync_portfolio_docs.py --write
 python scripts/sync_portfolio_docs.py --check
 ```
 
-The GPU/profiler worker is built from `docker/Dockerfile.gpu` and runs as a
-non-root user with `--network none --cap-drop ALL --security-opt
-no-new-privileges`; no API credential is passed into it. Only a one-shot NCU
+The GPU/profiler worker uses the `gpu-supervisor` target in the canonical root
+`compose.yaml` and runs as a non-root user with an internal worker network,
+`--cap-drop ALL`, and `no-new-privileges`; no API credential is passed into it. Only a one-shot NCU
 container that has already produced `ERR_NVGPUCTRPERM` may add
 `--cap-add SYS_ADMIN`. `--privileged` is never an accepted workaround. On WSL,
 the Nsys smoke also applies [NVIDIA's documented WSL timestamp fallback](https://archive.docs.nvidia.com/nsight-systems/2025.2/ReleaseNotes/index.html)

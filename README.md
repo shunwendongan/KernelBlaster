@@ -131,27 +131,31 @@ Do not install a second Docker Engine or Linux NVIDIA display driver inside
 Ubuntu.
 
 From a normal clone such as `~/workspace/KernelBlaster`, prepare the external
-persistent directories and a local secret file:
+persistent directories and the control-only secret file:
 
 ```bash
 mkdir -p ../../{datasets,checkpoints,runs}/KernelBlaster
 mkdir -p ../../caches/{huggingface,torch,triton} ../../secrets
-cp -n .env.example ../../secrets/KernelBlaster.env
-# Edit ../../secrets/KernelBlaster.env locally; never commit it.
+cp -n .env.example ../../secrets/KernelBlaster.control.env
+# Edit ../../secrets/KernelBlaster.control.env locally; never commit it.
 ```
 
-Build and run the local RTX 3080 workflow:
+The root `compose.yaml` is the only deployment specification. Point Compose at
+the external file and give the two services different token audiences:
 
 ```bash
-./scripts/container.sh build dev
-./scripts/container.sh --profile distributed build gpu-worker
-./scripts/container.sh --profile test run --rm smoke
+export KERNELBLASTER_CONTROL_ENV_FILE="$HOME/secrets/KernelBlaster.control.env"
+# The external file supplies both variables to Compose; they must be distinct.
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" config
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" up --wait
 
-# Interactive development shell
-./scripts/container.sh run --rm dev
+# Verify health and the non-interchangeable token audiences, then clean up.
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile smoke run --rm smoke
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" down --remove-orphans
 
-# Example command with run metadata and logs persisted under /runs
-./scripts/container.sh run --rm dev \
+# The trusted interactive CUDA development environment is opt-in.
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile dev run --rm dev \
   bash scripts/run-with-metadata.sh python -m pytest -q
 ```
 
@@ -162,46 +166,25 @@ Build and run the local RTX 3080 workflow:
 | `~/checkpoints/KernelBlaster` | `/checkpoints` | read/write |
 | `~/runs/KernelBlaster` | `/runs` | read/write |
 | `~/caches/{huggingface,torch,triton}` | `/cache/...` | read/write |
-| `~/secrets/KernelBlaster.env` | environment only | never copied into the image |
+| `~/secrets/KernelBlaster.control.env` | injected into `control` only | never copied into an image |
 
-The `gpu-worker` target runs as UID 10001 with a read-only root filesystem,
-all Linux capabilities dropped, `no-new-privileges`, bounded memory/PIDs, and
-an internal-only worker network. The development container remains the place
-for `nvcc`, tests, and interactive debugging.
-
-### Legacy manual container workflow
-
-#### 1. Build the container
-
-```bash
-docker build . -t kernelblaster -f docker/Dockerfile
-```
-
-#### 2. Launch the container
-
-```bash
-docker run --rm -it --name=kernelblaster \
-    --gpus all \
-    --ulimit memlock=-1 --ulimit stack=67108864 \
-    -e USER_NAME=$(whoami) \
-    -e USER_ID=$(id -u) \
-    -e GROUP_ID=$(id -g) \
-    -v $(pwd):/kernelblaster \
-    kernelblaster \
-    dev
-```
+`control` is a CPU-only Python image bound only to `127.0.0.1:8000`; it is the
+sole container that receives LLM provider configuration. `gpu-supervisor`
+uses the pinned CUDA image, runs as UID 10001 with a read-only root filesystem,
+dropped capabilities, `no-new-privileges`, bounded memory/PIDs, and only the
+internal `worker-plane` network. It receives only
+`KERNELBLASTER_WORKER_TOKEN`, never an LLM key. The `dev` profile remains the
+trusted place for `nvcc`, tests, and interactive debugging.
 
 The ordinary Events path does not require host networking, `--privileged`, or
 `SYS_ADMIN`. If local NCU counters remain unavailable, the run is recorded as
 `events_only`; deploy an explicitly authorized profiler worker instead of
 raising privileges on the control container.
 
-For isolation between the LLM control process and uploaded CUDA binaries, set a
-fresh `KERNELBLASTER_WORKER_TOKEN` and use `docker/compose.worker.yml`. Its GPU
-worker receives no LLM key, has an internal-only network, a read-only root
-filesystem, a bounded tmpfs, dropped capabilities, and process/memory limits.
+`docker/compose.worker.yml` is a deprecated compatibility wrapper around the
+root Compose file. Do not add a second deployment definition there.
 
-#### 3. Set your API key and run the default example
+#### Set your API key and run the default example
 
 ```bash
 export OPENAI_API_KEY=<your_api_key>

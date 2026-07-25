@@ -33,9 +33,9 @@ import stat
 from typing import Optional
 
 from .server_logging import get_log_config
-from .security import sanitized_worker_environment
+from .security import sanitized_worker_environment, validate_worker_environment
 from .utils import safe_kill_process
-from .auth import require_worker_token
+from .auth import require_worker_token, validate_worker_token
 from ..config import config
 
 env = None
@@ -614,6 +614,12 @@ async def health_check():
     return {"status": "healthy", "service": "gpu-server"}
 
 
+@APP.get("/ready")
+async def ready_check(_authorized: None = Depends(require_worker_token)):
+    """Authenticated readiness endpoint used to verify worker-token audience."""
+    return {"status": "ready", "service": "gpu-server"}
+
+
 @APP.post("/gpu/binary", response_model=GpuCommandResult)
 async def execute_gpu_binary(
     binary: UploadFile = File(..., description="Binary executable to run on GPU"),
@@ -769,6 +775,8 @@ def run_server(host: str, port: int, log_filepath: str = None):
 
 
 def main(args):
+    validate_worker_environment()
+    validate_worker_token()
     # 如果提供了日志路径，请确保日志目录存在
     """
     处理 `main` 对应的领域操作，并返回调用方所需的标准化结果。

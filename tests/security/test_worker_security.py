@@ -15,7 +15,7 @@ from src.kernelblaster.servers.gpu import (
     read_upload_with_limit,
     sanitized_worker_environment,
 )
-from src.kernelblaster.servers.security import allowed_source_path
+from src.kernelblaster.servers.security import allowed_source_path, validate_worker_environment
 from src.kernelblaster.servers.management import _worker_environment
 
 
@@ -57,6 +57,24 @@ def test_worker_environment_does_not_inherit_llm_credentials():
         }
     )
     assert sanitized == {"PATH": "/usr/bin", "CUDA_VISIBLE_DEVICES": "0"}
+
+
+def test_worker_environment_allows_only_its_dedicated_token():
+    validate_worker_environment(
+        {
+            "PATH": "/usr/bin",
+            "KERNELBLASTER_WORKER_TOKEN": "worker-secret",
+            "CUDA_VISIBLE_DEVICES": "0",
+        }
+    )
+    with pytest.raises(RuntimeError, match="KERNELBLASTER_CONTROL_TOKEN"):
+        validate_worker_environment(
+            {
+                "KERNELBLASTER_WORKER_TOKEN": "worker-secret",
+                "KERNELBLASTER_CONTROL_TOKEN": "control-secret",
+                "KERNELBLASTER_LLM_API_KEY": "provider-secret",
+            }
+        )
 
 
 def test_managed_worker_environment_keeps_only_the_worker_token(monkeypatch):

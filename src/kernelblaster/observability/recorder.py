@@ -32,6 +32,7 @@ from typing import Any
 import uuid
 
 from ..measurements import Measurement
+from ..storage import StateStore
 
 
 SCHEMA_VERSION = "3.0"
@@ -215,7 +216,7 @@ def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    with temporary.open("rb") as stream:
+    with temporary.open("r+b") as stream:
         os.fsync(stream.fileno())
     os.replace(temporary, path)
 
@@ -234,6 +235,7 @@ class RunRecorder:
         run_id: str | None = None,
         dry_run: bool = False,
         repo_root: str | Path | None = None,
+        state_store: StateStore | None = None,
     ) -> None:
         """
         初始化 RunRecorder 实例，并保存后续流程所需的配置与依赖。
@@ -254,6 +256,7 @@ class RunRecorder:
         self.events_path = self.output_dir / "events.jsonl"
         self.summary_path = self.output_dir / "summary.json"
         self.run_id = run_id or uuid.uuid4().hex
+        self.state_store = state_store
         self._lock = threading.Lock()
         self._sequence = 0
         self._closed = False
@@ -347,6 +350,17 @@ class RunRecorder:
         _atomic_json_write(self.manifest_path, manifest)
         self.events_path.touch(exist_ok=True)
         _atomic_json_write(self.summary_path, self._summary)
+        if self.state_store is not None:
+            self.state_store.repository.create_run(
+                self.run_id,
+                status=self._summary["status"],
+                metadata={
+                    "model": model,
+                    "suite": redact_secrets(suite or {}),
+                    "target": {"gpu": gpu_target},
+                    "manifest_path": self.manifest_path.name,
+                },
+            )
         atexit.register(self.close)
 
     def record_event(
@@ -467,6 +481,25 @@ class RunRecorder:
             elif llm_summary["requests_completed"]:
                 gates["api_smoke"] = "RUN"
             _atomic_json_write(self.manifest_path, manifest)
+            if self.state_store is not None:
+                for role, path, media_type in (
+                    ("manifest", self.manifest_path, "application/json"),
+                    ("events", self.events_path, "application/x-ndjson"),
+                    ("summary", self.summary_path, "application/json"),
+                ):
+                    artifact = self.state_store.cas.put_file(
+                        path,
+                        media_type=media_type,
+                        producer="run_recorder",
+                        schema=SCHEMA_VERSION,
+                    )
+                    self.state_store.repository.register_artifact(artifact)
+                    self.state_store.repository.link_run_artifact(
+                        run_id=self.run_id,
+                        digest=artifact.digest,
+                        role=role,
+                    )
+                self.state_store.repository.finish_run(self.run_id, self._summary["status"])
 
     def _update_summary(
         self,

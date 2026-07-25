@@ -5,7 +5,7 @@ name: kernelblaster
 
 services:
   control:
-    image: local/kernelblaster-control:pr02-${IMAGE_TAG:-dev}
+    image: local/kernelblaster-control:pr03-${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -19,6 +19,7 @@ services:
       KERNELBLASTER_CONTROL_TOKEN: ${KERNELBLASTER_CONTROL_TOKEN:?set a control token}
       KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a distinct worker token}
       GPU_SERVER_URL_RTX3080: http://gpu-supervisor:2002
+      KERNELBLASTER_STATE_DIR: /state
     command: ["python", "-m", "src.kernelblaster.servers.control", "--host", "0.0.0.0", "--port", "8000"]
     ports:
       - "127.0.0.1:8000:8000"
@@ -26,6 +27,8 @@ services:
       gpu-supervisor:
         condition: service_healthy
     networks: [control-plane, worker-plane]
+    volumes:
+      - ${KERNELBLASTER_STATE_HOST_DIR:-./out/state}:/state
     healthcheck:
       test:
         ["CMD-SHELL", "python -c \"import os, urllib.request; request = urllib.request.Request('http://127.0.0.1:8000/health', headers={'Authorization': 'Bearer ' + os.environ['KERNELBLASTER_CONTROL_TOKEN']}); urllib.request.urlopen(request, timeout=3).read()\""]
@@ -97,7 +100,7 @@ services:
     command: bash
 
   smoke:
-    image: local/kernelblaster-control:pr02-${IMAGE_TAG:-dev}
+    image: local/kernelblaster-control:pr03-${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: docker/Dockerfile

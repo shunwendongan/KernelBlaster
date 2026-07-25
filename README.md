@@ -135,6 +135,7 @@ persistent directories and the control-only secret file:
 
 ```bash
 mkdir -p ../../{datasets,checkpoints,runs}/KernelBlaster
+mkdir -p ../../runs/KernelBlaster/state
 mkdir -p ../../caches/{huggingface,torch,triton} ../../secrets
 cp -n .env.example ../../secrets/KernelBlaster.control.env
 # Edit ../../secrets/KernelBlaster.control.env locally; never commit it.
@@ -145,6 +146,7 @@ the external file and give the two services different token audiences:
 
 ```bash
 export KERNELBLASTER_CONTROL_ENV_FILE="$HOME/secrets/KernelBlaster.control.env"
+export KERNELBLASTER_STATE_HOST_DIR="$HOME/runs/KernelBlaster/state"
 # The external file supplies both variables to Compose; they must be distinct.
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" config
 docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" build control gpu-supervisor
@@ -165,6 +167,7 @@ docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" --profile dev run --
 | `~/datasets/KernelBlaster` | `/data` | read-only |
 | `~/checkpoints/KernelBlaster` | `/checkpoints` | read/write |
 | `~/runs/KernelBlaster` | `/runs` | read/write |
+| `~/runs/KernelBlaster/state` | `/state` in `control` only | read/write, SQLite/CAS |
 | `~/caches/{huggingface,torch,triton}` | `/cache/...` | read/write |
 | `~/secrets/KernelBlaster.control.env` | injected into `control` only | never copied into an image |
 
@@ -175,6 +178,33 @@ dropped capabilities, `no-new-privileges`, bounded memory/PIDs, and only the
 internal `worker-plane` network. It receives only
 `KERNELBLASTER_WORKER_TOKEN`, never an LLM key. The `dev` profile remains the
 trusted place for `nvcc`, tests, and interactive debugging.
+
+### Durable local state and experiment memory
+
+The control service owns a local SQLite task database and a SHA-256
+content-addressed store (CAS) under `KERNELBLASTER_STATE_HOST_DIR`. Keep this
+directory on WSL ext4 or an AutoDL local disk: the service rejects known NFS,
+SMB/CIFS, and `drvfs` mounts. The GPU supervisor never mounts it and never
+opens SQLite directly; it receives leases and reports results through the
+authenticated Control API.
+
+SQLite stores run/job status, leases, attempts, and small metadata. Source
+files, logs, profiles, and reports are immutable CAS payloads referenced by
+digest. This is durable, auditable experiment memory for a later retrieval
+layer; it is not an embedding database or RAG implementation by itself.
+
+For an existing state database, stop Control before a migration and make an
+explicit local backup:
+
+```bash
+cp "$KERNELBLASTER_STATE_HOST_DIR/control.sqlite3" \
+  "$KERNELBLASTER_STATE_HOST_DIR/control.sqlite3.backup-$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+The control process applies forward-only migrations at startup. For local CLI
+runs, `--state-dir`, `--sqlite-path`, and `--cas-dir` override the matching
+`KERNELBLASTER_*` environment variables; this permits an explicit AutoDL path
+without hardcoding a machine-specific location.
 
 The ordinary Events path does not require host networking, `--privileged`, or
 `SYS_ADMIN`. If local NCU counters remain unavailable, the run is recorded as

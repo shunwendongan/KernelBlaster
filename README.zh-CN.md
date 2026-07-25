@@ -194,12 +194,14 @@ export KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS=true
 
 `profiler-worker` 使用独立 token audience 与网络边界。Control 只路由已通过 correctness 的 executable artifact digest、下列固定 plan ID、受限 kernel filter 和 deadline；schema 会拒绝 executable 路径、任意 argv、环境字典和调用方指定的输出路径。
 
-- `nsys_timeline_v1`：CUDA/NVTX trace，关闭 CPU sampling；WSL 首次报告没有 GPU 行时允许一次受控的 `CUDA_LAUNCH_BLOCKING=1` 重试。
+- `nsys_timeline_v1`：CUDA/NVTX trace，关闭 CPU sampling；WSL 首次报告没有 GPU 行时，会在该 Job 的临时 HOME 写入 NVIDIA 官方 `CuptiUseRawGpuTimestamps=false` 配置后受控重试一次。
 - `ncu_triage_v1`：SpeedOfLight、LaunchStats、Occupancy。
 - `ncu_memory_v1`：MemoryWorkloadAnalysis。
 - `ncu_scheduler_v1`：SchedulerStats、WarpStateStats。
 
-CUDA Events 始终是排名来源。NSYS/NCU 摘要标记为 `diagnostic_only`；原始 report、CSV 和工具日志写入 CAS，绝不直接进入 LLM prompt。WSL 默认使用 Events + NSYS，除非 preflight 明确通过，否则 NCU 报告 permission blocked。AutoDL/Linux 在工具与 counter permission 可用时启用单 session NCU。Windows 原生 profiling 仍是人工批准的 Top-K 同卡诊断，不由该服务自动执行。
+CUDA Events 始终是排名来源。NSYS/NCU 摘要标记为 `diagnostic_only`；原始 report、CSV 和工具日志写入 CAS，绝不直接进入 LLM prompt。`KERNELBLASTER_NCU_PREFLIGHT_STATUS=auto` 会在 Profiler 启动时运行固定、限时的 NCU kernel probe，只有实际生成 counter report 才公布 NCU plans。Profiler 最终以 UID 10002 运行，有效和 bounding capability 仅保留 `SYS_ADMIN`；Control、Supervisor 与生成 Job 均不会获得该权限。Windows 原生 profiling 仍是人工批准的 Top-K 同卡诊断，不由该服务自动执行。
+
+WSL 的 counter 访问还受 Windows NVIDIA 驱动控制。在 NVIDIA Control Panel 中启用 Developer Settings，并把 **Manage GPU Performance Counters** 设置为允许所有用户访问，然后重启 WSL 与 Docker Desktop。保持 preflight 为 `auto`，不要强制填写 `available`。NVIDIA 的宿主要求见 [ERR_NVGPUCTRPERM 指南](https://developer.nvidia.com/ERR_NVGPUCTRPERM)。
 
 第一次运行 Supervisor smoke 前，将已审核的 vector-add 输入注册进本地 CAS：
 
@@ -215,6 +217,16 @@ compile → correctness → Events 链路：
 
 ```bash
 python scripts/run_trusted_gpu_smoke.py
+```
+
+修改 Windows counter 设置后，重建 Profiler Worker，并运行完整的 Events → NSYS → NCU triage smoke。任何 blocked 或不完整 profile 都会使命令失败，不会静默伪装为可用：
+
+```bash
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" \
+  up -d --wait --force-recreate profiler-worker control
+python scripts/run_trusted_gpu_smoke.py \
+  --profile-plan nsys_timeline_v1 \
+  --profile-plan ncu_triage_v1
 ```
 
 ### 持久化本地状态与实验记忆

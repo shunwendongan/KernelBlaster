@@ -46,6 +46,19 @@ def test_control_image_stage_contains_no_cuda_toolchain_installation():
     assert "CUDA_HOME" not in control_stage
 
 
+def test_profiler_image_contains_fixed_ncu_probe_and_scoped_capability_drop():
+    deployment = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "docker/Dockerfile").read_text(encoding="utf-8")
+    profiler = deployment.split("  profiler-worker:", 1)[1].split(
+        "  gpu-job-image:", 1
+    )[0]
+    assert "--ambient-caps=+sys_admin" in profiler
+    assert "cap_drop: [ALL]" in profiler
+    assert "privileged: true" not in profiler
+    assert "ncu_preflight.cu" in dockerfile
+    assert "/opt/kernelblaster/bin/ncu-preflight" in dockerfile
+
+
 def test_reviewed_vector_add_bundle_matches_allowlist_digests():
     smoke = ROOT / "portfolio" / "trusted_gpu_smoke"
     bundle = build_deterministic_bundle(

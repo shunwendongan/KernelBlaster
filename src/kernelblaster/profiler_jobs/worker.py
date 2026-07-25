@@ -52,6 +52,8 @@ PLAN_TIMEOUTS = {
     ProfilePlanId.NCU_SCHEDULER_V1: 600,
 }
 OUTPUT_LIMIT = 8 * 1024 * 1024
+NCU_PREFLIGHT_TIMEOUT = 60
+NCU_PREFLIGHT_BINARY = Path("/opt/kernelblaster/bin/ncu-preflight")
 
 NCU_METRICS: dict[str, tuple[str, str]] = {
     "gpu__time_duration.sum": ("gpu_time", "ns"),
@@ -107,12 +109,15 @@ def detect_capabilities() -> ProfilerCapabilities:
     configured_ncu = os.getenv("KERNELBLASTER_NCU_PREFLIGHT_STATUS", "auto").lower()
     if not shutil.which("ncu"):
         ncu = "tool_missing"
-    elif configured_ncu == "permission_denied" or (
-        configured_ncu == "auto" and runtime == "wsl"
-    ):
-        ncu = "permission_denied"
+    elif configured_ncu == "auto":
+        ncu = probe_ncu_counters()
+    elif configured_ncu in {"available", "permission_denied", "unsupported"}:
+        ncu = configured_ncu
     else:
-        ncu = "available"
+        raise RuntimeError(
+            "KERNELBLASTER_NCU_PREFLIGHT_STATUS must be auto, available, "
+            "permission_denied, or unsupported"
+        )
     plans: list[ProfilePlanId] = []
     if nsys == "available":
         plans.append(ProfilePlanId.NSYS_TIMELINE_V1)
@@ -127,8 +132,65 @@ def detect_capabilities() -> ProfilerCapabilities:
     )
 
 
+def probe_ncu_counters() -> str:
+    """Run a fixed, bounded counter probe as the Profiler service identity."""
+    if not shutil.which("ncu"):
+        return "tool_missing"
+    executable = Path(
+        os.getenv("KERNELBLASTER_NCU_PREFLIGHT_BINARY", str(NCU_PREFLIGHT_BINARY))
+    )
+    if not executable.is_file():
+        return "unsupported"
+    try:
+        with tempfile.TemporaryDirectory(prefix="kernelblaster-ncu-preflight-") as temporary:
+            root = Path(temporary)
+            report_base = root / "preflight"
+            result = subprocess.run(
+                [
+                    "ncu",
+                    "--metrics",
+                    "gpu__time_duration.sum",
+                    "--kernel-name-base",
+                    "demangled",
+                    "--kernel-name",
+                    "regex:kernelblaster_ncu_preflight",
+                    "--launch-count",
+                    "1",
+                    "--cache-control",
+                    "none",
+                    "--clock-control",
+                    "none",
+                    "--export",
+                    str(report_base),
+                    "--force-overwrite",
+                    str(executable),
+                ],
+                cwd=root,
+                env=_child_environment(root),
+                check=False,
+                capture_output=True,
+                timeout=NCU_PREFLIGHT_TIMEOUT,
+            )
+            output = (result.stdout + result.stderr).decode(
+                "utf-8", errors="replace"
+            )
+            if "ERR_NVGPUCTRPERM" in output:
+                return "permission_denied"
+            if result.returncode == 0 and report_base.with_suffix(".ncu-rep").is_file():
+                return "available"
+    except FileNotFoundError:
+        return "tool_missing"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unsupported"
+    return "unsupported"
+
+
 def profile_commands(
-    request: ProfileRequest, executable: Path, report_base: Path
+    request: ProfileRequest,
+    executable: Path,
+    report_base: Path,
+    *,
+    benchmark_protocol_id: str,
 ) -> tuple[list[str], list[str], Path]:
     """Return fixed argv; caller data occupies values, never command structure."""
     if request.plan_id is ProfilePlanId.NSYS_TIMELINE_V1:
@@ -145,6 +207,8 @@ def profile_commands(
             str(executable),
             "--mode",
             "events",
+            "--protocol",
+            benchmark_protocol_id,
         ]
         export = [
             "nsys",
@@ -153,6 +217,7 @@ def profile_commands(
             "cuda_gpu_kern_sum",
             "--format",
             "csv",
+            "--force-export=true",
             str(report),
         ]
         return profile, export, report
@@ -171,30 +236,36 @@ def profile_commands(
         str(executable),
         "--mode",
         "events",
+        "--protocol",
+        benchmark_protocol_id,
     ]
     export = ["ncu", "--import", str(report), "--csv", "--page", "raw"]
     return profile, export, report
 
 
-def _child_environment(root: Path, *, timestamp_workaround: bool = False) -> dict[str, str]:
+def _child_environment(root: Path) -> dict[str, str]:
     environment = {
         "HOME": str(root),
         "PATH": os.getenv("PATH", "/usr/local/cuda/bin:/usr/bin:/bin"),
         "TMPDIR": str(root),
         "CUDA_VISIBLE_DEVICES": os.getenv("KERNELBLASTER_GPU_DEVICE", "0"),
     }
-    if timestamp_workaround:
-        environment["CUDA_LAUNCH_BLOCKING"] = "1"
     return environment
 
 
+def _configure_wsl_nsys_timestamps(root: Path) -> None:
+    config = root / ".config" / "NVIDIA Corporation" / "nsys-config.ini"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text("CuptiUseRawGpuTimestamps=false\n", encoding="utf-8")
+
+
 async def _run_process(
-    command: list[str], *, root: Path, timeout: float, timestamp_workaround: bool = False
+    command: list[str], *, root: Path, timeout: float
 ) -> tuple[int, bytes, bytes, bool]:
     process = await asyncio.create_subprocess_exec(
         *command,
         cwd=root,
-        env=_child_environment(root, timestamp_workaround=timestamp_workaround),
+        env=_child_environment(root),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,
@@ -213,9 +284,19 @@ async def _run_process(
 
 class FixedToolRunner:
     async def run(
-        self, request: ProfileRequest, executable: Path, root: Path, timeout: float
+        self,
+        request: ProfileRequest,
+        executable: Path,
+        benchmark_protocol_id: str,
+        root: Path,
+        timeout: float,
     ) -> ToolExecution:
-        profile, export, report_path = profile_commands(request, executable, root / "profile")
+        profile, export, report_path = profile_commands(
+            request,
+            executable,
+            root / "profile",
+            benchmark_protocol_id=benchmark_protocol_id,
+        )
         tool = "nsys" if request.plan_id is ProfilePlanId.NSYS_TIMELINE_V1 else "ncu"
         version_process = subprocess.run(
             [tool, "--version"], check=False, capture_output=True, text=True, timeout=10
@@ -232,19 +313,20 @@ class FixedToolRunner:
             )
             stderr += b"\n" + export_stderr
             timed_out = export_timeout
-            if export_code != 0:
-                code = export_code
+            code = export_code
         if (
             tool == "nsys"
-            and code == 0
+            and report_path.is_file()
+            and _runtime_platform() == "wsl"
             and not _csv_rows(
                 csv_output.decode("utf-8", errors="replace"), "Total Time"
             )
             and not timed_out
         ):
             workaround = True
+            _configure_wsl_nsys_timestamps(root)
             code, retry_stdout, retry_stderr, timed_out = await _run_process(
-                profile, root=root, timeout=timeout, timestamp_workaround=True
+                profile, root=root, timeout=timeout
             )
             stdout += b"\n" + retry_stdout
             stderr += b"\n" + retry_stderr
@@ -415,7 +497,9 @@ class FixedPlanProfiler:
             )
         async with self._gpu:
             try:
-                executable, source_digest = await self.control.download(request.artifact_digest)
+                executable, source_digest, benchmark_protocol_id = (
+                    await self.control.download(request.artifact_digest)
+                )
                 if hashlib.sha256(executable).hexdigest() != request.artifact_digest:
                     raise ValueError("candidate artifact digest mismatch")
                 with tempfile.TemporaryDirectory(prefix="kernelblaster-profile-") as temporary:
@@ -423,7 +507,13 @@ class FixedPlanProfiler:
                     candidate = root / "candidate"
                     candidate.write_bytes(executable)
                     candidate.chmod(0o500)
-                    execution = await self.runner.run(request, candidate, root, timeout)
+                    execution = await self.runner.run(
+                        request,
+                        candidate,
+                        benchmark_protocol_id,
+                        root,
+                        timeout,
+                    )
                 artifacts: dict[str, str] = {}
                 for payload, role, media_type, schema in (
                     (execution.report, "raw_report", "application/octet-stream", "profiler-report/v1"),
@@ -612,5 +702,6 @@ __all__ = [
     "ToolExecution",
     "detect_capabilities",
     "parse_profile_csv",
+    "probe_ncu_counters",
     "profile_commands",
 ]

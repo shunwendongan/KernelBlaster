@@ -208,7 +208,10 @@ def test_profiler_candidate_requires_passed_correctness_without_mutating_it(tmp_
         run_id="run-profile",
         idempotency_key="compile",
         kind="gpu:compile",
-        payload={"source_bundle_digest": "a" * 64},
+        payload={
+            "source_bundle_digest": "a" * 64,
+            "benchmark_protocol_id": "trusted-smoke-v1",
+        },
     )
     compile_lease = store.repository.acquire_job_lease(
         job_id=compile_job["id"], worker_id="supervisor"
@@ -241,6 +244,7 @@ def test_profiler_candidate_requires_passed_correctness_without_mutating_it(tmp_
     assert store.repository.profiler_candidate(executable.digest) == {
         "artifact_digest": executable.digest,
         "source_digest": "a" * 64,
+        "benchmark_protocol_id": "trusted-smoke-v1",
     }
     # A failed profiler attempt is a separate diagnostic and cannot rewrite
     # the correctness evidence row.

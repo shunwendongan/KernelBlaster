@@ -235,18 +235,27 @@ arbitrary argv, environment dictionaries, and caller-selected output paths are
 rejected by the schema.
 
 - `nsys_timeline_v1`: CUDA/NVTX trace, CPU sampling disabled; WSL may make one
-  controlled `CUDA_LAUNCH_BLOCKING=1` retry when the first report has no GPU rows.
+  controlled retry with NVIDIA's `CuptiUseRawGpuTimestamps=false` configuration
+  in the Job's temporary HOME when the first report has no GPU rows.
 - `ncu_triage_v1`: SpeedOfLight, LaunchStats, and Occupancy.
 - `ncu_memory_v1`: MemoryWorkloadAnalysis.
 - `ncu_scheduler_v1`: SchedulerStats and WarpStateStats.
 
 CUDA Events remain the ranking source. NSYS/NCU summaries are marked
 `diagnostic_only`; raw report, CSV, and tool logs are stored in CAS and are
-never copied into an LLM prompt. WSL defaults to Events + NSYS and reports NCU
-as permission-blocked unless preflight explicitly succeeds. AutoDL/Linux enables
-single-session NCU when the tool and counter permission are available. Windows
-native profiling remains a manually approved Top-K diagnostic and is not
-automated by this service.
+never copied into an LLM prompt. On startup, `KERNELBLASTER_NCU_PREFLIGHT_STATUS=auto`
+runs a fixed, bounded kernel under NCU and advertises NCU plans only when a real
+counter report is created. The Profiler process drops to UID 10002 with an
+effective and bounding capability set containing only `SYS_ADMIN`; Control,
+Supervisor, and generated Jobs never receive that capability. Windows native
+profiling remains a manually approved Top-K diagnostic and is not automated by
+this service.
+
+WSL counter access is also gated by the Windows NVIDIA driver. In NVIDIA Control
+Panel, enable Developer Settings and set **Manage GPU Performance Counters** to
+allow access for all users, then restart WSL and Docker Desktop. Keep the status
+at `auto`; do not force `available`. NVIDIA documents this host requirement in
+the [Nsight Compute profiling guide](https://developer.nvidia.com/ERR_NVGPUCTRPERM).
 
 Register the reviewed vector-add smoke inputs in the local CAS before the first
 Supervisor smoke run:
@@ -264,6 +273,18 @@ compile → correctness → Events chain:
 
 ```bash
 python scripts/run_trusted_gpu_smoke.py
+```
+
+After changing the Windows counter setting, recreate the Profiler Worker and
+run the complete Events → NSYS → NCU triage smoke. A blocked or incomplete
+profile makes the command fail instead of silently downgrading the result:
+
+```bash
+docker compose --env-file "$KERNELBLASTER_CONTROL_ENV_FILE" \
+  up -d --wait --force-recreate profiler-worker control
+python scripts/run_trusted_gpu_smoke.py \
+  --profile-plan nsys_timeline_v1 \
+  --profile-plan ncu_triage_v1
 ```
 
 ### Durable local state and experiment memory

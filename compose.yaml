@@ -96,6 +96,21 @@ services:
       target: profiler-worker
     gpus: all
     init: true
+    # Start with only the capability needed to drop to UID 10002 while retaining
+    # CAP_SYS_ADMIN for NCU.  The final Python process is non-root, has an
+    # effective/bounding set containing only SYS_ADMIN, and keeps NNP enabled.
+    user: "0:0"
+    entrypoint:
+      - /usr/bin/setpriv
+      - --reuid=10002
+      - --regid=10002
+      - --init-groups
+      - --bounding-set=-setuid,-setgid,-setpcap
+      - --inh-caps=+sys_admin
+      - --ambient-caps=+sys_admin
+      - --
+    command:
+      ["python", "-m", "src.kernelblaster.profiler_jobs.worker", "--host", "0.0.0.0", "--port", "2003"]
     read_only: true
     tmpfs:
       - /tmp:rw,exec,nosuid,nodev,size=2g
@@ -108,7 +123,7 @@ services:
       HOME: /tmp/home
     # Counter permission is isolated here; ordinary generated Job containers
     # and gpu-supervisor never receive SYS_ADMIN.
-    cap_add: [SYS_ADMIN]
+    cap_add: [SYS_ADMIN, SETUID, SETGID, SETPCAP]
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 256

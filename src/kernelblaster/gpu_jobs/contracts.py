@@ -73,7 +73,11 @@ class GpuJobManifest(BaseModel):
         default=None, min_length=1, max_length=128
     )
     target_arch: str
-    benchmark_protocol_id: str = Field(min_length=1, max_length=128)
+    benchmark_protocol_id: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9_.:-]+$",
+    )
     resource_limits: ResourceLimits = Field(default_factory=ResourceLimits)
     deadline: datetime
     trusted_bundle_kind: Literal["trusted_smoke_v1", "generated_v1"] = "trusted_smoke_v1"

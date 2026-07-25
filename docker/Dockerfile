@@ -63,8 +63,19 @@ CMD ["python", "scripts/start_gpu_worker.py", "--host", "0.0.0.0", "--port", "20
 FROM cuda-base AS profiler-worker
 
 COPY docker/requirements.profiler.txt /tmp/requirements.profiler.txt
+COPY docker/ncu_preflight.cu /tmp/ncu_preflight.cu
 RUN python -m pip install --no-cache-dir --upgrade pip \
-    && python -m pip install --no-cache-dir -r /tmp/requirements.profiler.txt
+    && python -m pip install --no-cache-dir -r /tmp/requirements.profiler.txt \
+    && mkdir -p /opt/kernelblaster/bin \
+    && nvcc -O2 \
+         --generate-code=arch=compute_80,code=sm_80 \
+         --generate-code=arch=compute_86,code=sm_86 \
+         --generate-code=arch=compute_89,code=sm_89 \
+         --generate-code=arch=compute_90,code=sm_90 \
+         --generate-code=arch=compute_90,code=compute_90 \
+         -o /opt/kernelblaster/bin/ncu-preflight /tmp/ncu_preflight.cu \
+    && chmod 0555 /opt/kernelblaster/bin/ncu-preflight \
+    && rm -f /tmp/ncu_preflight.cu
 COPY . /opt/kernelblaster
 RUN python -m pip install --no-cache-dir --no-deps /opt/kernelblaster \
     && useradd --create-home --uid 10002 --shell /usr/sbin/nologin profiler \

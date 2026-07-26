@@ -236,6 +236,10 @@ stability. PyTorch autograd is a backward oracle and independent baseline, not
 a mandatory Custom Op gate. See [the generic Harness guide](docs/generic-harness.md)
 for external private cases, signed Adapter image builds, and the RTX 3080 smoke.
 
+Independent upstream/PyTorch/Triton/vendor-library reference columns, strict
+multi-workload confirmation, per-hardware winners, and CUDA/Triton convergence
+are described in [the Baseline Provider guide](docs/baseline-provider.md).
+
 ### Independent fixed-plan Profiler Worker
 
 `profiler-worker` is a separate token audience and network boundary. Control

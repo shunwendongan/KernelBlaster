@@ -164,7 +164,7 @@ def evaluate_performance_gate(
     candidate_session_us: list[float],
     *,
     minimum_sessions: int = 5,
-    minimum_speedup: float = 1.01,
+    minimum_speedup: float = 1.05,
 ) -> PerformanceGateResult:
     """
     结合基线配对样本、置信区间和正确性状态判断候选能否通过性能门控。

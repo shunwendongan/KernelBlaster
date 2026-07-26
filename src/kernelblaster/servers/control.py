@@ -17,6 +17,8 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ..config import config
+from ..baseline_jobs.client import BaselineClient
+from ..baseline_jobs.contracts import BaselineRequest
 from ..gpu_jobs.client import SupervisorClient
 from ..gpu_jobs.contracts import GpuJobManifest
 from ..profiler_jobs.client import ProfilerClient
@@ -24,6 +26,7 @@ from ..profiler_jobs.contracts import ProfileRequest
 from ..storage import StateStore
 from .auth import (
     require_control_token,
+    require_baseline_token,
     require_profiler_token,
     require_worker_token,
     validate_token_boundaries,
@@ -213,6 +216,13 @@ async def upload_profiler_artifact(
     return await _store_request_artifact(request, producer="profiler-worker")
 
 
+@app.put("/v1/baseline/artifacts")
+async def upload_baseline_artifact(
+    request: Request, _authorized: None = Depends(require_baseline_token)
+) -> dict[str, Any]:
+    return await _store_request_artifact(request, producer="baseline-worker")
+
+
 @app.get("/v1/worker/artifacts/{digest}")
 async def download_worker_artifact(
     digest: str, _authorized: None = Depends(require_worker_token)
@@ -246,6 +256,17 @@ async def download_profiler_candidate(
             ],
         },
     )
+
+
+@app.get("/v1/baseline/artifacts/{digest}")
+async def download_baseline_artifact(
+    digest: str, _authorized: None = Depends(require_baseline_token)
+) -> FileResponse:
+    try:
+        path = _state_store().cas.get_path(digest)
+    except (FileNotFoundError, ValueError) as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return FileResponse(path, media_type="application/octet-stream", filename=digest)
 
 
 @app.get("/v1/artifacts/{digest}")
@@ -339,6 +360,40 @@ async def submit_profile(
         raise HTTPException(status_code=404, detail="artifact_not_found") from error
     except KeyError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@app.get("/v1/baselines/capabilities")
+async def get_baseline_capabilities(
+    _authorized: None = Depends(require_control_token),
+) -> dict[str, Any]:
+    client = BaselineClient(config.BASELINE_WORKER_URL, config.BASELINE_TOKEN)
+    return (await client.capabilities()).model_dump(mode="json")
+
+
+@app.post("/v1/baselines")
+async def submit_baseline(
+    request: BaselineRequest,
+    _authorized: None = Depends(require_control_token),
+) -> dict[str, Any]:
+    try:
+        for digest in (
+            request.task_spec_digest,
+            request.case_bundle_digest,
+            request.evaluation_bundle_digest,
+        ):
+            _state_store().cas.verify(digest)
+        client = BaselineClient(config.BASELINE_WORKER_URL, config.BASELINE_TOKEN)
+        capabilities = await client.capabilities()
+        if (
+            capabilities.hardware_fingerprint != request.hardware_fingerprint
+            or capabilities.target_arch != request.target_arch
+        ):
+            raise ValueError("hardware_mismatch")
+        return (await client.evaluate(request)).model_dump(mode="json")
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail="artifact_not_found") from error
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
 

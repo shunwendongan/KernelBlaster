@@ -104,11 +104,15 @@ class SystemConfig:
     WORKER_TOKEN = os.getenv("KERNELBLASTER_WORKER_TOKEN", "").strip()
     SUPERVISOR_TOKEN = os.getenv("KERNELBLASTER_SUPERVISOR_TOKEN", "").strip()
     PROFILER_TOKEN = os.getenv("KERNELBLASTER_PROFILER_TOKEN", "").strip()
+    BASELINE_TOKEN = os.getenv("KERNELBLASTER_BASELINE_TOKEN", "").strip()
     GPU_SUPERVISOR_URL = os.getenv(
         "KERNELBLASTER_GPU_SUPERVISOR_URL", "http://gpu-supervisor:2002"
     ).rstrip("/")
     PROFILER_WORKER_URL = os.getenv(
         "KERNELBLASTER_PROFILER_WORKER_URL", "http://profiler-worker:2003"
+    ).rstrip("/")
+    BASELINE_WORKER_URL = os.getenv(
+        "KERNELBLASTER_BASELINE_WORKER_URL", "http://baseline-worker:2004"
     ).rstrip("/")
     CONTROL_URL = os.getenv(
         "KERNELBLASTER_CONTROL_URL", "http://127.0.0.1:8000"

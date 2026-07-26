@@ -199,6 +199,10 @@ PyTorch autograd 只是 backward oracle 与独立 baseline，不是强制 Custom
 外部私有 case、签名 Adapter 镜像构建及 RTX 3080 smoke 见
 [通用 Harness 指南](docs/generic-harness.zh-CN.md)。
 
+独立 upstream/PyTorch/Triton/供应商库参考列、严格多 workload confirmation、
+每硬件 winner 及 CUDA/Triton 收敛规则见
+[Baseline Provider 指南](docs/baseline-provider.zh-CN.md)。
+
 ### 独立固定计划 Profiler Worker
 
 `profiler-worker` 使用独立 token audience 与网络边界。Control 只路由已通过 correctness 的 executable artifact digest、下列固定 plan ID、受限 kernel filter 和 deadline；schema 会拒绝 executable 路径、任意 argv、环境字典和调用方指定的输出路径。

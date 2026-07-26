@@ -20,8 +20,10 @@ services:
       KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a distinct worker token}
       KERNELBLASTER_SUPERVISOR_TOKEN: ${KERNELBLASTER_SUPERVISOR_TOKEN:?set a distinct supervisor token}
       KERNELBLASTER_PROFILER_TOKEN: ${KERNELBLASTER_PROFILER_TOKEN:?set a distinct profiler token}
+      KERNELBLASTER_BASELINE_TOKEN: ${KERNELBLASTER_BASELINE_TOKEN:?set a distinct baseline token}
       KERNELBLASTER_GPU_SUPERVISOR_URL: http://gpu-supervisor:2002
       KERNELBLASTER_PROFILER_WORKER_URL: http://profiler-worker:2003
+      KERNELBLASTER_BASELINE_WORKER_URL: http://baseline-worker:2004
       KERNELBLASTER_STATE_DIR: /state
     command: ["python", "-m", "src.kernelblaster.servers.control", "--host", "0.0.0.0", "--port", "8000"]
     ports:
@@ -31,7 +33,9 @@ services:
         condition: service_healthy
       profiler-worker:
         condition: service_healthy
-    networks: [control-plane, worker-plane, profiler-plane]
+      baseline-worker:
+        condition: service_healthy
+    networks: [control-plane, worker-plane, profiler-plane, baseline-plane]
     volumes:
       - ${KERNELBLASTER_STATE_HOST_DIR:-./out/state}:/state
     healthcheck:
@@ -137,6 +141,36 @@ services:
       retries: 12
       start_period: 15s
 
+  baseline-worker:
+    image: local/kernelblaster-baseline-worker:cuda12.8-${IMAGE_TAG:-dev}
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      target: baseline-worker
+    gpus: all
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,exec,nosuid,nodev,size=2g
+    environment:
+      KERNELBLASTER_BASELINE_TOKEN: ${KERNELBLASTER_BASELINE_TOKEN:?set a distinct baseline token}
+      KERNELBLASTER_CONTROL_URL: http://control:8000
+      KERNELBLASTER_GPU_DEVICE: ${KERNELBLASTER_GPU_DEVICE:-0}
+      KERNELBLASTER_BASELINE_IMAGE_DIGEST: ${KERNELBLASTER_BASELINE_IMAGE_DIGEST:?pin the baseline worker sha256 image ID}
+      HOME: /tmp/home
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 256
+    mem_limit: 16g
+    networks: [baseline-plane]
+    healthcheck:
+      test:
+        ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:2004/health', timeout=3).read()\""]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
   # Build-only target.  Inspect the resulting immutable image ID and provide it
   # as KERNELBLASTER_GPU_JOB_IMAGE before enabling generated GPU jobs.
   gpu-job-image:
@@ -192,6 +226,7 @@ services:
       KERNELBLASTER_WORKER_TOKEN: ${KERNELBLASTER_WORKER_TOKEN:?set a distinct worker token}
       KERNELBLASTER_SUPERVISOR_TOKEN: ${KERNELBLASTER_SUPERVISOR_TOKEN:?set a distinct supervisor token}
       KERNELBLASTER_PROFILER_TOKEN: ${KERNELBLASTER_PROFILER_TOKEN:?set a distinct profiler token}
+      KERNELBLASTER_BASELINE_TOKEN: ${KERNELBLASTER_BASELINE_TOKEN:?set a distinct baseline token}
     depends_on:
       control:
         condition: service_healthy
@@ -199,7 +234,9 @@ services:
         condition: service_healthy
       profiler-worker:
         condition: service_healthy
-    networks: [control-plane, worker-plane, profiler-plane]
+      baseline-worker:
+        condition: service_healthy
+    networks: [control-plane, worker-plane, profiler-plane, baseline-plane]
     command: ["python", "scripts/compose_smoke.py"]
 
 networks:
@@ -207,4 +244,6 @@ networks:
   worker-plane:
     internal: true
   profiler-plane:
+    internal: true
+  baseline-plane:
     internal: true

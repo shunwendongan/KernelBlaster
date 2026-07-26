@@ -88,6 +88,25 @@ USER profiler
 EXPOSE 2003
 CMD ["python", "-m", "src.kernelblaster.profiler_jobs.worker", "--host", "0.0.0.0", "--port", "2003"]
 
+# Baselines are trusted reference implementations, but they do not need the
+# Profiler's SYS_ADMIN counter permission and never share the generated Job image.
+FROM cuda-base AS baseline-worker
+
+COPY docker/requirements.gpu.txt /tmp/requirements.gpu.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements.gpu.txt
+COPY . /opt/kernelblaster
+RUN python -m pip install --no-cache-dir --no-deps /opt/kernelblaster \
+    && useradd --create-home --uid 10003 --shell /usr/sbin/nologin baseline \
+    && mkdir -p /tmp/kernelblaster-baseline \
+    && chown -R baseline:baseline /tmp/kernelblaster-baseline /opt/kernelblaster
+
+WORKDIR /opt/kernelblaster
+ENV HOME=/home/baseline CUDA_VISIBLE_DEVICES=0
+USER baseline
+EXPOSE 2004
+CMD ["python", "-m", "src.kernelblaster.baseline_jobs.worker", "--host", "0.0.0.0", "--port", "2004"]
+
 # This image is intentionally smaller in authority than gpu-supervisor.  It
 # contains only the fixed runner and CUDA toolchain; the Supervisor passes it
 # no credentials, repository checkout, control-plane state, or Docker socket.

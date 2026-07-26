@@ -190,6 +190,15 @@ export KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS=true
 
 私有 manifest 将公开的 `private_evaluation_profile_id` 映射到 CAS bundle 和 driver 路径。它仅以只读方式挂载给 Supervisor；driver 和 seed 内容不属于生成 manifest、LLM prompt 或公开反馈 payload。每个生成候选的 compile、correctness、Events 阶段都会启动一个新的非 root 容器：只读 rootfs、无网络、无 capabilities、只读的单 Job 输入卷及 512 MiB tmpfs。固定限额是 2 vCPU、8 GiB RAM、64 PID，以及分别为 180/60/90 秒。Supervisor 只导入已验证 hash 的白名单输出，并在所有退出路径删除 Job 容器和 staging volume。Docker/GPU 攻击探针使用 `gpu_sandbox` 标记，必须在 AutoDL 或 self-hosted GPU runner 上执行。
 
+### 通用多算子 Harness
+
+版本化 TaskSpec/Adapter/case-bundle runtime 覆盖 Core 10 全部前向与反向，不建立单一
+RMSNorm ABI。结构化 verdict 由可信 Harness 而非候选生成，并检查全部梯度、输入
+mutation、shape/dtype、非有限值、canary、poison、CUDA error 和重复执行稳定性。
+PyTorch autograd 只是 backward oracle 与独立 baseline，不是强制 Custom Op gate。
+外部私有 case、签名 Adapter 镜像构建及 RTX 3080 smoke 见
+[通用 Harness 指南](docs/generic-harness.zh-CN.md)。
+
 ### 独立固定计划 Profiler Worker
 
 `profiler-worker` 使用独立 token audience 与网络边界。Control 只路由已通过 correctness 的 executable artifact digest、下列固定 plan ID、受限 kernel filter 和 deadline；schema 会拒绝 executable 路径、任意 argv、环境字典和调用方指定的输出路径。

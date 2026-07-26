@@ -189,6 +189,7 @@ class GpuJobResult(BaseModel):
     status: GpuJobStatus
     reason_code: GpuReasonCode = GpuReasonCode.NONE
     artifact_roles: dict[str, str] = Field(default_factory=dict)
+    correctness: dict[str, Any] | None = None
     measurement: dict[str, Any] | None = None
     hardware: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime | None = None

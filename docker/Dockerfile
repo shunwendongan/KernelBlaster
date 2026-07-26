@@ -95,11 +95,16 @@ FROM cuda-base AS gpu-job
 
 RUN useradd --uid 65532 --no-create-home --shell /usr/sbin/nologin sandbox
 COPY src/kernelblaster/gpu_jobs/sandbox_runner.py /opt/kernelblaster/sandbox_runner.py
+COPY src/kernelblaster/harness/contracts.py /opt/kernelblaster/harness_contracts.py
+COPY docker/trusted-adapter-keys.json /opt/kernelblaster/trust/adapter-keys.json
+COPY docker/adapter-plugin-allowlist.json /opt/kernelblaster/trust/adapter-plugin-allowlist.json
+COPY docker/adapter-plugins /opt/kernelblaster/adapter-plugins
 RUN chmod 0555 /opt/kernelblaster/sandbox_runner.py \
     && mkdir -p /work /tmp \
     && chown -R 65532:65532 /work /tmp
 
 WORKDIR /work
+ENV PYTHONPATH=/opt/kernelblaster
 USER 65532:65532
 ENTRYPOINT ["python", "/opt/kernelblaster/sandbox_runner.py"]
 

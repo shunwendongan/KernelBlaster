@@ -60,5 +60,5 @@ int main() {
         std::cout << "GPU Output (first row, first 8): " << gpu_output[0].slice(0,0,8) << std::endl;
     }
 
-    return 0;
+    return is_close ? 0 : 1;
 }

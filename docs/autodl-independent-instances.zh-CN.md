@@ -1,5 +1,7 @@
 # AutoDL 独立实例
 
+[English version](autodl-independent-instances.md)
+
 KernelBlaster 支持独立运行的 AutoDL 实例。每个实例独享 Control、SQLite、CAS、GPU
 Supervisor、Profiler Worker 和 Baseline Worker；实例之间不共享数据库、队列、CAS 或服务发现。
 

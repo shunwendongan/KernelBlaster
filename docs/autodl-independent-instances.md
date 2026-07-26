@@ -1,5 +1,7 @@
 # AutoDL independent instances
 
+[中文版本](autodl-independent-instances.zh-CN.md)
+
 KernelBlaster supports standalone AutoDL instances.  Each instance owns its
 own Control service, SQLite database, CAS directory, GPU Supervisor, Profiler
 Worker, and Baseline Worker.  Instances never share a database, queue, CAS or

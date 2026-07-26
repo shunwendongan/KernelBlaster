@@ -34,6 +34,7 @@ from src.kernelblaster.gpu_jobs.sandbox import (
     _tar_files,
     public_generated_feedback,
 )
+from src.kernelblaster.gpu_jobs.sandbox_runner import _command
 
 
 def _digest(payload: bytes) -> str:
@@ -246,6 +247,41 @@ def test_fixed_policy_has_distinct_stage_timeouts():
     assert policy.timeout_for(GpuJobStage.COMPILE) == 180
     assert policy.timeout_for(GpuJobStage.CORRECTNESS) == 60
     assert policy.timeout_for(GpuJobStage.EVENTS) == 90
+
+
+def test_sandbox_compile_always_enables_ptxas_verbose(monkeypatch):
+    class CandidateRoot:
+        def rglob(self, pattern):
+            assert pattern == "*.cu"
+            return ["/input/candidate/candidate.cu"]
+
+    class Driver:
+        def is_file(self):
+            return True
+
+        def __str__(self):
+            return "/input/private/driver.cpp"
+
+    monkeypatch.setattr(
+        "src.kernelblaster.gpu_jobs.sandbox_runner.INPUT",
+        type(
+            "Input",
+            (),
+            {
+                "__truediv__": lambda self, value: (
+                    CandidateRoot() if value == "candidate" else Driver()
+                )
+            },
+        )(),
+    )
+    command = _command(
+        {
+            "stage": "compile",
+            "target_arch": "sm_86",
+            "driver_path": "private/driver.cpp",
+        }
+    )
+    assert "--ptxas-options=-v" in command
 
 
 def test_stage_executor_imports_only_allowed_outputs_and_public_feedback_has_no_private_data():

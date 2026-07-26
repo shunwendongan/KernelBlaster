@@ -189,6 +189,7 @@ async def run_workflow(
 
     workflow = build_graph() if runtime is None else build_graph(runtime)
     workflow_input = {
+        "task_id": task_id,
         "user_message": user_message,
         "reference_code": reference_code,
         "folder": folder,

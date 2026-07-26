@@ -566,6 +566,19 @@ async def async_main() -> int:
         default=config.CONTROL_URL,
         help="Authenticated Control endpoint used by the sandbox backend.",
     )
+    parser.add_argument(
+        "--private-evaluation-profile-id",
+        default=os.getenv("KERNELBLASTER_GENERATED_PRIVATE_PROFILE_ID"),
+        help="Supervisor-only profile ID for generated candidate evaluation.",
+    )
+    parser.add_argument(
+        "--benchmark-protocol-id",
+        default=os.getenv(
+            "KERNELBLASTER_GENERATED_BENCHMARK_PROTOCOL_ID",
+            "generated-agent-v1",
+        ),
+        help="Fixed CUDA Events protocol implemented by the private driver.",
+    )
     args = parser.parse_args()
     validate_common_arguments(parser, args)
 
@@ -622,6 +635,8 @@ async def async_main() -> int:
                     requested=requested_backend,
                     report=report,
                     control=control,
+                    private_evaluation_profile_id=args.private_evaluation_profile_id,
+                    benchmark_protocol_id=args.benchmark_protocol_id,
                 )
             except Exception as error:
                 parser.error(f"invalid capability report: {error}")

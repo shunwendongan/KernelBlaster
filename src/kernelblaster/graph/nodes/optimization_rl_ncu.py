@@ -16,10 +16,12 @@
 """把工作流状态转换为 RL 优化任务，组织输入产物、Profiler 和最终结果。"""
 
 from pathlib import Path
+import uuid
 from ...agents import FeedbackConfig
 from ...agents.opt_ncu_rl import RLNCUAgent
 from ..state import GraphState, save_state_to_json
 from ...outcomes import RunOutcome, RunStatus
+from ...evaluation import TrustedLocalCandidateEvaluator
 from ...profiling import CudaEventsRunner, EventsProfilerBackend
 
 
@@ -60,6 +62,11 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
     # 后备：允许使用运行文件夹中已存在的文件。
     run_driver_cpp = base_folder / "driver.cpp"
     run_init_cu = base_folder / "init.cu"
+    uses_sandbox = bool(
+        runtime is not None
+        and getattr(getattr(runtime, "execution_backend", None), "value", None)
+        == "sandbox"
+    )
     
     # 处理缺失的 cuda_fp - 需要策划或运行文件夹 init.cu
     cuda_fp = state.get("cuda_fp")
@@ -87,7 +94,11 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
     
     # 处理缺失的 test_code_fp - 需要策划或运行文件夹 driver.cpp
     test_code_fp = state.get("test_code_fp")
-    if test_code_fp is None:
+    if uses_sandbox:
+        # The automatic Agent must not read a local correctness driver. The
+        # real driver and seeds are resolved only by the Supervisor profile.
+        test_code_fp = base_folder / ".supervisor-private-driver"
+    elif test_code_fp is None:
         if curated_driver_cpp.exists():
             test_code_fp = curated_driver_cpp
             state["logger"].info(f"Using curated driver.cpp from {curated_dir} as test_code_fp: {test_code_fp}")
@@ -132,16 +143,21 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
     rl_iterations = state.get("rl_iterations", 10)
     
     if runtime is None:
-        events_backend = EventsProfilerBackend(
-            CudaEventsRunner(
-                driver_path=test_code_fp,
-                gpu=state["gpu"],
-                logger=state["logger"],
-                work_dir=base_folder / "events",
+        candidate_evaluator = TrustedLocalCandidateEvaluator(
+            EventsProfilerBackend(
+                CudaEventsRunner(
+                    driver_path=test_code_fp,
+                    gpu=state["gpu"],
+                    logger=state["logger"],
+                    work_dir=base_folder / "events",
+                )
             )
         )
     else:
-        events_backend = runtime.create_events_backend(
+        candidate_evaluator = runtime.create_candidate_evaluator(
+            run_id=(
+                f"agent-{state.get('task_id', problem_name)}-{uuid.uuid4().hex[:12]}"
+            ),
             driver_path=test_code_fp,
             gpu=state["gpu"],
             logger=state["logger"],
@@ -156,7 +172,7 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
         replay_buffer_size=replay_buffer_size,
         update_frequency=update_frequency,
         database=state.get("shared_optimization_database"),
-        profiler_backend=events_backend,
+        candidate_evaluator=candidate_evaluator,
     )
     
     # 初始化并运行 RL 优化

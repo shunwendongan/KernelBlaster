@@ -6,6 +6,7 @@ import json
 from src.kernelblaster.observability import (
     RunRecorder,
     event_context,
+    load_run_manifest,
     prompt_metadata,
     record_event,
     redact_secrets,
@@ -148,3 +149,39 @@ def test_task_outcome_records_a_structured_measurement(tmp_path):
     summary = json.loads(recorder.summary_path.read_text())
     assert summary["tasks"]["results"][0]["measurement"]["unit"] == "us"
     assert summary["tasks"]["results"][0]["measurement"]["source"] == "cuda_events"
+
+
+def test_schema_four_funnel_summary_and_schema_three_read_compatibility(tmp_path):
+    recorder = _recorder(tmp_path)
+    recorder.record_event(
+        "capability_check_completed",
+        data={"status": "available"},
+    )
+    recorder.record_event(
+        "candidate_evaluation_completed",
+        data={"events_status": "succeeded", "discovery_sessions": 3},
+    )
+    recorder.record_event(
+        "funnel_decision",
+        data={
+            "eligible_candidates": 10,
+            "confirmation_candidates": 1,
+            "confirmed_candidates": 1,
+            "confirmation_calls": 10,
+        },
+    )
+    recorder.record_event(
+        "diagnostic_profile_completed",
+        data={"plan_id": "ncu_triage_v1", "status": "blocked"},
+    )
+    recorder.close()
+    summary = json.loads(recorder.summary_path.read_text())
+    assert summary["schema_version"] == "4.0"
+    assert summary["capability_checks"]["completed"] == 1
+    assert summary["funnel"]["discovery_calls"] == 3
+    assert summary["funnel"]["confirmation_calls"] == 10
+    assert summary["funnel"]["ncu_calls"] == 1
+
+    legacy = tmp_path / "legacy-manifest.json"
+    legacy.write_text(json.dumps({"schema_version": "3.0"}), encoding="utf-8")
+    assert load_run_manifest(legacy)["schema_version"] == "3.0"

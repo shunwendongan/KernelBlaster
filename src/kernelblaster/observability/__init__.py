@@ -19,6 +19,7 @@ from .context import event_context, get_run_recorder, record_event, set_run_reco
 from .recorder import (
     RunRecorder,
     SCHEMA_VERSION,
+    load_run_manifest,
     prompt_metadata,
     redact_secrets,
     utc_now,
@@ -27,6 +28,7 @@ from .recorder import (
 __all__ = [
     "RunRecorder",
     "SCHEMA_VERSION",
+    "load_run_manifest",
     "event_context",
     "get_run_recorder",
     "prompt_metadata",

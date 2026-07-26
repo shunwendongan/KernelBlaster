@@ -299,6 +299,22 @@ uv run python scripts/run_preflight.py \
 自动生成候选默认只使用沙箱。`--execution-backend trusted_local` 仅用于显式、
 可信的开发运行，任何沙箱失败都不会自动回退到该模式。
 
+Agent 运行还必须显式配置任务专用的 Supervisor profile，以及私有 driver 实现的
+固定 Events 协议：
+
+```bash
+export KERNELBLASTER_GENERATED_PRIVATE_PROFILE_ID=<task-private-profile-id>
+export KERNELBLASTER_GENERATED_BENCHMARK_PROTOCOL_ID=generated-agent-v1
+```
+
+每个 source digest 只评估一次。正确候选执行 3-session Events discovery；只有
+任务结束时筛出的 Top-K 执行 5-session 配对确认。NSYS 先于 NCU 运行并提供安全的
+kernel selector。NSYS/NCU 仅属于诊断，不能改写 compile、correctness 或 Events
+状态。原始编译器/Profiler 日志保留在 CAS；Agent 反馈只包含 ptxas registers、
+spill、stack/shared/constant memory、稳定 reason code 和结构化 Profiler 指标。
+RunRecorder schema `4.0` 新增候选、漏斗和诊断预算，同时 manifest loader 继续
+兼容 schema `3.0` 证据。
+
 默认情况下，`scripts/run_single_kernelblaster.sh` 会启动单个使用 CUDA Events 的 KernelBench-CUDA RL 优化任务；如有需要，它还会启动仅监听回环地址的共享 GPU Server。运行输出保存在 `out/<dataset>/<precision>/<experiment>/` 下。
 
 该示例默认运行 KernelBench-CUDA Level 1 的一个样本。可以通过 `--problem-numbers` 和 `--subset` 参数扩展到更多问题：

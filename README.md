@@ -371,6 +371,24 @@ Automatic generated candidates default to the sandbox. The
 `--execution-backend trusted_local` mode is an explicit, trusted development
 choice and is never selected as a fallback.
 
+Agent runs additionally require a task-specific Supervisor profile and the
+fixed Events protocol implemented by that private driver:
+
+```bash
+export KERNELBLASTER_GENERATED_PRIVATE_PROFILE_ID=<task-private-profile-id>
+export KERNELBLASTER_GENERATED_BENCHMARK_PROTOCOL_ID=generated-agent-v1
+```
+
+Each source digest is evaluated once. Correct candidates receive three Events
+discovery sessions; only the task-end Top-K receives five paired confirmation
+sessions. NSYS runs before NCU and supplies the safe kernel selector. NSYS/NCU
+results are diagnostic-only and cannot change compile, correctness, or Events
+status. Raw compiler/profiler logs stay in CAS; Agent feedback contains only
+ptxas registers, spills, stack/shared/constant memory, stable reason codes, and
+structured profiler metrics.
+RunRecorder schema `4.0` adds candidate/funnel/diagnostic budgets while its
+manifest loader remains compatible with schema `3.0` evidence.
+
 By default, `scripts/run_single_kernelblaster.sh` launches a single KernelBench-CUDA RL optimization run with CUDA Events profiling, starts the loopback-only shared GPU server if needed, and writes outputs under `out/<dataset>/<precision>/<experiment>/`.
 
 Note that this example runs a single sample from the Level 1 KernelBench-CUDA dataset. This can be extended by passing additional problems via the `--problem-numbers` flag and the `--subset` flag.

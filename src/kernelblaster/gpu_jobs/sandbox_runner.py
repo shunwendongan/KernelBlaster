@@ -116,6 +116,7 @@ def _command(request: dict[str, Any]) -> list[str]:
             "-O3",
             "-std=c++17",
             f"-arch={request['target_arch']}",
+            "--ptxas-options=-v",
             *sources,
             str(driver),
             "-o",

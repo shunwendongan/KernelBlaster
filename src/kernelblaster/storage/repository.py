@@ -497,8 +497,16 @@ class JobRepository:
         """
         with self._connect() as connection:
             artifact = connection.execute(
-                "SELECT digest FROM artifacts WHERE digest = ?", (executable_digest,)
+                "SELECT digest, schema_name FROM artifacts WHERE digest = ?",
+                (executable_digest,),
             ).fetchone()
+            replay_rows = connection.execute(
+                """SELECT jobs.payload_json FROM jobs
+                JOIN job_artifacts ON job_artifacts.job_id = jobs.id
+                WHERE job_artifacts.digest = ? AND job_artifacts.role = 'profiler_replay'
+                AND jobs.kind = 'gpu:correctness' AND jobs.status = 'succeeded'""",
+                (executable_digest,),
+            ).fetchall()
             compile_rows = connection.execute(
                 """SELECT jobs.payload_json FROM jobs
                 JOIN job_artifacts ON job_artifacts.job_id = jobs.id
@@ -510,7 +518,23 @@ class JobRepository:
                 """SELECT payload_json FROM jobs
                 WHERE kind = 'gpu:correctness' AND status = 'succeeded'"""
             ).fetchall()
-        if artifact is None or not compile_rows:
+        if artifact is None:
+            raise KeyError("profiler candidate executable is not registered")
+        if replay_rows:
+            payload = json.loads(replay_rows[0]["payload_json"])
+            if payload.get("trusted_bundle_kind") != "generated_v2":
+                raise ValueError("profiler replay is not a generated-v2 artifact")
+            source_digest = str(payload.get("source_bundle_digest") or "")
+            benchmark_protocol_id = str(payload.get("benchmark_protocol_id") or "")
+            if len(source_digest) != 64 or not benchmark_protocol_id:
+                raise ValueError("profiler replay provenance is incomplete")
+            return {
+                "artifact_digest": executable_digest,
+                "source_digest": source_digest,
+                "benchmark_protocol_id": benchmark_protocol_id,
+                "artifact_kind": "candidate_profiler_capsule",
+            }
+        if not compile_rows:
             raise KeyError("profiler candidate executable is not registered")
         correctness = [json.loads(row["payload_json"]) for row in correctness_rows]
         if not any(row.get("executable_digest") == executable_digest for row in correctness):
@@ -528,4 +552,5 @@ class JobRepository:
             "artifact_digest": executable_digest,
             "source_digest": source_digest,
             "benchmark_protocol_id": benchmark_protocol_id,
+            "artifact_kind": "executable",
         }

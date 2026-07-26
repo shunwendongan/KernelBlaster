@@ -247,13 +247,18 @@ async def download_profiler_candidate(
         raise HTTPException(status_code=409, detail=str(error)) from error
     return FileResponse(
         path,
-        media_type="application/x-executable",
+        media_type=(
+            "application/x-kernelblaster-candidate-profiler-capsule"
+            if provenance["artifact_kind"] == "candidate_profiler_capsule"
+            else "application/x-executable"
+        ),
         filename=digest,
         headers={
             "x-kernelblaster-source-digest": provenance["source_digest"],
             "x-kernelblaster-benchmark-protocol-id": provenance[
                 "benchmark_protocol_id"
             ],
+            "x-kernelblaster-artifact-kind": provenance["artifact_kind"],
         },
     )
 

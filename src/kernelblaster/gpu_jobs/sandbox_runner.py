@@ -104,11 +104,63 @@ def _fixed_environment(request: dict[str, Any]) -> dict[str, str]:
         "TORCH_CUDA_ARCH_LIST": compute,
         "CMAKE_CUDA_ARCHITECTURES": digits,
         "CUDAARCHS": digits,
+        "PYTHONPATH": "/opt/kernelblaster",
+        "TRITON_CACHE_DIR": "/work/triton-cache",
     }
 
 
 def _command(request: dict[str, Any]) -> list[str]:
     stage = str(request["stage"])
+    if request.get("trusted_bundle_kind") == "generated_v2":
+        if stage == "compile":
+            backend = str(request.get("candidate_backend"))
+            source = INPUT / "candidate" / ("candidate.cu" if backend == "cuda" else "candidate.py")
+            if backend == "cuda":
+                return [
+                    "nvcc",
+                    "-O3",
+                    "-std=c++17",
+                    "--cubin",
+                    f"-arch={request['target_arch']}",
+                    "--ptxas-options=-v",
+                    str(source),
+                    "-o",
+                    str(OUTPUT / "module.cubin"),
+                ]
+            if backend == "triton":
+                return [
+                    "python",
+                    "/opt/kernelblaster/scripts/triton_aot_compile.py",
+                    "--source",
+                    str(source),
+                    "--launch-plan",
+                    str(INPUT / "candidate" / "launch-plan.json"),
+                    "--task",
+                    str(INPUT / "private" / "task-spec.json"),
+                    "--target-arch",
+                    str(request["target_arch"]),
+                    "--output",
+                    str(OUTPUT / "module.cubin"),
+                ]
+            raise ValueError("generated v2 backend is unsupported")
+        command = [
+            "python",
+            "-m",
+            "src.kernelblaster.candidate_packages.replay",
+            "--capsule",
+            str(INPUT / "candidate" / "candidate.capsule"),
+            "--task",
+            str(INPUT / "private" / "task-spec.json"),
+            "--cases",
+            str(INPUT / "private" / "case-bundle.json"),
+            "--mode",
+            stage,
+            "--protocol",
+            str(request["benchmark_protocol_id"]),
+        ]
+        if request.get("workload_id"):
+            command.extend(("--workload", str(request["workload_id"])))
+        return command
     if stage == "compile":
         sources = sorted(str(path) for path in (INPUT / "candidate").rglob("*.cu"))
         if not sources:

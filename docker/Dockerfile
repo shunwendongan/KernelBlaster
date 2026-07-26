@@ -112,18 +112,26 @@ CMD ["python", "-m", "src.kernelblaster.baseline_jobs.worker", "--host", "0.0.0.
 # no credentials, repository checkout, control-plane state, or Docker socket.
 FROM cuda-base AS gpu-job
 
-RUN useradd --uid 65532 --no-create-home --shell /usr/sbin/nologin sandbox
+COPY docker/requirements.gpu-job.txt /tmp/requirements.gpu-job.txt
+RUN python -m pip install --no-cache-dir --upgrade pip \
+    && python -m pip install --no-cache-dir -r /tmp/requirements.gpu-job.txt \
+    && useradd --uid 65532 --no-create-home --shell /usr/sbin/nologin sandbox
 COPY src/kernelblaster/gpu_jobs/sandbox_runner.py /opt/kernelblaster/sandbox_runner.py
 COPY src/kernelblaster/harness/contracts.py /opt/kernelblaster/harness_contracts.py
+COPY src /opt/kernelblaster/src
+COPY scripts/triton_aot_compile.py /opt/kernelblaster/scripts/triton_aot_compile.py
 COPY docker/trusted-adapter-keys.json /opt/kernelblaster/trust/adapter-keys.json
 COPY docker/adapter-plugin-allowlist.json /opt/kernelblaster/trust/adapter-plugin-allowlist.json
 COPY docker/adapter-plugins /opt/kernelblaster/adapter-plugins
 RUN chmod 0555 /opt/kernelblaster/sandbox_runner.py \
+        /opt/kernelblaster/scripts/triton_aot_compile.py \
     && mkdir -p /work /tmp \
     && chown -R 65532:65532 /work /tmp
 
 WORKDIR /work
-ENV PYTHONPATH=/opt/kernelblaster
+ENV PYTHONPATH=/opt/kernelblaster \
+    PYTHONDONTWRITEBYTECODE=1 \
+    TRITON_CACHE_DIR=/work/triton-cache
 USER 65532:65532
 ENTRYPOINT ["python", "/opt/kernelblaster/sandbox_runner.py"]
 

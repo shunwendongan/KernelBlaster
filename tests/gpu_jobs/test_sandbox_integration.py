@@ -9,6 +9,7 @@ Run on AutoDL/self-hosted GPU only, after pinning KERNELBLASTER_GPU_JOB_IMAGE:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -20,8 +21,18 @@ from src.kernelblaster.gpu_jobs.capabilities import detect_gpu_capabilities
 from src.kernelblaster.gpu_jobs.contracts import GpuJobManifest, GpuJobStage, GpuReasonCode
 from src.kernelblaster.gpu_jobs.sandbox import (
     DockerSandboxRuntime,
+    PrivateEvaluationProfile,
+    PrivateEvaluationProfileManifest,
     SandboxConfiguration,
+    SandboxStageExecutor,
     _tar_files,
+)
+from src.kernelblaster.gpu_jobs.bundles import build_deterministic_bundle
+from src.kernelblaster.candidate_packages import build_fixed_cuda_candidate
+from src.kernelblaster.harness import (
+    CaseBundle,
+    build_development_case_bundle,
+    core10_task_specs,
 )
 
 
@@ -182,3 +193,118 @@ int main() { std::printf("{\"probe\":%d}\n", probe()); return 0; }
     )
     assert recovered.reason is GpuReasonCode.NONE
     assert isinstance(recovered.measurement, dict)
+
+
+class _MemoryControl:
+    def __init__(self, artifacts: dict[str, bytes]) -> None:
+        self.artifacts = artifacts
+
+    async def download(self, digest: str) -> bytes:
+        return self.artifacts[digest]
+
+    async def upload(self, payload: bytes, **_metadata) -> dict[str, str]:
+        import hashlib
+
+        digest = hashlib.sha256(payload).hexdigest()
+        self.artifacts[digest] = payload
+        return {"digest": digest}
+
+
+def test_generated_v2_compile_correctness_events_and_profiler_capsule_are_ephemeral():
+    import docker
+    import hashlib
+
+    image = os.environ["KERNELBLASTER_GPU_JOB_IMAGE"]
+    task = next(item for item in core10_task_specs() if item.id.endswith("019.forward"))
+    full_cases = build_development_case_bundle(task)
+    cases = CaseBundle(
+        task_spec_digest=full_cases.task_spec_digest,
+        cases=(full_cases.cases[2],),
+    )
+    candidate = build_fixed_cuda_candidate(task)
+    private = build_deterministic_bundle(
+        {
+            "driver.cpp": b"// generated-v2 uses the fixed Harness replay\n",
+            "task-spec.json": task.canonical_bytes(),
+            "case-bundle.json": cases.canonical_bytes(),
+        }
+    )
+    candidate_digest = hashlib.sha256(candidate).hexdigest()
+    private_digest = hashlib.sha256(private).hexdigest()
+    profile = PrivateEvaluationProfile(
+        id="core10-relu-v2",
+        bundle_digest=private_digest,
+        driver_path="driver.cpp",
+        task_spec_digest=task.canonical_sha256(),
+        case_bundle_digest=cases.canonical_sha256(),
+        adapter_id=task.adapter_id,
+        adapter_version=task.adapter_version,
+        correctness_protocol_id="generated-correctness-v2",
+        disclosure="adaptive_disclosed",
+    )
+    profiles = PrivateEvaluationProfileManifest(
+        schema_version="gpu-private-evaluation-profiles/v2",
+        profiles=(profile,),
+    )
+    client = docker.DockerClient(base_url="unix:///var/run/docker.sock")
+    configuration = SandboxConfiguration(image=image, gpu_device="0", profiles=profiles)
+    runtime = DockerSandboxRuntime(client, configuration)
+    runtime.validate()
+    control = _MemoryControl({candidate_digest: candidate, private_digest: private})
+    executor = SandboxStageExecutor(control, runtime, profiles)
+    capabilities = detect_gpu_capabilities()
+
+    def manifest(
+        stage: GpuJobStage, *, executable_digest: str | None = None
+    ) -> GpuJobManifest:
+        return GpuJobManifest(
+            job_id=f"generated-v2-{stage.value}",
+            run_id="generated-v2-integration",
+            idempotency_key=f"generated-v2-{stage.value}",
+            stage=stage,
+            source_bundle_digest=candidate_digest,
+            executable_digest=executable_digest,
+            private_evaluation_profile_id=profile.id,
+            target_arch=capabilities.device.target_arch,
+            benchmark_protocol_id="candidate-capsule-events-v1",
+            deadline=datetime.now(timezone.utc) + timedelta(minutes=10),
+            trusted_bundle_kind="generated_v2",
+        )
+
+    compile_result = asyncio.run(
+        executor(manifest(GpuJobStage.COMPILE), capabilities, asyncio.Event())
+    )
+    assert compile_result.reason_code is GpuReasonCode.NONE
+    capsule_digest = next(
+        digest
+        for digest, role in compile_result.artifact_roles.items()
+        if role == "candidate_capsule"
+    )
+    correctness = asyncio.run(
+        executor(
+            manifest(GpuJobStage.CORRECTNESS, executable_digest=capsule_digest),
+            capabilities,
+            asyncio.Event(),
+        )
+    )
+    assert correctness.reason_code is GpuReasonCode.NONE, {
+        role: control.artifacts[digest].decode("utf-8", errors="replace")
+        for digest, role in correctness.artifact_roles.items()
+    }
+    assert correctness.correctness and correctness.correctness["passed"] is True
+    assert "profiler_replay" in correctness.artifact_roles.values()
+    events = asyncio.run(
+        executor(
+            manifest(GpuJobStage.EVENTS, executable_digest=capsule_digest),
+            capabilities,
+            asyncio.Event(),
+        )
+    )
+    assert events.reason_code is GpuReasonCode.NONE
+    assert events.measurement and events.measurement["source"] == "cuda_events"
+    assert not client.containers.list(
+        all=True, filters={"label": "kernelblaster.sandbox=true"}
+    )
+    assert not client.volumes.list(
+        filters={"label": "kernelblaster.sandbox=true"}
+    )

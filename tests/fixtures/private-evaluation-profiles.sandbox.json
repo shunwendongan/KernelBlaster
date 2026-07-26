@@ -1,0 +1,10 @@
+{
+  "schema_version": "gpu-private-evaluation-profiles/v1",
+  "profiles": [
+    {
+      "id": "sandbox-integration-v1",
+      "bundle_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "driver_path": "driver.cpp"
+    }
+  ]
+}

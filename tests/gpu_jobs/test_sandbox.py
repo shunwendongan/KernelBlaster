@@ -98,6 +98,7 @@ class _Container:
         self.timed_out = timed_out
         self.removed = False
         self.started = False
+        self.exec_commands: list[list[str]] = []
         self.attrs = {"State": {"OOMKilled": False}}
 
     def put_archive(self, path, payload):
@@ -112,10 +113,17 @@ class _Container:
             raise TimeoutError("timed out")
         return {"StatusCode": 0}
 
-    def get_archive(self, path):
-        assert path == "/work/out"
+    def exec_run(self, command, **kwargs):
+        self.exec_commands.append(command)
+        assert command == ["/usr/bin/tar", "-C", "/work", "-cf", "-", "out"]
+        assert kwargs == {
+            "stdout": True,
+            "stderr": False,
+            "stream": True,
+            "demux": False,
+        }
         assert self.output is not None
-        return iter([self.output]), {}
+        return type("ExecResult", (), {"output": iter([self.output])})()
 
     def reload(self):
         return None
@@ -182,6 +190,7 @@ def test_sandbox_runtime_uses_pinned_image_private_namespace_and_always_cleans_u
     execution = runtime.execute(input_archive=b"input", manifest=_manifest())
     assert execution.reason.value == "none"
     assert execution.outputs["candidate"] == b"binary"
+    assert client.job.exec_commands
     assert client.volume.removed and client.stager.removed and client.job.removed
     _args, settings = client.created[1]
     assert settings["network_mode"] == "none"
@@ -216,13 +225,14 @@ def test_sandbox_timeout_kills_the_job_waits_for_gpu_and_cleans_up(monkeypatch):
             "out/result.json": b'{"reason":"none"}',
         }
     )
-    client = _Client(output, timed_out=True)
+    client = _Client(output)
     runtime = DockerSandboxRuntime(
         client,
         SandboxConfiguration(
             image="sha256:" + "2" * 64,
             gpu_device="0",
             profiles=_profiles("b" * 64),
+            policy=SandboxPolicy(compile_seconds=0),
         ),
     )
     monkeypatch.setattr(runtime, "_gpu_recovered", lambda: True)

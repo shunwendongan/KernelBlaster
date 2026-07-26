@@ -269,9 +269,35 @@ bash scripts/run_single_kernelblaster.sh
 ```
 
 如需执行有预算上限的研究验收顺序，请使用
-`python scripts/run_trusted_pilot.py`。脚本固定执行“运行环境 → 编译/正确性 →
-3 Session Events → NCU 权限探针 → 单次 64-token API 冒烟 → 2×2 RMSNorm
-Pilot”，任一必要门禁失败都会立即停止。
+`python scripts/run_trusted_pilot.py`。脚本会先生成 `capability-report/v1`：一次
+零重试、64-token 的 Provider 鉴权请求，一次带鉴权的 SQLite/CAS 往返，使用
+三个全新沙箱容器完成 `generated_v1` vector-add compile/correctness/Events，
+再对 correctness-gated executable 执行 NSYS/NCU。报告上传到 Control CAS，
+其 digest 会传给 `run_RL.py`；报告过期、被篡改、硬件不匹配、或生成沙箱未
+启用时，Agent 启动前即失败。NCU 只用于诊断，因此权限或工具不可用只会选择
+`events_only`，不会推翻有效的 Events 路径。Pilot 摘要会分别记录 preflight、
+Agent 及二者合计的 Provider 用量。
+
+自动路径要求启用 generated Jobs，并在 Supervisor 外部只读 profile 中提供
+`preflight-vector-add-v1`。先对正在运行的 Control 注册一次固定 driver bundle，
+让 Compose 指向生成的外部文件，并按前文构建/固定 Job 镜像后启用 generated Jobs：
+
+```bash
+uv run python scripts/register_preflight_profile.py \
+  --output "$HOME/secrets/private-evaluation-profiles.json"
+export KERNELBLASTER_PRIVATE_EVALUATION_PROFILES_HOST="$HOME/secrets/private-evaluation-profiles.json"
+export KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS=true
+```
+
+随后可单独执行启动诊断：
+
+```bash
+uv run python scripts/run_preflight.py \
+  --output-dir "out/preflight/$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+自动生成候选默认只使用沙箱。`--execution-backend trusted_local` 仅用于显式、
+可信的开发运行，任何沙箱失败都不会自动回退到该模式。
 
 默认情况下，`scripts/run_single_kernelblaster.sh` 会启动单个使用 CUDA Events 的 KernelBench-CUDA RL 优化任务；如有需要，它还会启动仅监听回环地址的共享 GPU Server。运行输出保存在 `out/<dataset>/<precision>/<experiment>/` 下。
 

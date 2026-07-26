@@ -336,6 +336,33 @@ class DockerSandboxRuntime:
         except Exception:
             pass
 
+    def _export_output_archive(self, container: Any) -> bytes:
+        """Stream the Job tmpfs through a fixed command inside the container.
+
+        Docker's archive endpoint reads the container root filesystem and does
+        not expose tmpfs mount contents on Docker Desktop/WSL.  The command is
+        therefore fixed by the trusted Supervisor and its stream is still
+        subjected to the regular-file allowlist and per-file limits below.
+        """
+        result = container.exec_run(
+            ["/usr/bin/tar", "-C", "/work", "-cf", "-", "out"],
+            stdout=True,
+            stderr=False,
+            stream=True,
+            demux=False,
+        )
+        payload = bytearray()
+        chunks = result.output
+        if isinstance(chunks, bytes):
+            chunks = (chunks,)
+        for chunk in chunks:
+            if not isinstance(chunk, bytes):
+                raise ValueError("sandbox output stream must contain bytes")
+            payload.extend(chunk)
+            if len(payload) > self.configuration.policy.temporary_bytes:
+                raise ValueError("sandbox output archive exceeds tmpfs quota")
+        return bytes(payload)
+
     def cancel_active(self) -> None:
         """Synchronously kill the running Job when its Supervisor task is cancelled."""
         with self._active_lock:
@@ -423,22 +450,39 @@ class DockerSandboxRuntime:
             with self._active_lock:
                 self._active_job = job
             job.start()
-            try:
-                job.wait(timeout=self.configuration.policy.timeout_for(manifest.stage))
-            except Exception as error:
-                if isinstance(error, TimeoutError) or "timed out" in str(error).lower():
-                    timed_out = True
-                    self._kill_and_wait(job)
-                else:
-                    raise
-            try:
-                stream, _stat = job.get_archive("/work/out")
-                output_archive = b"".join(stream)
-                outputs = _read_output_archive(
-                    output_archive, stage=manifest.stage, policy=self.configuration.policy
-                )
-            except Exception:
-                outputs = {}
+            deadline = time.monotonic() + self.configuration.policy.timeout_for(
+                manifest.stage
+            )
+            state: dict[str, Any] = {}
+            while time.monotonic() < deadline:
+                try:
+                    candidate_outputs = _read_output_archive(
+                        self._export_output_archive(job),
+                        stage=manifest.stage,
+                        policy=self.configuration.policy,
+                    )
+                    if "result.json" in candidate_outputs:
+                        outputs = candidate_outputs
+                        break
+                except Exception:
+                    pass
+                try:
+                    job.reload()
+                    state = job.attrs.get("State", {})
+                except Exception:
+                    state = {}
+                if state and not state.get("Running", False):
+                    break
+                time.sleep(0.1)
+            else:
+                timed_out = True
+
+            if outputs:
+                # The fixed runner waits after publishing its tmpfs outputs.
+                # Copy first, then terminate and remove the short-lived Job.
+                self._kill_and_wait(job)
+            elif timed_out:
+                self._kill_and_wait(job)
 
             if timed_out:
                 reason = (
@@ -448,11 +492,12 @@ class DockerSandboxRuntime:
                 )
                 return SandboxExecution(reason=reason, outputs=outputs)
 
-            try:
-                job.reload()
-                state = job.attrs.get("State", {})
-            except Exception:
-                state = {}
+            if not state:
+                try:
+                    job.reload()
+                    state = job.attrs.get("State", {})
+                except Exception:
+                    state = {}
             if state.get("OOMKilled"):
                 return SandboxExecution(reason=GpuReasonCode.GPU_OOM, outputs=outputs)
             result_raw = outputs.pop("result.json", None)

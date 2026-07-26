@@ -15,13 +15,15 @@
 
 """组装 LangGraph 状态图，并连接 KernelBlaster 的优化节点。"""
 
+from functools import partial
+
 from langgraph.graph import StateGraph, START, END
 
 from .nodes import optimization_rl_ncu
 from .state import GraphState
 
 
-def build_graph():
+def build_graph(runtime=None):
     """
     构建 `build_graph` 对应的领域操作，并返回调用方所需的标准化结果。
 
@@ -31,7 +33,12 @@ def build_graph():
     graph_builder = StateGraph(GraphState)
     
     # 基线驱动的 RL 优化节点
-    graph_builder.add_node("Baseline RL Optimization", optimization_rl_ncu)
+    node = (
+        optimization_rl_ncu
+        if runtime is None
+        else partial(optimization_rl_ncu, runtime=runtime)
+    )
+    graph_builder.add_node("Baseline RL Optimization", node)
 
     # 工作流程路由
     graph_builder.add_edge(START, "Baseline RL Optimization")

@@ -336,9 +336,40 @@ bash scripts/run_single_kernelblaster.sh
 ```
 
 For the bounded research acceptance sequence, use
-`python scripts/run_trusted_pilot.py`. It enforces runtime → compile/correctness
-→ three-session Events → NCU permission probe → one 64-token API smoke → the
-2×2 RMSNorm Pilot, stopping immediately when a required gate fails.
+`python scripts/run_trusted_pilot.py`. It first creates a
+`capability-report/v1`: one zero-retry 64-token Provider authentication request,
+an authenticated SQLite/CAS round trip, a `generated_v1` vector-add
+compile/correctness/Events chain in three fresh sandbox containers, and
+correctness-gated NSYS/NCU probes. The report is uploaded to Control CAS and its
+digest is passed to `run_RL.py`; an expired, tampered, hardware-mismatched, or
+sandbox-disabled report fails before the Agent starts. NCU is diagnostic only,
+so permission/tool failures select `events_only` instead of failing a valid
+Events path. The pilot summary keeps Provider usage for preflight, Agent, and
+their combined total as separate counters.
+
+The automatic path requires generated Jobs to be enabled and the external
+Supervisor-only profile manifest to contain `preflight-vector-add-v1`. Run the
+registration once against a running Control service, point Compose at the
+result, rebuild/pin the Job image as documented above, and enable generated
+Jobs:
+
+```bash
+uv run python scripts/register_preflight_profile.py \
+  --output "$HOME/secrets/private-evaluation-profiles.json"
+export KERNELBLASTER_PRIVATE_EVALUATION_PROFILES_HOST="$HOME/secrets/private-evaluation-profiles.json"
+export KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS=true
+```
+
+Then run the preflight independently when diagnosing startup:
+
+```bash
+uv run python scripts/run_preflight.py \
+  --output-dir "out/preflight/$(date -u +%Y%m%dT%H%M%SZ)"
+```
+
+Automatic generated candidates default to the sandbox. The
+`--execution-backend trusted_local` mode is an explicit, trusted development
+choice and is never selected as a fallback.
 
 By default, `scripts/run_single_kernelblaster.sh` launches a single KernelBench-CUDA RL optimization run with CUDA Events profiling, starts the loopback-only shared GPU server if needed, and writes outputs under `out/<dataset>/<precision>/<experiment>/`.
 

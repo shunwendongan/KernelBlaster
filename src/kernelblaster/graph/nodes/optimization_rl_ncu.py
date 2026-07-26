@@ -23,7 +23,7 @@ from ...outcomes import RunOutcome, RunStatus
 from ...profiling import CudaEventsRunner, EventsProfilerBackend
 
 
-async def optimization_rl_ncu(state: GraphState):
+async def optimization_rl_ncu(state: GraphState, *, runtime=None):
     """
     基于强化学习的 NCU 优化节点。
     该节点采用标准工作流程生成的CUDA内核
@@ -131,14 +131,22 @@ async def optimization_rl_ncu(state: GraphState):
     update_frequency = state.get("rl_update_frequency", 3)
     rl_iterations = state.get("rl_iterations", 10)
     
-    events_backend = EventsProfilerBackend(
-        CudaEventsRunner(
+    if runtime is None:
+        events_backend = EventsProfilerBackend(
+            CudaEventsRunner(
+                driver_path=test_code_fp,
+                gpu=state["gpu"],
+                logger=state["logger"],
+                work_dir=base_folder / "events",
+            )
+        )
+    else:
+        events_backend = runtime.create_events_backend(
             driver_path=test_code_fp,
             gpu=state["gpu"],
             logger=state["logger"],
             work_dir=base_folder / "events",
         )
-    )
 
     agent_rl_ncu = RLNCUAgent(
         fb_config=fb_config,

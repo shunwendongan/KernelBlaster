@@ -13,10 +13,16 @@ from typing import Any
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 
-NCU_PERMISSION_ERROR = "ERR_NVGPUCTRPERM"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 PILOT_MODEL = "gpt-5.6-sol"
 LLM_SECRET_ENV_VARS = ("KERNELBLASTER_LLM_API_KEY", "OPENAI_API_KEY")
+PREFLIGHT_MARKER = "KERNELBLASTER_PREFLIGHT_JSON "
+USAGE_FIELDS = (
+    "requests_started",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+)
 
 
 def _timestamp() -> str:
@@ -84,17 +90,48 @@ def _environment_without_llm_secrets() -> dict[str, str]:
     return environment
 
 
-def _classify_ncu_probe(
-    completed: subprocess.CompletedProcess[str],
-) -> tuple[str, str | None]:
-    """Classify the NCU gate without hiding setup or execution failures."""
-    if completed.returncode == 0:
-        return "available", "ncu"
-    if completed.returncode not in {124, 127} and NCU_PERMISSION_ERROR in (
-        completed.stdout + completed.stderr
-    ):
-        return "events_only", "events_only"
-    return "failed", None
+def _preflight_result(stdout: str) -> dict[str, Any]:
+    for line in stdout.splitlines():
+        if line.startswith(PREFLIGHT_MARKER):
+            payload = json.loads(line[len(PREFLIGHT_MARKER) :])
+            if isinstance(payload, dict):
+                return payload
+    raise ValueError("preflight output did not contain its result marker")
+
+
+def _llm_usage(path: Path) -> dict[str, int]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        llm = payload.get("llm") or {}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        llm = {}
+    return {field: int(llm.get(field, 0) or 0) for field in USAGE_FIELDS}
+
+
+def _combined_usage(output_dir: Path) -> dict[str, dict[str, int]]:
+    preflight = _llm_usage(output_dir / "runtime-preflight" / "summary.json")
+    agent = _llm_usage(output_dir / "pilot-record" / "summary.json")
+    return {
+        "preflight": preflight,
+        "agent": agent,
+        "total": {field: preflight[field] + agent[field] for field in USAGE_FIELDS},
+    }
+
+
+def _pilot_summary(
+    output_dir: Path,
+    *,
+    report_digest: Any,
+    agent_mode: Any,
+    stages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "trusted-pilot-preflight/v1",
+        "report_digest": report_digest,
+        "agent_mode": agent_mode,
+        "stages": stages,
+        "llm_usage": _combined_usage(output_dir),
+    }
 
 
 def main() -> int:
@@ -120,114 +157,49 @@ def main() -> int:
     output_dir.mkdir(parents=True)
 
     stages: list[dict[str, Any]] = []
-    profiler_environment = _environment_without_llm_secrets()
 
-    # 1. Environment and dependency check.
-    runtime = _run(
-        [sys.executable, "scripts/check_runtime_versions.py", "--require-gpu"],
-        log_path=output_dir / "01-runtime.log",
-        env=profiler_environment,
-        timeout=120,
-    )
-    stages.append({"stage": "runtime", "returncode": runtime.returncode})
-    if runtime.returncode:
-        _atomic_json(output_dir / "preflight.json", {"schema_version": "2.0", "stages": stages})
-        return 2
-
-    # 2-4. CUDA compilation, official/edge correctness and three-session Events stability.
-    events_dir = output_dir / "events-discovery"
-    events = _run(
+    # One runtime contract owns Provider auth, storage, sandbox, Events, NSYS, and NCU.
+    preflight = _run(
         [
             sys.executable,
-            "scripts/benchmark_candidates.py",
-            "--task-id",
-            "036",
-            "--phase",
-            "discovery",
-            "--cooldown-seconds",
-            "0",
-            "--output-dir",
-            str(events_dir),
-        ],
-        log_path=output_dir / "02-04-events.log",
-        env=profiler_environment,
-        timeout=3600,
-    )
-    stages.append({"stage": "compile_correctness_events", "returncode": events.returncode})
-    if events.returncode:
-        _atomic_json(output_dir / "preflight.json", {"schema_version": "2.0", "stages": stages})
-        return 2
-
-    # 5. NCU gate; only ERR_NVGPUCTRPERM may explicitly select events_only.
-    executable = (
-        events_dir
-        / "036"
-        / "build"
-        / "rmsnorm_v3c"
-        / "benchmark"
-        / "build"
-        / "main"
-    )
-    ncu = _run(
-        ["ncu", "--section", "SpeedOfLight", str(executable)],
-        log_path=output_dir / "05-ncu-probe.log",
-        env=profiler_environment,
-        timeout=600,
-    )
-    ncu_status, profiling_mode = _classify_ncu_probe(ncu)
-    stages.append(
-        {
-            "stage": "ncu_permission_probe",
-            "returncode": ncu.returncode,
-            "status": ncu_status,
-            "profiling_mode": profiling_mode,
-        }
-    )
-    if profiling_mode is None:
-        _atomic_json(
-            output_dir / "preflight.json",
-            {
-                "schema_version": "2.0",
-                "profiling_mode": None,
-                "stages": stages,
-            },
-        )
-        return 2
-
-    # 6. Exactly one bounded authentication smoke request.
-    smoke = _run(
-        [
-            sys.executable,
-            "scripts/smoke_llm.py",
+            "scripts/run_preflight.py",
             "--model",
             args.model,
-            "--base-url",
-            OPENAI_BASE_URL,
-            "--max-completion-tokens",
-            "64",
-            "--max-total-tokens",
-            "10000",
-            "--reasoning-effort",
-            "none",
+            "--gpu",
+            args.gpu,
             "--output-dir",
-            str(output_dir / "api-smoke"),
+            str(output_dir / "runtime-preflight"),
         ],
-        log_path=output_dir / "06-api-smoke.log",
+        log_path=output_dir / "01-runtime-preflight.log",
         timeout=300,
     )
-    stages.append({"stage": "api_smoke", "returncode": smoke.returncode})
-    if smoke.returncode:
+    stages.append({"stage": "runtime_preflight", "returncode": preflight.returncode})
+    try:
+        preflight_result = _preflight_result(preflight.stdout)
+    except (json.JSONDecodeError, ValueError):
+        preflight_result = {"report_digest": None, "agent_mode": "unavailable"}
+    _atomic_json(
+        output_dir / "preflight.json",
+        _pilot_summary(
+            output_dir,
+            report_digest=preflight_result.get("report_digest"),
+            agent_mode=preflight_result.get("agent_mode"),
+            stages=stages,
+        ),
+    )
+    if preflight.returncode or not preflight_result.get("report_digest"):
         _atomic_json(
             output_dir / "preflight.json",
-            {
-                "schema_version": "2.0",
-                "profiling_mode": profiling_mode,
-                "stages": stages,
-            },
+            _pilot_summary(
+                output_dir,
+                report_digest=preflight_result.get("report_digest"),
+                agent_mode=preflight_result.get("agent_mode", "unavailable"),
+                stages=stages,
+            ),
         )
         return 2
 
-    # 7. RMSNorm Pilot only: 2 rollouts x 2 steps, bounded to 32 requests/250k tokens.
+    # RMSNorm Pilot only: 2 rollouts x 2 steps, bounded to 32 requests/250k tokens.
     environment = os.environ.copy()
     environment.update(
         {
@@ -276,19 +248,24 @@ def main() -> int:
             args.model,
             "--run-record-dir",
             str(output_dir / "pilot-record"),
+            "--execution-backend",
+            "sandbox",
+            "--capability-report-digest",
+            str(preflight_result["report_digest"]),
         ],
-        log_path=output_dir / "07-pilot.log",
+        log_path=output_dir / "02-pilot.log",
         env=environment,
         timeout=7200,
     )
     stages.append({"stage": "agent_pilot", "returncode": pilot.returncode})
     _atomic_json(
         output_dir / "preflight.json",
-        {
-            "schema_version": "2.0",
-            "profiling_mode": profiling_mode,
-            "stages": stages,
-        },
+        _pilot_summary(
+            output_dir,
+            report_digest=preflight_result["report_digest"],
+            agent_mode=preflight_result["agent_mode"],
+            stages=stages,
+        ),
     )
     return pilot.returncode
 

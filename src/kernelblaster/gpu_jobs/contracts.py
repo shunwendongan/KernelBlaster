@@ -152,6 +152,7 @@ class GpuDeviceCapability(BaseModel):
     compute_capability: str
     target_arch: str
     total_memory_bytes: int = Field(ge=1)
+    free_memory_bytes: int | None = Field(default=None, ge=0)
 
 
 class GpuRuntimeCapability(BaseModel):

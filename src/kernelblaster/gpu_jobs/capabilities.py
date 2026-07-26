@@ -44,14 +44,16 @@ def detect_gpu_capabilities(
         [
             "nvidia-smi",
             f"--id={logical_id}",
-            "--query-gpu=name,memory.total,driver_version,compute_cap",
+            "--query-gpu=name,memory.total,memory.free,driver_version,compute_cap",
             "--format=csv,noheader,nounits",
         ]
     ).decode("utf-8", errors="replace").strip()
     fields = [field.strip() for field in query.split(",")]
-    if len(fields) != 4:
-        raise RuntimeError("nvidia-smi did not return name,memory,driver,compute capability")
-    name, memory_mib, driver_version, compute_capability = fields
+    if len(fields) != 5:
+        raise RuntimeError(
+            "nvidia-smi did not return name,total/free memory,driver,compute capability"
+        )
+    name, memory_mib, free_memory_mib, driver_version, compute_capability = fields
     if not re.fullmatch(r"[0-9]+\.[0-9]+", compute_capability):
         raise RuntimeError("GPU compute capability could not be detected")
     target_arch = "sm_" + compute_capability.replace(".", "")
@@ -71,6 +73,7 @@ def detect_gpu_capabilities(
             compute_capability=compute_capability,
             target_arch=target_arch,
             total_memory_bytes=int(memory_mib) * 1024 * 1024,
+            free_memory_bytes=int(free_memory_mib) * 1024 * 1024,
         ),
         runtime=GpuRuntimeCapability(
             cuda_version=_cuda_version(runner),

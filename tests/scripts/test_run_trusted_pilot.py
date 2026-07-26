@@ -42,22 +42,57 @@ def test_missing_optional_command_is_recorded_instead_of_crashing(tmp_path):
     )
 
 
-def test_ncu_probe_classification_is_strict():
-    assert MODULE._classify_ncu_probe(
-        subprocess.CompletedProcess([], 0, "", "ERR_NVGPUCTRPERM")
-    ) == ("available", "ncu")
-    assert MODULE._classify_ncu_probe(
-        subprocess.CompletedProcess([], 1, "", "ERR_NVGPUCTRPERM")
-    ) == ("events_only", "events_only")
-    assert MODULE._classify_ncu_probe(
-        subprocess.CompletedProcess([], 1, "", "target executable missing")
-    ) == ("failed", None)
-    assert MODULE._classify_ncu_probe(
-        subprocess.CompletedProcess([], 124, "ERR_NVGPUCTRPERM", "timeout")
-    ) == ("failed", None)
-    assert MODULE._classify_ncu_probe(
-        subprocess.CompletedProcess([], 127, "ERR_NVGPUCTRPERM", "ncu missing")
-    ) == ("failed", None)
+def test_preflight_marker_is_required_and_structured():
+    payload = {"report_digest": "a" * 64, "agent_mode": "events_only"}
+    assert MODULE._preflight_result(
+        "ignored\n" + MODULE.PREFLIGHT_MARKER + json.dumps(payload) + "\n"
+    ) == payload
+    with pytest.raises(ValueError, match="result marker"):
+        MODULE._preflight_result("no marker")
+
+
+def test_combined_usage_separates_preflight_agent_and_total(tmp_path):
+    output_dir = tmp_path / "trusted-pilot"
+    preflight = output_dir / "runtime-preflight"
+    agent = output_dir / "pilot-record"
+    preflight.mkdir(parents=True)
+    agent.mkdir(parents=True)
+    (preflight / "summary.json").write_text(
+        json.dumps(
+            {
+                "llm": {
+                    "requests_started": 1,
+                    "prompt_tokens": 8,
+                    "completion_tokens": 1,
+                    "total_tokens": 9,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (agent / "summary.json").write_text(
+        json.dumps(
+            {
+                "llm": {
+                    "requests_started": 7,
+                    "prompt_tokens": 80,
+                    "completion_tokens": 20,
+                    "total_tokens": 100,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    usage = MODULE._combined_usage(output_dir)
+    assert usage["preflight"]["requests_started"] == 1
+    assert usage["agent"]["requests_started"] == 7
+    assert usage["total"] == {
+        "requests_started": 8,
+        "prompt_tokens": 88,
+        "completion_tokens": 21,
+        "total_tokens": 109,
+    }
 
 
 def test_trusted_pilot_uses_bounded_smoke_and_rmsnorm_suite(monkeypatch, tmp_path):
@@ -65,7 +100,15 @@ def test_trusted_pilot_uses_bounded_smoke_and_rmsnorm_suite(monkeypatch, tmp_pat
 
     def fake_run(command, *, log_path, env=None, timeout):
         calls.append({"command": command, "env": env, "timeout": timeout})
-        return subprocess.CompletedProcess(command, 0, "", "")
+        stdout = ""
+        if "scripts/run_preflight.py" in command:
+            stdout = MODULE.PREFLIGHT_MARKER + json.dumps(
+                {
+                    "report_digest": "a" * 64,
+                    "agent_mode": "full_diagnostics",
+                }
+            )
+        return subprocess.CompletedProcess(command, 0, stdout, "")
 
     output_dir = tmp_path / "trusted-pilot"
     monkeypatch.setenv("OPENAI_API_KEY", "openai-test-secret")
@@ -79,28 +122,17 @@ def test_trusted_pilot_uses_bounded_smoke_and_rmsnorm_suite(monkeypatch, tmp_pat
     )
 
     assert MODULE.main() == 0
-    assert [
-        call["command"][1] if call["command"][0] != "ncu" else "ncu"
-        for call in calls
-    ] == [
-        "scripts/check_runtime_versions.py",
-        "scripts/benchmark_candidates.py",
-        "ncu",
-        "scripts/smoke_llm.py",
+    assert [call["command"][1] for call in calls] == [
+        "scripts/run_preflight.py",
         "scripts/run_RL.py",
     ]
 
-    smoke = calls[3]["command"]
-    assert smoke[smoke.index("--model") + 1] == "gpt-5.6-sol"
-    assert smoke[smoke.index("--base-url") + 1] == "https://api.openai.com/v1"
-    assert smoke[smoke.index("--max-completion-tokens") + 1] == "64"
-    assert smoke[smoke.index("--reasoning-effort") + 1] == "none"
-    for call in calls[:3]:
-        assert "OPENAI_API_KEY" not in call["env"]
-        assert "KERNELBLASTER_LLM_API_KEY" not in call["env"]
-    assert calls[3]["env"] is None
+    preflight = calls[0]["command"]
+    assert preflight[preflight.index("--model") + 1] == "gpt-5.6-sol"
+    assert preflight[preflight.index("--gpu") + 1] == "rtx3080"
+    assert not any("secret" in value for value in preflight)
 
-    pilot = calls[4]
+    pilot = calls[1]
     command = pilot["command"]
     assert command[command.index("--problem-numbers") + 1] == "36"
     assert command[command.index("--rl-iterations") + 1] == "2"
@@ -108,6 +140,8 @@ def test_trusted_pilot_uses_bounded_smoke_and_rmsnorm_suite(monkeypatch, tmp_pat
     assert command[command.index("--portfolio-suite") + 1] == (
         "portfolio/suites/rmsnorm.json"
     )
+    assert command[command.index("--execution-backend") + 1] == "sandbox"
+    assert command[command.index("--capability-report-digest") + 1] == "a" * 64
     assert pilot["env"]["LLM_MAX_REQUESTS"] == "32"
     assert pilot["env"]["LLM_MAX_TOTAL_TOKENS"] == "250000"
     assert pilot["env"]["LLM_MAX_CONCURRENCY"] == "2"
@@ -120,7 +154,8 @@ def test_trusted_pilot_uses_bounded_smoke_and_rmsnorm_suite(monkeypatch, tmp_pat
     assert pilot["env"]["MODEL"] == "gpt-5.6-sol"
 
     preflight = json.loads((output_dir / "preflight.json").read_text())
-    assert preflight["profiling_mode"] == "ncu"
+    assert preflight["agent_mode"] == "full_diagnostics"
+    assert preflight["report_digest"] == "a" * 64
 
 
 def test_trusted_pilot_rejects_model_override(monkeypatch, tmp_path):
@@ -144,14 +179,15 @@ def test_trusted_pilot_rejects_model_override(monkeypatch, tmp_path):
     assert not output_dir.exists()
 
 
-def test_unexpected_ncu_failure_stops_before_api_request(monkeypatch, tmp_path):
+def test_unavailable_preflight_stops_before_agent(monkeypatch, tmp_path):
     calls = []
 
     def fake_run(command, *, log_path, env=None, timeout):
         calls.append(command)
-        if command[0] == "ncu":
-            return subprocess.CompletedProcess(command, 1, "", "target missing")
-        return subprocess.CompletedProcess(command, 0, "", "")
+        stdout = MODULE.PREFLIGHT_MARKER + json.dumps(
+            {"report_digest": None, "agent_mode": "unavailable"}
+        )
+        return subprocess.CompletedProcess(command, 2, stdout, "probe failed")
 
     output_dir = tmp_path / "trusted-pilot"
     monkeypatch.setattr(MODULE, "_run", fake_run)
@@ -162,24 +198,29 @@ def test_unexpected_ncu_failure_stops_before_api_request(monkeypatch, tmp_path):
     )
 
     assert MODULE.main() == 2
-    assert len(calls) == 3
-    assert not any("scripts/smoke_llm.py" in command for command in calls)
+    assert len(calls) == 1
+    assert "scripts/run_preflight.py" in calls[0]
     preflight = json.loads((output_dir / "preflight.json").read_text())
-    assert preflight["profiling_mode"] is None
-    assert preflight["stages"][-1]["status"] == "failed"
+    assert preflight["agent_mode"] == "unavailable"
+    assert preflight["stages"][-1]["returncode"] == 2
 
 
-def test_permission_only_ncu_failure_allows_events_fallback(monkeypatch, tmp_path):
+def test_events_only_preflight_allows_agent_without_local_profiler_fallback(
+    monkeypatch, tmp_path
+):
     calls = []
 
     def fake_run(command, *, log_path, env=None, timeout):
         calls.append(command)
-        if command[0] == "ncu":
+        if "scripts/run_preflight.py" in command:
             return subprocess.CompletedProcess(
                 command,
-                1,
+                0,
+                MODULE.PREFLIGHT_MARKER
+                + json.dumps(
+                    {"report_digest": "b" * 64, "agent_mode": "events_only"}
+                ),
                 "",
-                "==ERROR== ERR_NVGPUCTRPERM",
             )
         return subprocess.CompletedProcess(command, 0, "", "")
 
@@ -192,10 +233,12 @@ def test_permission_only_ncu_failure_allows_events_fallback(monkeypatch, tmp_pat
     )
 
     assert MODULE.main() == 0
-    assert any("scripts/smoke_llm.py" in command for command in calls)
+    assert len(calls) == 2
+    assert "scripts/run_RL.py" in calls[1]
+    assert "--execution-backend" in calls[1]
     preflight = json.loads((output_dir / "preflight.json").read_text())
-    assert preflight["profiling_mode"] == "events_only"
-    assert preflight["stages"][2]["status"] == "events_only"
+    assert preflight["agent_mode"] == "events_only"
+    assert preflight["report_digest"] == "b" * 64
 
 
 def test_smoke_is_one_non_retrying_bounded_request(monkeypatch, tmp_path):

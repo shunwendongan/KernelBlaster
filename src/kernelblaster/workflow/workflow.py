@@ -157,6 +157,7 @@ async def run_workflow(
     job_logger: loguru.Logger,
     timeout_seconds: int,
     shared_database=None,
+    runtime=None,
 ) -> WorkflowResult:
 
     """
@@ -186,7 +187,7 @@ async def run_workflow(
     # 准备运行的输出目录
     result.remove_existing_files(folder)
 
-    workflow = build_graph()
+    workflow = build_graph() if runtime is None else build_graph(runtime)
     workflow_input = {
         "user_message": user_message,
         "reference_code": reference_code,

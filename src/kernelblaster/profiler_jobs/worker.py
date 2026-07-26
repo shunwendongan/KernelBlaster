@@ -20,6 +20,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 from typing import Any
 
@@ -104,6 +105,12 @@ class ToolExecution:
     report: bytes
     timed_out: bool = False
     used_timestamp_workaround: bool = False
+
+
+@dataclass(frozen=True)
+class ProfilerTarget:
+    executable: Path
+    candidate_digest: str
 
 
 def _runtime_platform() -> str:
@@ -256,6 +263,8 @@ def profile_commands(
         "demangled",
         "--kernel-name",
         f"regex:{request.kernel_filter}",
+        "--launch-count",
+        "1",
         "--export",
         str(report_base),
         "--force-overwrite",
@@ -537,6 +546,53 @@ def _hardware() -> tuple[str, str]:
         return "unknown", "unknown"
 
 
+def _materialize_profiler_target(
+    payload: bytes,
+    *,
+    artifact_kind: str,
+    root: Path,
+    request_digest: str,
+) -> ProfilerTarget:
+    """Materialize either a legacy binary or a trusted generated-v2 wrapper."""
+    candidate = root / "candidate"
+    if artifact_kind == "executable":
+        candidate.write_bytes(payload)
+        candidate.chmod(0o500)
+        return ProfilerTarget(candidate, request_digest)
+    if artifact_kind != "candidate_profiler_capsule":
+        raise ValueError("profiler artifact kind is unsupported")
+
+    from ..candidate_packages import validate_profiler_replay_capsule
+    from ..candidate_packages.archive import extract_archive
+
+    replay = validate_profiler_replay_capsule(payload)
+    replay_root = root / "replay"
+    extract_archive(payload, replay_root)
+    fixed_arguments = (
+        "--capsule",
+        str(replay_root / "candidate.capsule"),
+        "--task",
+        str(replay_root / "task-spec.json"),
+        "--cases",
+        str(replay_root / "case-bundle.json"),
+    )
+    candidate.write_text(
+        "\n".join(
+            (
+                f"#!{sys.executable}",
+                "import sys",
+                "from src.kernelblaster.candidate_packages.replay import main",
+                f"sys.argv = [sys.argv[0], *{fixed_arguments!r}, *sys.argv[1:]]",
+                "raise SystemExit(main())",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    candidate.chmod(0o500)
+    return ProfilerTarget(candidate, replay.manifest.candidate_capsule_digest)
+
+
 class FixedPlanProfiler:
     def __init__(
         self,
@@ -601,19 +657,22 @@ class FixedPlanProfiler:
             )
         async with self._gpu:
             try:
-                executable, source_digest, benchmark_protocol_id = (
-                    await self.control.download(request.artifact_digest)
-                )
+                downloaded = await self.control.download(request.artifact_digest)
+                executable, source_digest, benchmark_protocol_id = downloaded[:3]
+                artifact_kind = downloaded[3] if len(downloaded) > 3 else "executable"
                 if hashlib.sha256(executable).hexdigest() != request.artifact_digest:
                     raise ValueError("candidate artifact digest mismatch")
                 with tempfile.TemporaryDirectory(prefix="kernelblaster-profile-") as temporary:
                     root = Path(temporary)
-                    candidate = root / "candidate"
-                    candidate.write_bytes(executable)
-                    candidate.chmod(0o500)
+                    target = _materialize_profiler_target(
+                        executable,
+                        artifact_kind=artifact_kind,
+                        root=root,
+                        request_digest=request.artifact_digest,
+                    )
                     execution = await self.runner.run(
                         request,
-                        candidate,
+                        target.executable,
                         benchmark_protocol_id,
                         root,
                         timeout,
@@ -672,7 +731,7 @@ class FixedPlanProfiler:
                 )
                 gpu_name, driver_version = _hardware()
                 provenance = ProfileProvenance(
-                    candidate_artifact_digest=request.artifact_digest,
+                    candidate_artifact_digest=target.candidate_digest,
                     source_digest=source_digest,
                     tool=execution.tool,
                     tool_version=execution.version,

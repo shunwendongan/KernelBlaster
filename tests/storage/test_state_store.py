@@ -245,6 +245,7 @@ def test_profiler_candidate_requires_passed_correctness_without_mutating_it(tmp_
         "artifact_digest": executable.digest,
         "source_digest": "a" * 64,
         "benchmark_protocol_id": "trusted-smoke-v1",
+        "artifact_kind": "executable",
     }
     # A failed profiler attempt is a separate diagnostic and cannot rewrite
     # the correctness evidence row.

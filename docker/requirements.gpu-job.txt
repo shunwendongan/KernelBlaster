@@ -1,0 +1,4 @@
+# Fixed trusted Harness dependencies. CUDA, PyTorch, CuPy, and Triton are
+# supplied by the immutable NGC base image.
+cryptography>=45,<47
+pydantic>=2.10,<3

@@ -23,8 +23,16 @@ from src.kernelblaster.profiler_jobs.worker import (
     parse_profile_csv,
     probe_ncu_counters,
     profile_commands,
+    _materialize_profiler_target,
 )
 import src.kernelblaster.profiler_jobs.worker as worker_module
+from src.kernelblaster.candidate_packages import (
+    build_candidate_capsule,
+    build_fixed_cuda_candidate,
+    build_profiler_replay_capsule,
+    validate_candidate_package,
+)
+from src.kernelblaster.harness import build_development_case_bundle, core10_task_specs
 
 
 def _request(**updates) -> ProfileRequest:
@@ -95,6 +103,30 @@ def test_fixed_plan_commands_do_not_accept_caller_argv_or_output_paths(tmp_path)
         benchmark_protocol_id="trusted-smoke-v1",
     )
     assert nsys_export[-2:] == ["--force-export=true", str(nsys_report)]
+
+
+def test_generated_v2_profiler_materializes_only_a_fixed_harness_wrapper(tmp_path):
+    task = next(item for item in core10_task_specs() if item.id.endswith("019.forward"))
+    package = validate_candidate_package(build_fixed_cuda_candidate(task), task=task)
+    capsule = build_candidate_capsule(
+        package, module=b"ELF-cubin", target_arch="sm_86", compiler_id="nvcc:test"
+    )
+    replay = build_profiler_replay_capsule(
+        capsule,
+        task_payload=task.canonical_bytes(),
+        case_payload=build_development_case_bundle(task).canonical_bytes(),
+    )
+    replay_digest = hashlib.sha256(replay).hexdigest()
+    target = _materialize_profiler_target(
+        replay,
+        artifact_kind="candidate_profiler_capsule",
+        root=tmp_path,
+        request_digest=replay_digest,
+    )
+    wrapper = target.executable.read_text(encoding="utf-8")
+    assert "candidate_packages.replay" in wrapper
+    assert "candidate.cu" not in wrapper
+    assert target.candidate_digest == hashlib.sha256(capsule).hexdigest()
 
 
 def test_parsers_distinguish_empty_metrics_and_missing_target_kernel():

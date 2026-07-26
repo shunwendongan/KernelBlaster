@@ -172,6 +172,8 @@ class SandboxPolicy:
             "TORCH_CUDA_ARCH_LIST": compute,
             "CMAKE_CUDA_ARCHITECTURES": digits,
             "CUDAARCHS": digits,
+            "PYTHONPATH": "/opt/kernelblaster",
+            "TRITON_CACHE_DIR": "/work/triton-cache",
         }
 
 
@@ -256,10 +258,10 @@ def _bundle_files(payload: bytes, prefix: str) -> dict[str, bytes]:
     return files
 
 
-def _output_names(stage: GpuJobStage) -> set[str]:
+def _output_names(stage: GpuJobStage, *, generated_v2: bool = False) -> set[str]:
     names = {"stdout.log", "stderr.log", "result.json"}
     if stage is GpuJobStage.COMPILE:
-        names.add("candidate")
+        names.add("module.cubin" if generated_v2 else "candidate")
     if stage is GpuJobStage.EVENTS:
         names.add("measurement.json")
     if stage is GpuJobStage.CORRECTNESS:
@@ -268,10 +270,10 @@ def _output_names(stage: GpuJobStage) -> set[str]:
 
 
 def _read_output_archive(
-    payload: bytes, *, stage: GpuJobStage, policy: SandboxPolicy
+    payload: bytes, *, stage: GpuJobStage, policy: SandboxPolicy, generated_v2: bool = False
 ) -> dict[str, bytes]:
     """Reject output traversal, links, devices, unknown names, and oversize files."""
-    allowed = _output_names(stage)
+    allowed = _output_names(stage, generated_v2=generated_v2)
     limits = {
         "stdout.log": policy.stdout_bytes,
         "stderr.log": policy.stderr_bytes,
@@ -279,6 +281,7 @@ def _read_output_archive(
         "measurement.json": policy.stdout_bytes,
         "correctness.json": policy.stdout_bytes,
         "candidate": policy.executable_bytes,
+        "module.cubin": policy.executable_bytes,
     }
     outputs: dict[str, bytes] = {}
     with tarfile.open(fileobj=BytesIO(payload), mode="r:*") as archive:
@@ -492,6 +495,7 @@ class DockerSandboxRuntime:
                         self._export_output_archive(job),
                         stage=manifest.stage,
                         policy=self.configuration.policy,
+                        generated_v2=manifest.trusted_bundle_kind == "generated_v2",
                     )
                     if "result.json" in candidate_outputs:
                         outputs = candidate_outputs
@@ -627,10 +631,30 @@ class SandboxStageExecutor:
             if f"private/{profile.driver_path}" not in private_files:
                 raise ValueError("private profile does not contain its declared driver")
             self._validate_v2_profile(profile, private_files)
+            if manifest.trusted_bundle_kind == "generated_v2":
+                from ..candidate_packages.package import validate_candidate_package
+                from ..harness.contracts import TaskSpec
+
+                task = TaskSpec.model_validate_json(private_files["private/task-spec.json"])
+                package = validate_candidate_package(source, task=task)
+                files["candidate_backend.txt"] = package.manifest.backend.value.encode("ascii")
             files.update(private_files)
         else:
             assert manifest.executable_digest is not None
-            files["candidate/candidate"] = await self._download(manifest.executable_digest)
+            if manifest.trusted_bundle_kind == "generated_v2":
+                capsule, private = await asyncio.gather(
+                    self._download(manifest.executable_digest),
+                    self._download(profile.bundle_digest),
+                )
+                from ..candidate_packages.package import validate_candidate_capsule
+
+                validate_candidate_capsule(capsule)
+                private_files = _bundle_files(private, "private")
+                self._validate_v2_profile(profile, private_files)
+                files["candidate/candidate.capsule"] = capsule
+                files.update(private_files)
+            else:
+                files["candidate/candidate"] = await self._download(manifest.executable_digest)
         files["request.json"] = json.dumps(
             {
                 "stage": manifest.stage.value,
@@ -638,6 +662,11 @@ class SandboxStageExecutor:
                 "benchmark_protocol_id": manifest.benchmark_protocol_id,
                 "correctness_protocol_id": profile.correctness_protocol_id,
                 "task_spec_digest": profile.task_spec_digest,
+                "trusted_bundle_kind": manifest.trusted_bundle_kind,
+                "candidate_backend": (
+                    files.get("candidate_backend.txt", b"").decode("ascii") or None
+                ),
+                "workload_id": manifest.workload_id,
                 "driver_path": f"private/{profile.driver_path}",
                 "stdout_bytes": 1024 * 1024,
                 "stderr_bytes": 1024 * 1024,
@@ -683,7 +712,40 @@ class SandboxStageExecutor:
                     await asyncio.shield(asyncio.to_thread(cancel_active))
                 raise
             outputs = execution.outputs
-            if manifest.stage is GpuJobStage.COMPILE and "candidate" in outputs:
+            if (
+                manifest.stage is GpuJobStage.COMPILE
+                and manifest.trusted_bundle_kind == "generated_v2"
+                and "module.cubin" in outputs
+            ):
+                from ..candidate_packages.package import (
+                    build_candidate_capsule,
+                    validate_candidate_package,
+                )
+                from ..harness.contracts import TaskSpec
+
+                assert manifest.source_bundle_digest is not None
+                assert manifest.private_evaluation_profile_id is not None
+                profile = self.profiles.get(manifest.private_evaluation_profile_id)
+                source, private = await asyncio.gather(
+                    self._download(manifest.source_bundle_digest),
+                    self._download(profile.bundle_digest),
+                )
+                private_files = _bundle_files(private, "private")
+                task = TaskSpec.model_validate_json(private_files["private/task-spec.json"])
+                package = validate_candidate_package(source, task=task)
+                capsule = build_candidate_capsule(
+                    package,
+                    module=outputs["module.cubin"],
+                    target_arch=manifest.target_arch,
+                    compiler_id=f"{package.manifest.backend.value}:fixed-aot-v1",
+                )
+                digest = await self._upload(
+                    capsule,
+                    media_type="application/x-kernelblaster-candidate-capsule",
+                    schema="candidate-capsule/v1",
+                )
+                artifacts[digest] = "candidate_capsule"
+            elif manifest.stage is GpuJobStage.COMPILE and "candidate" in outputs:
                 digest = await self._upload(
                     outputs["candidate"],
                     media_type="application/x-executable",
@@ -721,6 +783,36 @@ class SandboxStageExecutor:
                     schema="correctness-result/v2",
                 )
                 artifacts[digest] = "correctness_summary"
+                if (
+                    manifest.trusted_bundle_kind == "generated_v2"
+                    and parsed.passed
+                    and execution.reason is GpuReasonCode.NONE
+                ):
+                    from ..candidate_packages import build_profiler_replay_capsule
+
+                    assert manifest.executable_digest is not None
+                    assert manifest.private_evaluation_profile_id is not None
+                    profile = self.profiles.get(
+                        manifest.private_evaluation_profile_id
+                    )
+                    candidate_payload, private_payload = await asyncio.gather(
+                        self._download(manifest.executable_digest),
+                        self._download(profile.bundle_digest),
+                    )
+                    private_files = _bundle_files(private_payload, "private")
+                    replay = build_profiler_replay_capsule(
+                        candidate_payload,
+                        task_payload=private_files["private/task-spec.json"],
+                        case_payload=private_files["private/case-bundle.json"],
+                    )
+                    replay_digest = await self._upload(
+                        replay,
+                        media_type=(
+                            "application/x-kernelblaster-candidate-profiler-capsule"
+                        ),
+                        schema="candidate-profiler-capsule/v1",
+                    )
+                    artifacts[replay_digest] = "profiler_replay"
             status = (
                 GpuJobStatus.SUCCEEDED
                 if execution.reason is GpuReasonCode.NONE
@@ -747,8 +839,14 @@ class SandboxStageExecutor:
             raise
         except KeyError:
             reason = GpuReasonCode.SANDBOX_VIOLATION
-        except Exception:
-            reason = GpuReasonCode.SANDBOX_UNAVAILABLE
+        except Exception as error:
+            from ..candidate_packages import BackendUnsupportedError
+
+            reason = (
+                GpuReasonCode.BACKEND_UNSUPPORTED
+                if isinstance(error, BackendUnsupportedError)
+                else GpuReasonCode.SANDBOX_UNAVAILABLE
+            )
         return GpuJobResult(
             job_id=manifest.job_id,
             run_id=manifest.run_id,

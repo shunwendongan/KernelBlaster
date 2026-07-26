@@ -340,6 +340,8 @@ class SandboxCandidateEvaluator:
         confirmation_sessions: int = 5,
         timeout_seconds: float = 10 * 60,
         policy: FunnelPolicy | None = None,
+        trusted_bundle_kind: str = "generated_v1",
+        task: Any | None = None,
     ) -> None:
         if not private_evaluation_profile_id.strip():
             raise ValueError("sandbox CandidateEvaluator requires a private profile ID")
@@ -352,6 +354,10 @@ class SandboxCandidateEvaluator:
         self.confirmation_sessions = confirmation_sessions
         self.timeout_seconds = timeout_seconds
         self.policy = policy or FunnelPolicy()
+        if trusted_bundle_kind not in {"generated_v1", "generated_v2"}:
+            raise ValueError("sandbox evaluator supports generated_v1 or generated_v2")
+        self.trusted_bundle_kind = trusted_bundle_kind
+        self.task = task
         self._cache: dict[str, CandidateEvaluation] = {}
         self._source_kernels: dict[str, tuple[str, ...]] = {}
         self._lock = asyncio.Lock()
@@ -401,7 +407,7 @@ class SandboxCandidateEvaluator:
             "deadline": (
                 datetime.now(timezone.utc) + timedelta(seconds=self.timeout_seconds)
             ).isoformat(),
-            "trusted_bundle_kind": "generated_v1",
+            "trusted_bundle_kind": self.trusted_bundle_kind,
             "private_evaluation_profile_id": self.private_evaluation_profile_id,
         }
         if stage != "compile":
@@ -452,18 +458,51 @@ class SandboxCandidateEvaluator:
         return float(value)
 
     async def evaluate(self, filepath: Path) -> CandidateEvaluation:
+        if self.trusted_bundle_kind == "generated_v2":
+            if self.task is None:
+                raise ValueError("generated_v2 requires a bound TaskSpec")
+            return await self.evaluate_package(filepath, task=self.task)
         source = filepath.read_bytes()
         raw_digest = hashlib.sha256(source).hexdigest()
+        bundle = build_deterministic_bundle({"candidate.cu": source})
+        return await self._evaluate_bundle(
+            raw_digest=raw_digest,
+            bundle=bundle,
+            schema="gpu-source-bundle/v1",
+            kernel_names=candidate_kernel_names(source.decode("utf-8", errors="replace")),
+        )
+
+    async def evaluate_package(self, filepath: Path, *, task: Any) -> CandidateEvaluation:
+        if self.trusted_bundle_kind != "generated_v2":
+            raise ValueError("CandidatePackage v2 requires the generated_v2 evaluator")
+        from .candidate_packages import validate_candidate_package
+
+        bundle = filepath.read_bytes()
+        package = validate_candidate_package(bundle, task=task)
+        return await self._evaluate_bundle(
+            raw_digest=package.digest,
+            bundle=bundle,
+            schema="candidate-package/v2",
+            kernel_names=tuple(item.name for item in package.launch_plan.kernels),
+        )
+
+    async def _evaluate_bundle(
+        self,
+        *,
+        raw_digest: str,
+        bundle: bytes,
+        schema: str,
+        kernel_names: tuple[str, ...],
+    ) -> CandidateEvaluation:
         async with self._lock:
             cached = self._cache.get(raw_digest)
             if cached is not None:
                 return cached
             await self._ensure_run()
-            bundle = build_deterministic_bundle({"candidate.cu": source})
             uploaded = await self.control.upload(
                 bundle,
                 media_type="application/x-tar",
-                schema="gpu-source-bundle/v1",
+                schema=schema,
             )
             source_digest = str(uploaded.get("digest") or "")
             if source_digest != hashlib.sha256(bundle).hexdigest():
@@ -472,9 +511,7 @@ class SandboxCandidateEvaluator:
                 candidate_id=raw_digest,
                 source_digest=source_digest,
             )
-            self._source_kernels[source_digest] = candidate_kernel_names(
-                source.decode("utf-8", errors="replace")
-            )
+            self._source_kernels[source_digest] = kernel_names
 
             compile_job = await self._job(
                 evaluation,
@@ -485,7 +522,9 @@ class SandboxCandidateEvaluator:
             evaluation.artifact_roles.update(_artifact_roles(compile_job))
             evaluation.execution_status = _job_status(compile_job)
             evaluation.reason_code = _job_reason(compile_job)
-            evaluation.executable_digest = _artifact_for_role(compile_job, "executable")
+            evaluation.executable_digest = _artifact_for_role(
+                compile_job, "executable"
+            ) or _artifact_for_role(compile_job, "candidate_capsule")
             compile_log = _artifact_for_role(compile_job, "compile_log")
             if compile_log:
                 raw_log_bytes = await self.control.download(compile_log)
@@ -577,9 +616,21 @@ class SandboxCandidateEvaluator:
         kernel_filter: str,
     ) -> dict[str, Any]:
         try:
+            artifact_digest = evaluation.executable_digest
+            if self.trusted_bundle_kind == "generated_v2":
+                artifact_digest = next(
+                    (
+                        digest
+                        for digest, role in evaluation.artifact_roles.items()
+                        if role == "profiler_replay"
+                    ),
+                    None,
+                )
+                if artifact_digest is None:
+                    raise ValueError("correctness-gated profiler replay is unavailable")
             payload = await self.control.profile(
                 {
-                    "artifact_digest": evaluation.executable_digest,
+                    "artifact_digest": artifact_digest,
                     "plan_id": plan_id,
                     "kernel_filter": kernel_filter,
                     "deadline": (

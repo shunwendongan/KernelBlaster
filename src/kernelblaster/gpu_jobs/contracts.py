@@ -47,6 +47,7 @@ class GpuReasonCode(str, Enum):
     SANDBOX_VIOLATION = "sandbox_violation"
     GPU_RECOVERY_FAILED = "gpu_recovery_failed"
     SANDBOX_UNAVAILABLE = "sandbox_unavailable"
+    BACKEND_UNSUPPORTED = "backend_unsupported"
 
 
 class ResourceLimits(BaseModel):
@@ -72,6 +73,9 @@ class GpuJobManifest(BaseModel):
     private_evaluation_profile_id: str | None = Field(
         default=None, min_length=1, max_length=128
     )
+    workload_id: str | None = Field(
+        default=None, pattern=r"^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"
+    )
     target_arch: str
     benchmark_protocol_id: str = Field(
         min_length=1,
@@ -80,7 +84,9 @@ class GpuJobManifest(BaseModel):
     )
     resource_limits: ResourceLimits = Field(default_factory=ResourceLimits)
     deadline: datetime
-    trusted_bundle_kind: Literal["trusted_smoke_v1", "generated_v1"] = "trusted_smoke_v1"
+    trusted_bundle_kind: Literal[
+        "trusted_smoke_v1", "generated_v1", "generated_v2"
+    ] = "trusted_smoke_v1"
 
     @model_validator(mode="after")
     def validate_stage_inputs(self) -> "GpuJobManifest":
@@ -94,13 +100,15 @@ class GpuJobManifest(BaseModel):
             raise ValueError("deadline must be timezone-aware")
         if self.deadline.astimezone(timezone.utc) <= datetime.now(timezone.utc):
             raise ValueError("deadline_exceeded")
-        if self.trusted_bundle_kind == "generated_v1":
+        if self.trusted_bundle_kind in {"generated_v1", "generated_v2"}:
             if self.private_evaluation_profile_id is None:
                 raise ValueError("generated jobs require private_evaluation_profile_id")
             if self.driver_digest is not None:
                 raise ValueError("generated jobs may not accept driver_digest")
         elif self.private_evaluation_profile_id is not None:
             raise ValueError("trusted jobs may not accept private_evaluation_profile_id")
+        if self.workload_id is not None and self.stage is not GpuJobStage.EVENTS:
+            raise ValueError("workload_id is valid only for Events jobs")
 
         if self.stage is GpuJobStage.COMPILE:
             if self.source_bundle_digest is None:

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KernelBlaster portable run bundle",
+  "type": "object",
+  "required": ["schema_version", "content_hash", "snapshot", "payloads"],
+  "properties": {
+    "schema_version": {"const": "run-bundle/v1"},
+    "content_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "snapshot": {"type": "object"},
+    "payloads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["digest", "path", "sha256", "size_bytes"],
+        "properties": {
+          "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "path": {"type": "string", "pattern": "^payloads/[0-9a-f]{64}$"},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "size_bytes": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": false
+      }
+    },
+    "incomplete": {"type": "boolean"}
+  },
+  "additionalProperties": false
+}

@@ -44,16 +44,16 @@ def detect_gpu_capabilities(
         [
             "nvidia-smi",
             f"--id={logical_id}",
-            "--query-gpu=name,memory.total,memory.free,driver_version,compute_cap",
+            "--query-gpu=name,uuid,memory.total,memory.free,driver_version,compute_cap",
             "--format=csv,noheader,nounits",
         ]
     ).decode("utf-8", errors="replace").strip()
     fields = [field.strip() for field in query.split(",")]
-    if len(fields) != 5:
+    if len(fields) != 6:
         raise RuntimeError(
-            "nvidia-smi did not return name,total/free memory,driver,compute capability"
+            "nvidia-smi did not return name,uuid,total/free memory,driver,compute capability"
         )
-    name, memory_mib, free_memory_mib, driver_version, compute_capability = fields
+    name, gpu_uuid, memory_mib, free_memory_mib, driver_version, compute_capability = fields
     if not re.fullmatch(r"[0-9]+\.[0-9]+", compute_capability):
         raise RuntimeError("GPU compute capability could not be detected")
     target_arch = "sm_" + compute_capability.replace(".", "")
@@ -74,11 +74,13 @@ def detect_gpu_capabilities(
             target_arch=target_arch,
             total_memory_bytes=int(memory_mib) * 1024 * 1024,
             free_memory_bytes=int(free_memory_mib) * 1024 * 1024,
+            uuid=gpu_uuid or None,
         ),
         runtime=GpuRuntimeCapability(
             cuda_version=_cuda_version(runner),
             driver_version=driver_version,
             image_digest=environment.get("KERNELBLASTER_SUPERVISOR_IMAGE_DIGEST") or None,
+            runtime_id=environment.get("KERNELBLASTER_RUNTIME_ID") or None,
         ),
         max_concurrent_jobs=1,
         generated_jobs_enabled=generated in {"1", "true", "yes", "on"},

@@ -30,10 +30,11 @@ from src.kernelblaster.preflight.runner import (  # noqa: E402
     PreflightConfiguration,
     PreflightRunner,
 )
+from src.kernelblaster.portability import load_profile  # noqa: E402
 
 
 PREFLIGHT_MARKER = "KERNELBLASTER_PREFLIGHT_JSON "
-PREFLIGHT_MODEL = "gpt-5.6-sol"
+PREFLIGHT_MODEL = "gpt-5.6-sol"  # fallback only; profiles and environment override it
 
 
 def _default_output_dir() -> Path:
@@ -129,8 +130,9 @@ async def _run(args: argparse.Namespace) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", default=PREFLIGHT_MODEL, choices=(PREFLIGHT_MODEL,))
-    parser.add_argument("--gpu", default="rtx3080")
+    parser.add_argument("--profile", type=Path, default=None)
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--gpu", default=None, help="Evidence label only; use auto or a profile value.")
     parser.add_argument("--control-url", default="http://127.0.0.1:8000")
     parser.add_argument("--control-token", default=None)
     parser.add_argument(
@@ -155,7 +157,7 @@ def main() -> int:
             os.getenv("KERNELBLASTER_PREFLIGHT_MIN_FREE_VRAM_BYTES", str(2 * 1024**3))
         ),
     )
-    parser.add_argument("--provider-timeout-seconds", type=float, default=180)
+    parser.add_argument("--provider-timeout-seconds", type=float, default=None)
     parser.add_argument(
         "--env-file",
         type=Path,
@@ -168,6 +170,20 @@ def main() -> int:
     )
     parser.add_argument("--output-dir", type=Path, default=_default_output_dir())
     args = parser.parse_args()
+    profile = load_profile(args.profile)
+
+    def configured(cli_value, environment_key: str, profile_key: str, fallback):
+        if cli_value is not None:
+            return cli_value
+        if os.getenv(environment_key):
+            return os.environ[environment_key]
+        return profile.get(profile_key, fallback)
+
+    args.model = configured(args.model, "KERNELBLASTER_PREFLIGHT_MODEL", "model", os.getenv("MODEL", PREFLIGHT_MODEL))
+    args.gpu = configured(args.gpu, "KERNELBLASTER_GPU_LABEL", "gpu", "auto")
+    args.provider_timeout_seconds = float(
+        configured(args.provider_timeout_seconds, "KERNELBLASTER_PREFLIGHT_PROVIDER_TIMEOUT_SECONDS", "provider_timeout_seconds", 180)
+    )
     if args.env_file is not None:
         load_dotenv(args.env_file.expanduser(), override=False)
     args.control_token = args.control_token or os.getenv("KERNELBLASTER_CONTROL_TOKEN")

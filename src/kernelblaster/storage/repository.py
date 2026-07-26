@@ -148,6 +148,41 @@ class JobRepository:
                     "INSERT INTO schema_migrations(version, name, applied_at) VALUES (1, ?, ?)",
                     ("initial_state_store", _timestamp()),
                 )
+            if 2 not in applied:
+                connection.executescript(
+                    """
+                    CREATE TABLE instances (
+                        id TEXT PRIMARY KEY,
+                        created_at TEXT NOT NULL,
+                        identity_json TEXT NOT NULL
+                    );
+                    CREATE TABLE run_portability (
+                        run_id TEXT PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
+                        source_instance_id TEXT REFERENCES instances(id),
+                        target_id TEXT NOT NULL,
+                        target_arch TEXT,
+                        audit_fingerprint TEXT,
+                        comparison_group TEXT,
+                        content_hash TEXT,
+                        imported_bundle_hash TEXT,
+                        created_at TEXT NOT NULL
+                    );
+                    CREATE UNIQUE INDEX one_portable_content_hash
+                    ON run_portability(run_id, content_hash) WHERE content_hash IS NOT NULL;
+                    CREATE TABLE bundle_imports (
+                        bundle_hash TEXT PRIMARY KEY,
+                        content_hash TEXT NOT NULL,
+                        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+                        source_instance_id TEXT,
+                        imported_at TEXT NOT NULL,
+                        manifest_json TEXT NOT NULL
+                    );
+                    """
+                )
+                connection.execute(
+                    "INSERT INTO schema_migrations(version, name, applied_at) VALUES (2, ?, ?)",
+                    ("portable_runs_and_bundle_imports", _timestamp()),
+                )
 
     def create_run(self, run_id: str, *, status: str = "running", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         now = _timestamp()
@@ -180,6 +215,305 @@ class JobRepository:
         """Delete DB references only; immutable CAS payloads remain available."""
         with self._transaction(immediate=True) as connection:
             connection.execute("DELETE FROM runs WHERE id = ?", (run_id,))
+
+    def register_instance(self, identity: dict[str, Any]) -> dict[str, Any]:
+        """Persist a stable local instance identity without accepting a rewrite."""
+        instance_id = str(identity.get("instance_id") or "")
+        if not instance_id:
+            raise ValueError("instance_id is required")
+        payload = _json(identity)
+        with self._transaction(immediate=True) as connection:
+            connection.execute(
+                """INSERT INTO instances(id, created_at, identity_json) VALUES (?, ?, ?)
+                ON CONFLICT(id) DO NOTHING""",
+                (instance_id, str(identity.get("created_at") or _timestamp()), payload),
+            )
+            row = connection.execute("SELECT * FROM instances WHERE id = ?", (instance_id,)).fetchone()
+        assert row is not None
+        result = dict(row)
+        result["identity"] = json.loads(result.pop("identity_json"))
+        return result
+
+    def bind_run_portability(
+        self,
+        *,
+        run_id: str,
+        source_instance_id: str | None,
+        target_id: str = "local",
+        target_arch: str | None = None,
+        audit_fingerprint: str | None = None,
+        comparison_group: str | None = None,
+        content_hash: str | None = None,
+        imported_bundle_hash: str | None = None,
+    ) -> dict[str, Any]:
+        """Bind a run once; changing a locked target or content identity is rejected."""
+        with self._transaction(immediate=True) as connection:
+            if connection.execute("SELECT 1 FROM runs WHERE id = ?", (run_id,)).fetchone() is None:
+                raise KeyError(f"run {run_id} does not exist")
+            if source_instance_id is not None and connection.execute(
+                "SELECT 1 FROM instances WHERE id = ?", (source_instance_id,)
+            ).fetchone() is None:
+                raise KeyError(f"instance {source_instance_id} does not exist")
+            existing = connection.execute(
+                "SELECT * FROM run_portability WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if existing is not None:
+                for key, value in {
+                    "source_instance_id": source_instance_id,
+                    "target_id": target_id,
+                    "target_arch": target_arch,
+                    "audit_fingerprint": audit_fingerprint,
+                    "comparison_group": comparison_group,
+                    "content_hash": content_hash,
+                    "imported_bundle_hash": imported_bundle_hash,
+                }.items():
+                    if value is not None and existing[key] is not None and existing[key] != value:
+                        raise ValueError(f"portable run {run_id} is already locked to a different {key}")
+                row = existing
+            else:
+                connection.execute(
+                    """INSERT INTO run_portability(
+                        run_id, source_instance_id, target_id, target_arch, audit_fingerprint,
+                        comparison_group, content_hash, imported_bundle_hash, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        run_id,
+                        source_instance_id,
+                        target_id,
+                        target_arch,
+                        audit_fingerprint,
+                        comparison_group,
+                        content_hash,
+                        imported_bundle_hash,
+                        _timestamp(),
+                    ),
+                )
+                row = connection.execute("SELECT * FROM run_portability WHERE run_id = ?", (run_id,)).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def get_run_portability(self, run_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT * FROM run_portability WHERE run_id = ?", (run_id,)).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_runs(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM runs ORDER BY created_at, id").fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["metadata"] = json.loads(item.pop("metadata_json"))
+            result.append(item)
+        return result
+
+    def snapshot_run(self, run_id: str) -> dict[str, Any]:
+        """Return a JSON-safe, deterministic snapshot of one run and its evidence."""
+        run = self.get_run(run_id)
+        portability = self.get_run_portability(run_id)
+        with self._connect() as connection:
+            instance = None
+            if portability and portability.get("source_instance_id"):
+                row = connection.execute(
+                    "SELECT * FROM instances WHERE id = ?", (portability["source_instance_id"],)
+                ).fetchone()
+                if row is not None:
+                    instance = dict(row)
+                    instance["identity"] = json.loads(instance.pop("identity_json"))
+            jobs = []
+            for row in connection.execute(
+                "SELECT * FROM jobs WHERE run_id = ? ORDER BY created_at, id", (run_id,)
+            ).fetchall():
+                job = self._job_row(row)
+                attempts = []
+                for attempt in connection.execute(
+                    "SELECT * FROM job_attempts WHERE job_id = ? ORDER BY ordinal", (job["id"],)
+                ).fetchall():
+                    item = dict(attempt)
+                    item["result"] = json.loads(item.pop("result_json") or "{}")
+                    attempts.append(item)
+                job["attempts"] = attempts
+                jobs.append(job)
+            run_artifacts = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT digest, role, created_at FROM run_artifacts WHERE run_id = ? ORDER BY digest, role",
+                    (run_id,),
+                ).fetchall()
+            ]
+            job_artifacts = [
+                dict(row)
+                for row in connection.execute(
+                    """SELECT job_artifacts.job_id, job_attempts.ordinal AS attempt_ordinal,
+                              job_artifacts.digest, job_artifacts.role, job_artifacts.created_at
+                       FROM job_artifacts
+                       JOIN jobs ON jobs.id = job_artifacts.job_id
+                       LEFT JOIN job_attempts ON job_attempts.id = job_artifacts.attempt_id
+                       WHERE jobs.run_id = ?
+                       ORDER BY job_artifacts.job_id, attempt_ordinal, job_artifacts.digest, job_artifacts.role""",
+                    (run_id,),
+                ).fetchall()
+            ]
+            digests = sorted({item["digest"] for item in run_artifacts + job_artifacts})
+            artifacts = []
+            for digest in digests:
+                row = connection.execute("SELECT * FROM artifacts WHERE digest = ?", (digest,)).fetchone()
+                if row is None:
+                    raise KeyError(f"indexed artifact {digest} does not exist")
+                artifacts.append(dict(row))
+        return {
+            "run": run,
+            "portability": portability,
+            "instance": instance,
+            "jobs": jobs,
+            "run_artifacts": run_artifacts,
+            "job_artifacts": job_artifacts,
+            "artifacts": artifacts,
+        }
+
+    def import_portable_snapshot(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        bundle_hash: str,
+        content_hash: str,
+    ) -> dict[str, Any]:
+        """Import an already validated snapshot in one SQLite transaction.
+
+        CAS promotion happens before this call.  If the transaction fails, newly
+        written CAS blobs remain unreferenced and therefore cannot appear as a
+        partially imported run.
+        """
+        run = dict(snapshot.get("run") or {})
+        run_id = str(run.get("id") or "")
+        if not run_id:
+            raise ValueError("portable snapshot has no run id")
+        portability = dict(snapshot.get("portability") or {})
+        source_instance_id = portability.get("source_instance_id")
+        instance = snapshot.get("instance")
+        with self._transaction(immediate=True) as connection:
+            prior_bundle = connection.execute(
+                "SELECT run_id, content_hash FROM bundle_imports WHERE bundle_hash = ?", (bundle_hash,)
+            ).fetchone()
+            if prior_bundle is not None:
+                if prior_bundle["content_hash"] != content_hash:
+                    raise ValueError("bundle hash is already associated with different content")
+                return {"run": self.get_run(prior_bundle["run_id"]), "idempotent": True}
+            existing = connection.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+            if existing is not None:
+                prior = connection.execute(
+                    "SELECT content_hash FROM run_portability WHERE run_id = ?", (run_id,)
+                ).fetchone()
+                if prior is None or prior["content_hash"] != content_hash:
+                    raise ValueError("run id already exists with different portable content")
+                connection.execute(
+                    """INSERT INTO bundle_imports(bundle_hash, content_hash, run_id, source_instance_id,
+                       imported_at, manifest_json) VALUES (?, ?, ?, ?, ?, ?)""",
+                    (bundle_hash, content_hash, run_id, source_instance_id, _timestamp(), _json(snapshot)),
+                )
+                return {"run": self.get_run(run_id), "idempotent": True}
+            if instance and source_instance_id:
+                identity = dict(instance.get("identity") or {})
+                connection.execute(
+                    "INSERT OR IGNORE INTO instances(id, created_at, identity_json) VALUES (?, ?, ?)",
+                    (source_instance_id, str(instance.get("created_at") or _timestamp()), _json(identity)),
+                )
+            for artifact in snapshot.get("artifacts") or []:
+                digest = str(artifact.get("digest") or "")
+                if connection.execute("SELECT 1 FROM artifacts WHERE digest = ?", (digest,)).fetchone() is None:
+                    raise KeyError(f"CAS artifact {digest} must be registered before import")
+            connection.execute(
+                "INSERT INTO runs(id, status, created_at, finished_at, metadata_json) VALUES (?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    str(run.get("status") or "completed"),
+                    str(run.get("created_at") or _timestamp()),
+                    run.get("finished_at"),
+                    _json(dict(run.get("metadata") or {})),
+                ),
+            )
+            connection.execute(
+                """INSERT INTO run_portability(
+                    run_id, source_instance_id, target_id, target_arch, audit_fingerprint,
+                    comparison_group, content_hash, imported_bundle_hash, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    run_id,
+                    source_instance_id,
+                    str(portability.get("target_id") or "imported"),
+                    portability.get("target_arch"),
+                    portability.get("audit_fingerprint"),
+                    portability.get("comparison_group"),
+                    content_hash,
+                    bundle_hash,
+                    _timestamp(),
+                ),
+            )
+            job_ids: dict[str, str] = {}
+            attempt_ids: dict[tuple[str, int], int] = {}
+            for source_job in snapshot.get("jobs") or []:
+                source_job_id = str(source_job.get("id") or "")
+                if not source_job_id:
+                    raise ValueError("portable snapshot contains a job without id")
+                job_id = source_job_id
+                if connection.execute("SELECT 1 FROM jobs WHERE id = ?", (job_id,)).fetchone() is not None:
+                    job_id = uuid.uuid4().hex
+                job_ids[source_job_id] = job_id
+                connection.execute(
+                    """INSERT INTO jobs(id, run_id, idempotency_key, kind, status, payload_json,
+                       created_at, updated_at, terminal_reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        job_id,
+                        run_id,
+                        str(source_job.get("idempotency_key") or source_job_id),
+                        str(source_job.get("kind") or "imported"),
+                        str(source_job.get("status") or "succeeded"),
+                        _json(dict(source_job.get("payload") or {})),
+                        str(source_job.get("created_at") or _timestamp()),
+                        str(source_job.get("updated_at") or _timestamp()),
+                        source_job.get("terminal_reason"),
+                    ),
+                )
+                for attempt in source_job.get("attempts") or []:
+                    cursor = connection.execute(
+                        """INSERT INTO job_attempts(job_id, ordinal, status, worker_id, started_at, finished_at, result_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            job_id,
+                            int(attempt.get("ordinal") or 1),
+                            str(attempt.get("status") or "succeeded"),
+                            attempt.get("worker_id"),
+                            str(attempt.get("started_at") or _timestamp()),
+                            attempt.get("finished_at"),
+                            _json(dict(attempt.get("result") or {})),
+                        ),
+                    )
+                    attempt_ids[(source_job_id, int(attempt.get("ordinal") or 1))] = int(cursor.lastrowid)
+            for item in snapshot.get("run_artifacts") or []:
+                connection.execute(
+                    "INSERT OR IGNORE INTO run_artifacts(run_id, digest, role, created_at) VALUES (?, ?, ?, ?)",
+                    (run_id, item["digest"], item["role"], item.get("created_at") or _timestamp()),
+                )
+            for item in snapshot.get("job_artifacts") or []:
+                source_job_id = str(item["job_id"])
+                ordinal = item.get("attempt_ordinal")
+                connection.execute(
+                    """INSERT OR IGNORE INTO job_artifacts(job_id, attempt_id, digest, role, created_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        job_ids[source_job_id],
+                        attempt_ids.get((source_job_id, int(ordinal))) if ordinal is not None else None,
+                        item["digest"],
+                        item["role"],
+                        item.get("created_at") or _timestamp(),
+                    ),
+                )
+            connection.execute(
+                """INSERT INTO bundle_imports(bundle_hash, content_hash, run_id, source_instance_id,
+                   imported_at, manifest_json) VALUES (?, ?, ?, ?, ?, ?)""",
+                (bundle_hash, content_hash, run_id, source_instance_id, _timestamp(), _json(snapshot)),
+            )
+        return {"run": self.get_run(run_id), "idempotent": False}
 
     def submit_job(
         self,

@@ -39,6 +39,10 @@ app = FastAPI(title="KernelBlaster Control")
 class RunSubmission(BaseModel):
     run_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+    target_id: str = "local"
+    target_arch: str | None = None
+    audit_fingerprint: str | None = None
+    comparison_group: str | None = None
 
 
 class JobSubmission(BaseModel):
@@ -95,7 +99,17 @@ async def create_run(
     submission: RunSubmission, _authorized: None = Depends(require_control_token)
 ) -> dict[str, Any]:
     run_id = submission.run_id or uuid.uuid4().hex
-    return _state_store().repository.create_run(run_id, metadata=submission.metadata)
+    store = _state_store()
+    run = store.repository.create_run(run_id, metadata=submission.metadata)
+    portability = store.repository.bind_run_portability(
+        run_id=run_id,
+        source_instance_id=store.instance_identity.instance_id,
+        target_id=submission.target_id,
+        target_arch=submission.target_arch,
+        audit_fingerprint=submission.audit_fingerprint,
+        comparison_group=submission.comparison_group,
+    )
+    return {**run, "portability": portability}
 
 
 @app.get("/v1/runs/{run_id}")

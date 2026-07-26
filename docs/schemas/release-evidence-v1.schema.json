@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KernelBlaster release evidence",
+  "type": "object",
+  "required": ["schema_version", "scope", "generated_at", "commit", "profile", "profile_sha256", "schema_digests", "evidence"],
+  "properties": {
+    "schema_version": {"const": "release-evidence/v1"},
+    "scope": {"type": "string", "minLength": 1},
+    "generated_at": {"type": "string", "minLength": 1},
+    "commit": {"type": "string", "minLength": 1},
+    "profile": {"type": "object"},
+    "profile_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "schema_digests": {
+      "type": "object",
+      "additionalProperties": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    },
+    "evidence": {"type": "object"}
+  },
+  "additionalProperties": false
+}

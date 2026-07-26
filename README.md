@@ -236,10 +236,18 @@ stability. PyTorch autograd is a backward oracle and independent baseline, not
 a mandatory Custom Op gate. See [the generic Harness guide](docs/generic-harness.md)
 for external private cases, signed Adapter image builds, and the RTX 3080 smoke.
 
+Independent upstream/PyTorch/Triton/vendor-library reference columns, strict
+multi-workload confirmation, per-hardware winners, and CUDA/Triton convergence
+are described in [the Baseline Provider guide](docs/baseline-provider.md).
+
+Device-only CUDA/Triton packages, controlled launch plans, immutable capsules,
+correctness-gated Profiler replay, and the four-plan sanitizer qualification
+gate are specified in [the AOT Candidate Runtime guide](docs/candidate-package-runtime.md).
+
 ### Independent fixed-plan Profiler Worker
 
 `profiler-worker` is a separate token audience and network boundary. Control
-routes only correctness-passed executable artifact digests, one of the fixed
+routes only correctness-passed executable or fixed replay-capsule digests, one of the fixed
 plan IDs below, a bounded kernel filter, and a deadline; executable paths,
 arbitrary argv, environment dictionaries, and caller-selected output paths are
 rejected by the schema.

@@ -33,12 +33,17 @@ def validate_profiler_token() -> str:
     return _configured_token("PROFILER_TOKEN", "PROFILER")
 
 
+def validate_baseline_token() -> str:
+    return _configured_token("BASELINE_TOKEN", "BASELINE")
+
+
 def validate_token_boundaries() -> None:
     control_token = validate_control_token()
     worker_token = validate_worker_token()
     supervisor_token = validate_supervisor_token()
     profiler_token = validate_profiler_token()
-    tokens = (control_token, worker_token, supervisor_token, profiler_token)
+    baseline_token = validate_baseline_token()
+    tokens = (control_token, worker_token, supervisor_token, profiler_token, baseline_token)
     if any(hmac.compare_digest(left, right) for index, left in enumerate(tokens) for right in tokens[index + 1 :]):
         raise RuntimeError("Control, worker, and supervisor tokens must be different values")
 
@@ -63,6 +68,10 @@ def supervisor_authorization_header() -> dict[str, str]:
 
 def profiler_authorization_header() -> dict[str, str]:
     return {"Authorization": f"Bearer {validate_profiler_token()}"}
+
+
+def baseline_authorization_header() -> dict[str, str]:
+    return {"Authorization": f"Bearer {validate_baseline_token()}"}
 
 
 def _require_token(
@@ -117,14 +126,25 @@ async def require_profiler_token(authorization: str | None = Header(default=None
     )
 
 
+async def require_baseline_token(authorization: str | None = Header(default=None)) -> None:
+    _require_token(
+        authorization,
+        token=validate_baseline_token(),
+        audience="Baseline",
+    )
+
+
 __all__ = [
     "control_authorization_header",
+    "baseline_authorization_header",
     "profiler_authorization_header",
     "require_control_token",
+    "require_baseline_token",
     "require_profiler_token",
     "require_supervisor_token",
     "require_worker_token",
     "validate_control_token",
+    "validate_baseline_token",
     "validate_profiler_token",
     "validate_token_boundaries",
     "validate_supervisor_token",

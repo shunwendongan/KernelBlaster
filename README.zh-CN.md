@@ -199,9 +199,17 @@ PyTorch autograd 只是 backward oracle 与独立 baseline，不是强制 Custom
 外部私有 case、签名 Adapter 镜像构建及 RTX 3080 smoke 见
 [通用 Harness 指南](docs/generic-harness.zh-CN.md)。
 
+独立 upstream/PyTorch/Triton/供应商库参考列、严格多 workload confirmation、
+每硬件 winner 及 CUDA/Triton 收敛规则见
+[Baseline Provider 指南](docs/baseline-provider.zh-CN.md)。
+
+设备代码 CUDA/Triton package、受控 Launch Plan、不可变 capsule、
+correctness-gated Profiler replay 与四项 sanitizer 发布资格见
+[AOT 候选运行时指南](docs/candidate-package-runtime.zh-CN.md)。
+
 ### 独立固定计划 Profiler Worker
 
-`profiler-worker` 使用独立 token audience 与网络边界。Control 只路由已通过 correctness 的 executable artifact digest、下列固定 plan ID、受限 kernel filter 和 deadline；schema 会拒绝 executable 路径、任意 argv、环境字典和调用方指定的输出路径。
+`profiler-worker` 使用独立 token audience 与网络边界。Control 只路由已通过 correctness 的 executable 或固定 replay-capsule digest、下列固定 plan ID、受限 kernel filter 和 deadline；schema 会拒绝 executable 路径、任意 argv、环境字典和调用方指定的输出路径。
 
 - `nsys_timeline_v1`：CUDA/NVTX trace，关闭 CPU sampling；WSL 首次报告没有 GPU 行时，会在该 Job 的临时 HOME 写入 NVIDIA 官方 `CuptiUseRawGpuTimestamps=false` 配置后受控重试一次。
 - `ncu_triage_v1`：SpeedOfLight、LaunchStats、Occupancy。

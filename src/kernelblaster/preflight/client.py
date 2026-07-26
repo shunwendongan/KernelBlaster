@@ -158,5 +158,11 @@ class ControlPlaneClient:
     async def profile(self, request: dict[str, Any]) -> dict[str, Any]:
         return await self.request_json("POST", "/v1/profiles", json_payload=request)
 
+    async def baseline_capabilities(self) -> dict[str, Any]:
+        return await self.request_json("GET", "/v1/baselines/capabilities")
+
+    async def baseline(self, request: dict[str, Any]) -> dict[str, Any]:
+        return await self.request_json("POST", "/v1/baselines", json_payload=request)
+
 
 __all__ = ["ControlApiError", "ControlPlaneClient", "TERMINAL_JOB_STATUSES"]

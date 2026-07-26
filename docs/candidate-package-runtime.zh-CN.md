@@ -48,7 +48,8 @@ docker build --target gpu-job -t local/kernelblaster-gpu-job:pr07e \
 export KERNELBLASTER_GPU_JOB_IMAGE="$(docker image inspect \
   --format '{{.Id}}' local/kernelblaster-gpu-job:pr07e)"
 
-python -m pytest -q -m gpu tests/candidate_packages/test_candidate_package_gpu.py
+KERNELBLASTER_RUN_GPU_TESTS=1 \
+  python -m pytest -q -m gpu tests/candidate_packages/test_candidate_package_gpu.py
 
 KERNELBLASTER_RUN_GPU_SANDBOX_TESTS=1 \
   uv run --with 'docker>=7,<8' --extra dev --extra server \

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -25,9 +26,15 @@ from src.kernelblaster.harness import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+pytestmark = [
+    pytest.mark.gpu,
+    pytest.mark.skipif(
+        os.getenv("KERNELBLASTER_RUN_GPU_TESTS") != "1",
+        reason="set KERNELBLASTER_RUN_GPU_TESTS=1 on a CUDA/Triton GPU host",
+    ),
+]
 
 
-@pytest.mark.gpu
 @pytest.mark.parametrize("number", ("007", "026", "036", "047"))
 def test_fixed_triton_package_aot_replays_without_candidate_python(
     number: str, tmp_path: Path
@@ -87,7 +94,6 @@ def test_fixed_triton_package_aot_replays_without_candidate_python(
     assert result.passed, result.model_dump(mode="json")
 
 
-@pytest.mark.gpu
 @pytest.mark.parametrize(
     "task_id", [task.id for task in core10_task_specs()]
 )

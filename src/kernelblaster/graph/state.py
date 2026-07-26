@@ -25,6 +25,7 @@ from ..config import GPUType
 class GraphState(TypedDict):
     """描述各工作流节点共享且可持久化的任务状态字段。"""
     model: str  # 用于生成的模型
+    task_id: str  # 可序列化的任务标识；运行时客户端仍只存在于图闭包中
     gpu: GPUType  # 用于生成的 GPU 类型
 
     run_cuda: bool  # 是否运行CUDA生成代理

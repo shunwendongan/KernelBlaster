@@ -190,6 +190,15 @@ export KERNELBLASTER_ENABLE_GENERATED_GPU_JOBS=true
 
 私有 manifest 将公开的 `private_evaluation_profile_id` 映射到 CAS bundle 和 driver 路径。它仅以只读方式挂载给 Supervisor；driver 和 seed 内容不属于生成 manifest、LLM prompt 或公开反馈 payload。每个生成候选的 compile、correctness、Events 阶段都会启动一个新的非 root 容器：只读 rootfs、无网络、无 capabilities、只读的单 Job 输入卷及 512 MiB tmpfs。固定限额是 2 vCPU、8 GiB RAM、64 PID，以及分别为 180/60/90 秒。Supervisor 只导入已验证 hash 的白名单输出，并在所有退出路径删除 Job 容器和 staging volume。Docker/GPU 攻击探针使用 `gpu_sandbox` 标记，必须在 AutoDL 或 self-hosted GPU runner 上执行。
 
+### 通用多算子 Harness
+
+版本化 TaskSpec/Adapter/case-bundle runtime 覆盖 Core 10 全部前向与反向，不建立单一
+RMSNorm ABI。结构化 verdict 由可信 Harness 而非候选生成，并检查全部梯度、输入
+mutation、shape/dtype、非有限值、canary、poison、CUDA error 和重复执行稳定性。
+PyTorch autograd 只是 backward oracle 与独立 baseline，不是强制 Custom Op gate。
+外部私有 case、签名 Adapter 镜像构建及 RTX 3080 smoke 见
+[通用 Harness 指南](docs/generic-harness.zh-CN.md)。
+
 ### 独立固定计划 Profiler Worker
 
 `profiler-worker` 使用独立 token audience 与网络边界。Control 只路由已通过 correctness 的 executable artifact digest、下列固定 plan ID、受限 kernel filter 和 deadline；schema 会拒绝 executable 路径、任意 argv、环境字典和调用方指定的输出路径。
@@ -298,6 +307,22 @@ uv run python scripts/run_preflight.py \
 
 自动生成候选默认只使用沙箱。`--execution-backend trusted_local` 仅用于显式、
 可信的开发运行，任何沙箱失败都不会自动回退到该模式。
+
+Agent 运行还必须显式配置任务专用的 Supervisor profile，以及私有 driver 实现的
+固定 Events 协议：
+
+```bash
+export KERNELBLASTER_GENERATED_PRIVATE_PROFILE_ID=<task-private-profile-id>
+export KERNELBLASTER_GENERATED_BENCHMARK_PROTOCOL_ID=generated-agent-v1
+```
+
+每个 source digest 只评估一次。正确候选执行 3-session Events discovery；只有
+任务结束时筛出的 Top-K 执行 5-session 配对确认。NSYS 先于 NCU 运行并提供安全的
+kernel selector。NSYS/NCU 仅属于诊断，不能改写 compile、correctness 或 Events
+状态。原始编译器/Profiler 日志保留在 CAS；Agent 反馈只包含 ptxas registers、
+spill、stack/shared/constant memory、稳定 reason code 和结构化 Profiler 指标。
+RunRecorder schema `4.0` 新增候选、漏斗和诊断预算，同时 manifest loader 继续
+兼容 schema `3.0` 证据。
 
 默认情况下，`scripts/run_single_kernelblaster.sh` 会启动单个使用 CUDA Events 的 KernelBench-CUDA RL 优化任务；如有需要，它还会启动仅监听回环地址的共享 GPU Server。运行输出保存在 `out/<dataset>/<precision>/<experiment>/` 下。
 

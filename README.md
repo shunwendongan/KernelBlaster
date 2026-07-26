@@ -226,6 +226,16 @@ The Supervisor imports only hash-verified allowlisted files and removes the Job
 container and staging volume on every exit path. Docker/GPU attack probes are
 marked `gpu_sandbox` and must run on an AutoDL or self-hosted GPU runner.
 
+### Generic multi-operator Harness
+
+The versioned TaskSpec/Adapter/case-bundle runtime covers Core 10 forward and
+backward without imposing a single RMSNorm ABI. The trusted Harness—not the
+candidate—creates the structured verdict and checks all gradients, mutation,
+shape/dtype, non-finite values, canaries, poison, CUDA errors, and repeat
+stability. PyTorch autograd is a backward oracle and independent baseline, not
+a mandatory Custom Op gate. See [the generic Harness guide](docs/generic-harness.md)
+for external private cases, signed Adapter image builds, and the RTX 3080 smoke.
+
 ### Independent fixed-plan Profiler Worker
 
 `profiler-worker` is a separate token audience and network boundary. Control
@@ -370,6 +380,24 @@ uv run python scripts/run_preflight.py \
 Automatic generated candidates default to the sandbox. The
 `--execution-backend trusted_local` mode is an explicit, trusted development
 choice and is never selected as a fallback.
+
+Agent runs additionally require a task-specific Supervisor profile and the
+fixed Events protocol implemented by that private driver:
+
+```bash
+export KERNELBLASTER_GENERATED_PRIVATE_PROFILE_ID=<task-private-profile-id>
+export KERNELBLASTER_GENERATED_BENCHMARK_PROTOCOL_ID=generated-agent-v1
+```
+
+Each source digest is evaluated once. Correct candidates receive three Events
+discovery sessions; only the task-end Top-K receives five paired confirmation
+sessions. NSYS runs before NCU and supplies the safe kernel selector. NSYS/NCU
+results are diagnostic-only and cannot change compile, correctness, or Events
+status. Raw compiler/profiler logs stay in CAS; Agent feedback contains only
+ptxas registers, spills, stack/shared/constant memory, stable reason codes, and
+structured profiler metrics.
+RunRecorder schema `4.0` adds candidate/funnel/diagnostic budgets while its
+manifest loader remains compatible with schema `3.0` evidence.
 
 By default, `scripts/run_single_kernelblaster.sh` launches a single KernelBench-CUDA RL optimization run with CUDA Events profiling, starts the loopback-only shared GPU server if needed, and writes outputs under `out/<dataset>/<precision>/<experiment>/`.
 

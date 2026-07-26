@@ -22,6 +22,11 @@ import sys
 import time
 from typing import Any
 
+try:  # gpu-job image copies the contract as a deliberately tiny top-level module
+    from harness_contracts import parse_correctness_stdout
+except ImportError:  # repository/test execution
+    from src.kernelblaster.harness.contracts import parse_correctness_stdout
+
 
 INPUT = Path("/input")
 WORK = Path("/work")
@@ -116,6 +121,7 @@ def _command(request: dict[str, Any]) -> list[str]:
             "-O3",
             "-std=c++17",
             f"-arch={request['target_arch']}",
+            "--ptxas-options=-v",
             *sources,
             str(driver),
             "-o",
@@ -139,6 +145,21 @@ def _stage_reason(stage: str, stderr: bytes) -> str:
         "correctness": "correctness_failed",
         "events": "events_failed",
     }[stage]
+
+
+def _validated_correctness(
+    request: dict[str, Any], stdout: bytes
+) -> tuple[bytes | None, bool]:
+    """Return canonical v2 evidence and its verdict; legacy profiles stay compatible."""
+    protocol = str(request.get("correctness_protocol_id") or "legacy-exit-v1")
+    if protocol == "legacy-exit-v1":
+        return None, True
+    if protocol != "generated-correctness-v2":
+        raise ValueError("unsupported correctness protocol")
+    correctness = parse_correctness_stdout(stdout)
+    if correctness.task_spec_digest != request.get("task_spec_digest"):
+        raise ValueError("correctness task binding mismatch")
+    return correctness.canonical_bytes(), correctness.passed
 
 
 def _wait_for_supervisor_export() -> None:
@@ -167,6 +188,16 @@ def main() -> int:
         (OUTPUT / "stdout.log").write_bytes(stdout)
         (OUTPUT / "stderr.log").write_bytes(stderr)
         reason = violation or ("none" if returncode == 0 else _stage_reason(stage, stderr))
+        if reason == "none" and stage == "correctness":
+            try:
+                correctness, passed = _validated_correctness(request, stdout)
+                if correctness is not None:
+                    (OUTPUT / "correctness.json").write_bytes(correctness)
+                if not passed:
+                    reason = "correctness_failed"
+            except (UnicodeDecodeError, ValueError) as error:
+                reason = "correctness_failed"
+                (OUTPUT / "stderr.log").write_bytes(stderr + f"\n{error}".encode())
         if reason == "none" and stage == "events":
             try:
                 measurement = json.loads(stdout.decode("utf-8"))

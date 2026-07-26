@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+from src.kernelblaster.evaluation import SandboxCandidateEvaluator
 from src.kernelblaster.preflight.backends import build_backend_bundle
 from src.kernelblaster.preflight.contracts import (
     AgentCapabilityMode,
@@ -416,15 +417,17 @@ def test_backend_factory_never_falls_back_from_sandbox_to_trusted_local():
         requested=ExecutionBackend.SANDBOX,
         report=report,
         control=control,
+        private_evaluation_profile_id="private-v1",
     )
     assert bundle.execution_backend is ExecutionBackend.SANDBOX
-    with pytest.raises(RuntimeError, match="fallback is disabled"):
-        bundle.create_events_backend(
-            driver_path=None,
-            gpu=None,
-            logger=None,
-            work_dir=None,
-        )
+    evaluator = bundle.create_candidate_evaluator(
+        run_id="run-1",
+        driver_path=None,
+        gpu=None,
+        logger=None,
+        work_dir=None,
+    )
+    assert isinstance(evaluator, SandboxCandidateEvaluator)
 
     unavailable = _report(
         agent_mode=AgentCapabilityMode.UNAVAILABLE,
@@ -440,6 +443,14 @@ def test_backend_factory_never_falls_back_from_sandbox_to_trusted_local():
         build_backend_bundle(
             requested=ExecutionBackend.SANDBOX,
             report=unavailable,
+            control=control,
+            private_evaluation_profile_id="private-v1",
+        )
+
+    with pytest.raises(ValueError, match="private evaluation profile"):
+        build_backend_bundle(
+            requested=ExecutionBackend.SANDBOX,
+            report=report,
             control=control,
         )
 

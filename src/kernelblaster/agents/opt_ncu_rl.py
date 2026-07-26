@@ -27,8 +27,17 @@ import json
 import asyncio
 import sys
 from ..config import config
+from ..evaluation import CandidateEvaluation, CandidateEvaluationError, CandidateEvaluator
 from ..observability import event_context
-from ..outcomes import RunOutcome, RunStatus
+from ..outcomes import (
+    CorrectnessStatus,
+    DiagnosticStatus,
+    ExecutionStatus,
+    ReasonCode,
+    RunOutcome,
+    RunStatus,
+    TimingStatus,
+)
 from ..profiling import ProfilerBackend, ProfilerUnavailable, ProfilingMode
 from ..measurements import (
     Measurement,
@@ -397,6 +406,7 @@ class RLNCUAgent(FeedbackAgent):
         update_frequency: int = 10,  # 每 N 个轨迹更新数据库
         database: Optional[OptimizationDatabase] = None,
         profiler_backend: Optional[ProfilerBackend] = None,
+        candidate_evaluator: Optional[CandidateEvaluator] = None,
     ):
         # 初始化基础反馈代理
         """
@@ -415,7 +425,11 @@ class RLNCUAgent(FeedbackAgent):
         super().__init__(fb_config)
         
         self.test_code_fp = fb_config.test_code_fp
-        self.test_code = fb_config.test_code_fp.read_text()
+        self.test_code = (
+            fb_config.test_code_fp.read_text()
+            if fb_config.test_code_fp is not None and fb_config.test_code_fp.is_file()
+            else ""
+        )
         self.code_to_optimize_fp = code_to_optimize_fp
         self.code_to_optimize = code_to_optimize_fp.read_text()
         
@@ -431,6 +445,11 @@ class RLNCUAgent(FeedbackAgent):
         self.max_rollout_steps = max_rollout_steps
         self.update_frequency = update_frequency
         self.profiler_backend = profiler_backend
+        self.candidate_evaluator = candidate_evaluator
+        self._candidate_evaluations: dict[str, CandidateEvaluation] = {}
+        self._candidate_paths: dict[str, Path] = {}
+        self._path_evaluations: dict[str, CandidateEvaluation] = {}
+        self._baseline_evaluation: CandidateEvaluation | None = None
         
         # RL代理
         self.policy_evaluation_agent = PolicyEvaluationAgent()
@@ -469,6 +488,21 @@ class RLNCUAgent(FeedbackAgent):
         异常:
         ProfilerUnavailable: 输入、外部调用或状态不满足执行要求时抛出。
         """
+        if self.candidate_evaluator is not None:
+            evaluation = await self.candidate_evaluator.evaluate(filepath)
+            self._candidate_evaluations[evaluation.source_digest] = evaluation
+            self._candidate_paths[evaluation.source_digest] = filepath
+            self._path_evaluations[str(filepath.resolve())] = evaluation
+            self.profiling_mode = ProfilingMode.EVENTS_ONLY.value
+            if not evaluation.rankable or evaluation.measurement is None:
+                raise CandidateEvaluationError(evaluation)
+            return (
+                filepath.read_text(encoding="utf-8"),
+                json.dumps(evaluation.public_feedback(), sort_keys=True),
+                "",
+                evaluation.measurement,
+            )
+
         if self.profiler_backend is None:
             annotated, raw_output, stderr, cycles = await self.gather_perf_metrics(filepath)
             return (
@@ -543,6 +577,9 @@ class RLNCUAgent(FeedbackAgent):
             )
             self.initial_measurement = measurement
             self.best_measurement = measurement
+            self._baseline_evaluation = self._path_evaluations.get(
+                str(self.code_to_optimize_fp.resolve())
+            )
 
             # 保留第一个 NCU 日志，以便后续步骤可以执行分析
             self.last_ncu_log = init_ncu_log
@@ -691,6 +728,25 @@ class RLNCUAgent(FeedbackAgent):
             await self._record_completed_trajectory(trajectory)
 
         # 所有任务完成后
+        funnel_result = None
+        if self.candidate_evaluator is not None and self._baseline_evaluation is not None:
+            candidates = [
+                candidate
+                for digest, candidate in self._candidate_evaluations.items()
+                if digest != self._baseline_evaluation.source_digest
+            ]
+            if candidates:
+                funnel_result = await self.candidate_evaluator.finalize(
+                    self._baseline_evaluation,
+                    candidates,
+                )
+                if funnel_result.winner is not None:
+                    winner = funnel_result.winner
+                    winner_path = self._candidate_paths.get(winner.source_digest)
+                    if winner_path is not None:
+                        best_filename = winner_path
+                        best_measurement = winner.measurement
+
         # 保留优化数据库 JSON 的编号快照
         try:
             # 确保当前数据库状态持续存在
@@ -730,13 +786,22 @@ class RLNCUAgent(FeedbackAgent):
             except MeasurementComparisonError as error:
                 preliminary_speedup = None
                 self.agent_logger.warning(f"Cannot rank final result: {error}")
-            performance_gate = {
-                "passed": False,
-                "reason": "Five-session CUDA Events confirmation was not run.",
-            }
+            performance_gate = (
+                funnel_result.performance_gate.to_dict()
+                if funnel_result is not None
+                and funnel_result.performance_gate is not None
+                else {
+                    "passed": False,
+                    "reason": "Five-session CUDA Events confirmation was not run.",
+                }
+            )
             confirmation_error: str | None = None
             confirm_pair = getattr(self.profiler_backend, "confirm_pair", None)
-            if confirm_pair is not None and self.initial_measurement is not None:
+            if (
+                funnel_result is None
+                and confirm_pair is not None
+                and self.initial_measurement is not None
+            ):
                 try:
                     gate_result = await confirm_pair(
                         self.code_to_optimize_fp,
@@ -763,11 +828,21 @@ class RLNCUAgent(FeedbackAgent):
                     status=RunStatus.IMPROVED,
                     artifact_path=final_filename,
                     profiling_mode=self.profiling_mode,
+                    measurement=best_measurement,
+                    execution_status=ExecutionStatus.SUCCEEDED,
+                    correctness_status=CorrectnessStatus.PASSED,
+                    timing_status=TimingStatus.MEASURED,
+                    diagnostic_status=(
+                        funnel_result.winner.diagnostic_status
+                        if funnel_result is not None and funnel_result.winner is not None
+                        else DiagnosticStatus.NOT_REQUESTED
+                    ),
                     metrics={
                         "baseline_measurement": self.initial_measurement.to_dict(),
                         "best_measurement": best_measurement.to_dict(),
                         "search_speedup": preliminary_speedup,
                         "performance_gate": performance_gate,
+                        "funnel": self._funnel_metrics(funnel_result),
                     },
                 )
 
@@ -797,6 +872,16 @@ class RLNCUAgent(FeedbackAgent):
                     "did not confirm an improvement."
                 ),
                 profiling_mode=self.profiling_mode,
+                measurement=best_measurement,
+                execution_status=ExecutionStatus.SUCCEEDED,
+                correctness_status=CorrectnessStatus.PASSED,
+                timing_status=TimingStatus.MEASURED,
+                diagnostic_status=(
+                    funnel_result.winner.diagnostic_status
+                    if funnel_result is not None and funnel_result.winner is not None
+                    else DiagnosticStatus.NOT_REQUESTED
+                ),
+                reason_code=ReasonCode.PERFORMANCE_GATE_FAILED,
                 metrics={
                     "baseline_measurement": (
                         self.initial_measurement.to_dict()
@@ -805,6 +890,7 @@ class RLNCUAgent(FeedbackAgent):
                     "best_measurement": best_measurement.to_dict(),
                     "search_speedup": preliminary_speedup,
                     "performance_gate": performance_gate,
+                    "funnel": self._funnel_metrics(funnel_result),
                 },
             )
 
@@ -850,8 +936,48 @@ class RLNCUAgent(FeedbackAgent):
                 else "All RL iterations failed before producing a valid candidate."
             ),
             profiling_mode=self.profiling_mode,
+            execution_status=ExecutionStatus.FAILED,
+            correctness_status=CorrectnessStatus.NOT_RUN,
+            timing_status=TimingStatus.UNAVAILABLE,
+            diagnostic_status=DiagnosticStatus.NOT_REQUESTED,
+            reason_code=(
+                ReasonCode.NCU_PERMISSION_DENIED
+                if permission_blocked
+                else ReasonCode.EXECUTION_FAILED
+            ),
             metrics={"iteration_errors": iteration_errors},
         )
+
+    @staticmethod
+    def _funnel_metrics(funnel_result) -> dict[str, Any] | None:
+        if funnel_result is None:
+            return None
+        return {
+            "eligible_source_digests": list(
+                funnel_result.decision.eligible_source_digests
+            ),
+            "confirmation_source_digests": list(
+                funnel_result.decision.confirmation_source_digests
+            ),
+            "confirmed_source_digests": list(funnel_result.confirmed_source_digests),
+            "winner_source_digest": funnel_result.winner_source_digest,
+            "anomaly_source_digest": funnel_result.decision.anomaly_source_digest,
+            "discovery_calls": funnel_result.discovery_calls,
+            "confirmation_calls": funnel_result.confirmation_calls,
+            "nsys_calls": funnel_result.nsys_calls,
+            "ncu_calls": funnel_result.ncu_calls,
+            "diagnostics": (
+                funnel_result.winner.diagnostics if funnel_result.winner else {}
+            ),
+            "compilation_metrics": (
+                funnel_result.winner.compilation_metrics.to_dict()
+                if funnel_result.winner
+                else {}
+            ),
+            "artifact_roles": (
+                funnel_result.winner.artifact_roles if funnel_result.winner else {}
+            ),
+        }
 
     async def gather_perf_metrics(self, filepath: Path) -> Tuple[str, str, str, int]:
         """

@@ -35,7 +35,8 @@ from ..measurements import Measurement
 from ..storage import StateStore
 
 
-SCHEMA_VERSION = "3.0"
+SCHEMA_VERSION = "4.0"
+READABLE_SCHEMA_VERSIONS = {"3.0", SCHEMA_VERSION}
 _SENSITIVE_KEY_PARTS = (
     "api_key",
     "apikey",
@@ -76,6 +77,16 @@ def utc_now() -> str:
         当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def load_run_manifest(path: Path) -> dict[str, Any]:
+    """Read schema 3.0 or 4.0 manifests without rewriting old evidence."""
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("run manifest must be an object")
+    if payload.get("schema_version") not in READABLE_SCHEMA_VERSIONS:
+        raise ValueError("unsupported run manifest schema")
+    return payload
 
 
 def redact_secrets(value: Any, key: str = "") -> Any:
@@ -289,6 +300,22 @@ class RunRecorder:
                 "by_outcome": {},
                 "profiling_modes": {},
                 "results": [],
+            },
+            "capability_checks": {
+                "completed": 0,
+                "by_status": {},
+            },
+            "funnel": {
+                "candidates_evaluated": 0,
+                "candidate_statuses": {},
+                "eligible_candidates": 0,
+                "confirmation_candidates": 0,
+                "confirmed_candidates": 0,
+                "discovery_calls": 0,
+                "confirmation_calls": 0,
+                "nsys_calls": 0,
+                "ncu_calls": 0,
+                "diagnostic_statuses": {},
             },
             "errors": 0,
         }
@@ -534,6 +561,41 @@ class RunRecorder:
             self._summary["cuda"]["correctness_checks"] += 1
         elif event_type == "cuda_profile_completed":
             self._summary["cuda"]["profiles"] += 1
+        elif event_type == "capability_check_completed":
+            checks = self._summary["capability_checks"]
+            checks["completed"] += 1
+            check_status = str(data.get("status", status))
+            checks["by_status"][check_status] = (
+                checks["by_status"].get(check_status, 0) + 1
+            )
+        elif event_type == "candidate_evaluation_completed":
+            funnel = self._summary["funnel"]
+            funnel["candidates_evaluated"] += 1
+            candidate_status = str(data.get("events_status", status))
+            funnel["candidate_statuses"][candidate_status] = (
+                funnel["candidate_statuses"].get(candidate_status, 0) + 1
+            )
+            funnel["discovery_calls"] += int(data.get("discovery_sessions", 0) or 0)
+        elif event_type == "funnel_decision":
+            funnel = self._summary["funnel"]
+            for key in (
+                "eligible_candidates",
+                "confirmation_candidates",
+                "confirmed_candidates",
+                "confirmation_calls",
+            ):
+                funnel[key] += int(data.get(key, 0) or 0)
+        elif event_type == "diagnostic_profile_completed":
+            funnel = self._summary["funnel"]
+            plan_id = str(data.get("plan_id", ""))
+            if plan_id.startswith("nsys_"):
+                funnel["nsys_calls"] += 1
+            elif plan_id.startswith("ncu_"):
+                funnel["ncu_calls"] += 1
+            diagnostic_status = str(data.get("status", status))
+            funnel["diagnostic_statuses"][diagnostic_status] = (
+                funnel["diagnostic_statuses"].get(diagnostic_status, 0) + 1
+            )
         elif event_type == "task_outcome":
             tasks = self._summary["tasks"]
             outcome = str(data.get("outcome", "failed"))

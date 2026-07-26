@@ -34,6 +34,8 @@ from src.kernelblaster.gpu_jobs.sandbox import (
     _tar_files,
     public_generated_feedback,
 )
+from src.kernelblaster.gpu_jobs.sandbox_runner import _command, _validated_correctness
+from src.kernelblaster.harness import build_development_case_bundle, core10_task_specs
 
 
 def _digest(payload: bytes) -> str:
@@ -246,6 +248,138 @@ def test_fixed_policy_has_distinct_stage_timeouts():
     assert policy.timeout_for(GpuJobStage.COMPILE) == 180
     assert policy.timeout_for(GpuJobStage.CORRECTNESS) == 60
     assert policy.timeout_for(GpuJobStage.EVENTS) == 90
+
+
+def test_v2_private_profile_requires_all_harness_bindings():
+    payload = {
+        "schema_version": "gpu-private-evaluation-profiles/v2",
+        "profiles": [
+            {
+                "id": "core10-v2",
+                "bundle_digest": "a" * 64,
+                "driver_path": "driver.cpp",
+                "task_spec_digest": "b" * 64,
+                "case_bundle_digest": "c" * 64,
+                "adapter_id": "kernelbench.legacy-driver",
+                "adapter_version": "1.0.0",
+                "correctness_protocol_id": "generated-correctness-v2",
+                "disclosure": "adaptive_disclosed",
+            }
+        ],
+    }
+    assert PrivateEvaluationProfileManifest.model_validate(payload).profiles[0].adapter_id
+    del payload["profiles"][0]["task_spec_digest"]
+    with pytest.raises(ValidationError, match="versioned Harness bindings"):
+        PrivateEvaluationProfileManifest.model_validate(payload)
+
+
+def test_v2_profile_bundle_is_canonically_bound_to_task_cases_and_adapter():
+    task = core10_task_specs()[0]
+    cases = build_development_case_bundle(task)
+    profile = PrivateEvaluationProfileManifest.model_validate(
+        {
+            "schema_version": "gpu-private-evaluation-profiles/v2",
+            "profiles": [
+                {
+                    "id": "core10-v2",
+                    "bundle_digest": "a" * 64,
+                    "driver_path": "driver.cpp",
+                    "task_spec_digest": task.canonical_sha256(),
+                    "case_bundle_digest": cases.canonical_sha256(),
+                    "adapter_id": task.adapter_id,
+                    "adapter_version": task.adapter_version,
+                    "correctness_protocol_id": "generated-correctness-v2",
+                    "disclosure": "adaptive_disclosed",
+                }
+            ],
+        }
+    ).profiles[0]
+    files = {
+        "private/task-spec.json": task.canonical_bytes(),
+        "private/case-bundle.json": cases.canonical_bytes(),
+    }
+    SandboxStageExecutor._validate_v2_profile(profile, files)
+    files["private/case-bundle.json"] += b"\n"
+    with pytest.raises(ValueError, match="canonical encoding"):
+        SandboxStageExecutor._validate_v2_profile(profile, files)
+
+
+def test_runner_requires_v2_correctness_to_match_task_digest_and_full_schema():
+    result = {
+        "schema_version": "correctness-result/v2",
+        "protocol_id": "generated-correctness-v2",
+        "task_spec_digest": "a" * 64,
+        "direction": "forward",
+        "passed": True,
+        "case_count": 1,
+        "cases": [
+            {
+                "case_id": "dev-1",
+                "tier": "dev",
+                "shape": {"N": 33},
+                "seed": 7,
+                "distribution": "normal",
+                "passed": True,
+                "deterministic": True,
+                "cuda_error": None,
+                "tensors": [
+                    {
+                        "tensor": "output",
+                        "count": 33,
+                        "mismatch_count": 0,
+                        "nonfinite_count": 0,
+                        "max_abs_error": 0.0,
+                        "p99_abs_error": 0.0,
+                        "max_normalized_error": 0.0,
+                    }
+                ],
+            }
+        ],
+    }
+    request = {
+        "correctness_protocol_id": "generated-correctness-v2",
+        "task_spec_digest": "a" * 64,
+    }
+    canonical, passed = _validated_correctness(request, json.dumps(result).encode())
+    assert passed and json.loads(canonical)["case_count"] == 1
+    request["task_spec_digest"] = "b" * 64
+    with pytest.raises(ValueError, match="binding mismatch"):
+        _validated_correctness(request, json.dumps(result).encode())
+
+
+def test_sandbox_compile_always_enables_ptxas_verbose(monkeypatch):
+    class CandidateRoot:
+        def rglob(self, pattern):
+            assert pattern == "*.cu"
+            return ["/input/candidate/candidate.cu"]
+
+    class Driver:
+        def is_file(self):
+            return True
+
+        def __str__(self):
+            return "/input/private/driver.cpp"
+
+    monkeypatch.setattr(
+        "src.kernelblaster.gpu_jobs.sandbox_runner.INPUT",
+        type(
+            "Input",
+            (),
+            {
+                "__truediv__": lambda self, value: (
+                    CandidateRoot() if value == "candidate" else Driver()
+                )
+            },
+        )(),
+    )
+    command = _command(
+        {
+            "stage": "compile",
+            "target_arch": "sm_86",
+            "driver_path": "private/driver.cpp",
+        }
+    )
+    assert "--ptxas-options=-v" in command
 
 
 def test_stage_executor_imports_only_allowed_outputs_and_public_feedback_has_no_private_data():

@@ -16,4 +16,4 @@
 """导出 KernelBlaster 的系统配置、工作流配置和 GPU 类型。"""
 
 from .config import config, WorkflowConfig
-from .gpu_config import GPUType
+from .gpu_config import GPUType, RuntimeGPU, resolve_gpu

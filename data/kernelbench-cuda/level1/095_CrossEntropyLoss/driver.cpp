@@ -77,5 +77,5 @@ int main() {
         std::cout << "Reference: " << ref_loss_fp32.item<float>() << std::endl;
         std::cout << "GPU Output: " << output_fp32.item<float>() << std::endl;
     }
-    return 0;
+    return passed ? 0 : 1;
 }

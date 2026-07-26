@@ -22,7 +22,7 @@ import subprocess
 import tarfile
 import threading
 import time
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -66,12 +66,27 @@ class PrivateEvaluationProfile(BaseModel):
     id: str = Field(min_length=1, max_length=128)
     bundle_digest: str
     driver_path: str
+    task_spec_digest: str | None = None
+    case_bundle_digest: str | None = None
+    adapter_id: str | None = Field(default=None, min_length=1, max_length=128)
+    adapter_version: str | None = Field(default=None, min_length=1, max_length=64)
+    correctness_protocol_id: str = Field(
+        default="legacy-exit-v1", pattern=r"^[A-Za-z0-9_.:-]+$"
+    )
+    disclosure: str | None = None
 
     @field_validator("bundle_digest")
     @classmethod
     def _valid_digest(cls, value: str) -> str:
         if not DIGEST_PATTERN.fullmatch(value):
             raise ValueError("bundle_digest must be a lowercase SHA-256 digest")
+        return value
+
+    @field_validator("task_spec_digest", "case_bundle_digest")
+    @classmethod
+    def _valid_optional_digest(cls, value: str | None) -> str | None:
+        if value is not None and not DIGEST_PATTERN.fullmatch(value):
+            raise ValueError("profile digests must be lowercase SHA-256 values")
         return value
 
     @field_validator("driver_path")
@@ -83,7 +98,10 @@ class PrivateEvaluationProfile(BaseModel):
 class PrivateEvaluationProfileManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: str = "gpu-private-evaluation-profiles/v1"
+    schema_version: Literal[
+        "gpu-private-evaluation-profiles/v1",
+        "gpu-private-evaluation-profiles/v2",
+    ] = "gpu-private-evaluation-profiles/v1"
     profiles: tuple[PrivateEvaluationProfile, ...]
 
     @model_validator(mode="after")
@@ -91,6 +109,17 @@ class PrivateEvaluationProfileManifest(BaseModel):
         identifiers = [profile.id for profile in self.profiles]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("private evaluation profile IDs must be unique")
+        if self.schema_version.endswith("/v2"):
+            for profile in self.profiles:
+                if (
+                    profile.task_spec_digest is None
+                    or profile.case_bundle_digest is None
+                    or profile.adapter_id is None
+                    or profile.adapter_version is None
+                    or profile.correctness_protocol_id != "generated-correctness-v2"
+                    or profile.disclosure != "adaptive_disclosed"
+                ):
+                    raise ValueError("v2 profiles require versioned Harness bindings")
         return self
 
     @classmethod
@@ -233,6 +262,8 @@ def _output_names(stage: GpuJobStage) -> set[str]:
         names.add("candidate")
     if stage is GpuJobStage.EVENTS:
         names.add("measurement.json")
+    if stage is GpuJobStage.CORRECTNESS:
+        names.add("correctness.json")
     return names
 
 
@@ -246,6 +277,7 @@ def _read_output_archive(
         "stderr.log": policy.stderr_bytes,
         "result.json": 64 * 1024,
         "measurement.json": policy.stdout_bytes,
+        "correctness.json": policy.stdout_bytes,
         "candidate": policy.executable_bytes,
     }
     outputs: dict[str, bytes] = {}
@@ -551,6 +583,35 @@ class SandboxStageExecutor:
             raise ValueError("artifact_digest_mismatch")
         return payload
 
+    @staticmethod
+    def _validate_v2_profile(
+        profile: PrivateEvaluationProfile, private_files: dict[str, bytes]
+    ) -> None:
+        if profile.correctness_protocol_id != "generated-correctness-v2":
+            return
+        from ..harness.contracts import CaseBundle, TaskSpec
+
+        task_payload = private_files.get("private/task-spec.json")
+        case_payload = private_files.get("private/case-bundle.json")
+        if task_payload is None or case_payload is None:
+            raise ValueError("v2 profile is missing its TaskSpec or case bundle")
+        task = TaskSpec.model_validate_json(task_payload)
+        cases = CaseBundle.model_validate_json(case_payload)
+        if task.canonical_bytes() != task_payload:
+            raise ValueError("v2 TaskSpec must use canonical encoding")
+        if cases.canonical_bytes() != case_payload:
+            raise ValueError("v2 case bundle must use canonical encoding")
+        if task.canonical_sha256() != profile.task_spec_digest:
+            raise ValueError("v2 profile TaskSpec digest mismatch")
+        if cases.canonical_sha256() != profile.case_bundle_digest:
+            raise ValueError("v2 profile case bundle digest mismatch")
+        if (task.adapter_id, task.adapter_version) != (
+            profile.adapter_id,
+            profile.adapter_version,
+        ):
+            raise ValueError("v2 profile Adapter binding mismatch")
+        cases.validate_for(task)
+
     async def _input_archive(self, manifest: GpuJobManifest) -> bytes:
         assert manifest.private_evaluation_profile_id is not None
         profile = self.profiles.get(manifest.private_evaluation_profile_id)
@@ -565,6 +626,7 @@ class SandboxStageExecutor:
             private_files = _bundle_files(private, "private")
             if f"private/{profile.driver_path}" not in private_files:
                 raise ValueError("private profile does not contain its declared driver")
+            self._validate_v2_profile(profile, private_files)
             files.update(private_files)
         else:
             assert manifest.executable_digest is not None
@@ -574,6 +636,8 @@ class SandboxStageExecutor:
                 "stage": manifest.stage.value,
                 "target_arch": manifest.target_arch,
                 "benchmark_protocol_id": manifest.benchmark_protocol_id,
+                "correctness_protocol_id": profile.correctness_protocol_id,
+                "task_spec_digest": profile.task_spec_digest,
                 "driver_path": f"private/{profile.driver_path}",
                 "stdout_bytes": 1024 * 1024,
                 "stderr_bytes": 1024 * 1024,
@@ -645,6 +709,18 @@ class SandboxStageExecutor:
                             schema=f"gpu-{manifest.stage.value}-{filename}/v1",
                         )
                         artifacts[digest] = role
+            correctness = None
+            if manifest.stage is GpuJobStage.CORRECTNESS and "correctness.json" in outputs:
+                from ..harness.contracts import CorrectnessResultV2
+
+                parsed = CorrectnessResultV2.model_validate_json(outputs["correctness.json"])
+                correctness = parsed.public_feedback()
+                digest = await self._upload(
+                    outputs["correctness.json"],
+                    media_type="application/json",
+                    schema="correctness-result/v2",
+                )
+                artifacts[digest] = "correctness_summary"
             status = (
                 GpuJobStatus.SUCCEEDED
                 if execution.reason is GpuReasonCode.NONE
@@ -661,6 +737,7 @@ class SandboxStageExecutor:
                 status=status,
                 reason_code=execution.reason,
                 artifact_roles=artifacts,
+                correctness=correctness,
                 measurement=execution.measurement,
                 hardware=capabilities.model_dump(mode="json"),
                 started_at=started,
@@ -691,6 +768,7 @@ def public_generated_feedback(result: GpuJobResult) -> dict[str, object]:
         "stage": result.stage.value,
         "status": result.status.value,
         "reason_code": result.reason_code.value,
+        "correctness": result.correctness,
         "measurement": result.measurement,
     }
 

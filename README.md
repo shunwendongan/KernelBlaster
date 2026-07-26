@@ -226,6 +226,16 @@ The Supervisor imports only hash-verified allowlisted files and removes the Job
 container and staging volume on every exit path. Docker/GPU attack probes are
 marked `gpu_sandbox` and must run on an AutoDL or self-hosted GPU runner.
 
+### Generic multi-operator Harness
+
+The versioned TaskSpec/Adapter/case-bundle runtime covers Core 10 forward and
+backward without imposing a single RMSNorm ABI. The trusted Harness—not the
+candidate—creates the structured verdict and checks all gradients, mutation,
+shape/dtype, non-finite values, canaries, poison, CUDA errors, and repeat
+stability. PyTorch autograd is a backward oracle and independent baseline, not
+a mandatory Custom Op gate. See [the generic Harness guide](docs/generic-harness.md)
+for external private cases, signed Adapter image builds, and the RTX 3080 smoke.
+
 ### Independent fixed-plan Profiler Worker
 
 `profiler-worker` is a separate token audience and network boundary. Control

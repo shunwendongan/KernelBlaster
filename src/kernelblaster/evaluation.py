@@ -19,6 +19,7 @@ from typing import Any, Protocol
 import uuid
 
 from .gpu_jobs import build_deterministic_bundle
+from .harness.contracts import CorrectnessResultV2
 from .measurements import Measurement, MeasurementSource, MeasurementUnit
 from .observability import record_event
 from .outcomes import DiagnosticStatus
@@ -73,6 +74,7 @@ class CandidateEvaluation:
     confirmation_samples_us: tuple[float, ...] = ()
     diagnostic_status: DiagnosticStatus = DiagnosticStatus.NOT_REQUESTED
     diagnostics: dict[str, dict[str, Any]] = field(default_factory=dict)
+    correctness: dict[str, Any] | None = None
 
     @property
     def rankable(self) -> bool:
@@ -97,6 +99,7 @@ class CandidateEvaluation:
             "reason_code": self.reason_code,
             "compilation_metrics": self.compilation_metrics.to_dict(),
             "measurement": self.measurement.to_dict() if self.measurement else None,
+            "correctness": self.correctness,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -115,6 +118,7 @@ class CandidateEvaluation:
             "confirmation_samples_us": list(self.confirmation_samples_us),
             "diagnostic_status": self.diagnostic_status.value,
             "diagnostics": dict(self.diagnostics),
+            "correctness": self.correctness,
         }
 
 
@@ -509,6 +513,15 @@ class SandboxCandidateEvaluator:
             evaluation.artifact_roles.update(_artifact_roles(correctness_job))
             evaluation.correctness_status = _job_status(correctness_job)
             evaluation.reason_code = _job_reason(correctness_job)
+            raw_correctness = (correctness_job.get("result") or {}).get("correctness")
+            if raw_correctness is not None:
+                try:
+                    evaluation.correctness = CorrectnessResultV2.model_validate(
+                        raw_correctness
+                    ).public_feedback()
+                except ValueError:
+                    evaluation.correctness_status = CandidateStageStatus.FAILED
+                    evaluation.reason_code = "correctness_failed"
             if evaluation.correctness_status is not CandidateStageStatus.SUCCEEDED:
                 self._cache[raw_digest] = evaluation
                 self._record_evaluation(evaluation)

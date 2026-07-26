@@ -65,5 +65,5 @@ int main() {
         std::cout << "failed" << std::endl;
     }
 
-    return 0;
+    return is_close ? 0 : 1;
 }

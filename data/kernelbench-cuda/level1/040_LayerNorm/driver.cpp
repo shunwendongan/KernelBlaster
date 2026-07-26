@@ -85,5 +85,5 @@ int main() {
         std::cout << "failed" << std::endl;
     }
 
-    return 0;
+    return passed ? 0 : 1;
 }

@@ -16,7 +16,7 @@ import argparse
 import os
 from pathlib import Path
 
-from src.kernelblaster.config import WorkflowConfig, config, GPUType
+from src.kernelblaster.config import WorkflowConfig, config, GPUType, resolve_gpu
 
 __all__ = [
     "add_common_arguments",
@@ -115,8 +115,7 @@ def add_common_arguments(parser: argparse.ArgumentParser):
         "--gpu",
         type=str,
         default=os.getenv("GPU_TYPE"),
-        choices=[gpu.value for gpu in GPUType],
-        help="GPU to use for generation.",
+        help="GPU label or auto. Known legacy labels remain valid; unknown products are detected at runtime.",
     )
     
     # RL optimization arguments
@@ -201,7 +200,7 @@ def create_workflow_config(args: argparse.Namespace) -> WorkflowConfig:
         run_cuda_bench=args.cuda and args.benchmark,
         run_cuda_perf_bench=args.cuda_perf and args.benchmark,
         retry_failed=args.retry,
-        gpu=GPUType(args.gpu),
+        gpu=resolve_gpu(args.gpu),
         use_baseline_optimization=not args.no_baseline_optimization,
     )
     

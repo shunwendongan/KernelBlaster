@@ -16,6 +16,8 @@
 """规范化 GPU 名称，并将运行设备映射为受支持的 GPU 枚举。"""
 
 from enum import Enum
+import os
+import re
 import subprocess
 
 
@@ -26,6 +28,28 @@ class StrEnum(str, Enum):
 
 
 _current_gpu = None
+
+
+class RuntimeGPU(str):
+    """A capability-derived GPU target for products outside the legacy enum.
+
+    It behaves like a string for existing JSON/logging paths while preserving
+    the ``value`` and ``sm`` attributes historically supplied by ``GPUType``.
+    """
+
+    def __new__(cls, value: str, sm: str):
+        normalized = value.strip().lower().replace(" ", "-")
+        obj = str.__new__(cls, normalized)
+        obj._sm = sm
+        return obj
+
+    @property
+    def value(self) -> str:
+        return str(self)
+
+    @property
+    def sm(self) -> str:
+        return self._sm
 
 _SM_MAP = {
     # 如果修改此图请修改test_gpu_config.py
@@ -71,7 +95,7 @@ class GPUType(StrEnum):
         return _SM_MAP[self.value]
 
     @staticmethod
-    def current():
+    def current() -> "GPUType | RuntimeGPU":
         """
         返回当前的 GPU 类型。
         对此进行缓存以避免重复调用 nvidia-smi。
@@ -81,23 +105,25 @@ class GPUType(StrEnum):
         """
         global _current_gpu
         if _current_gpu is None:
-            name = (
+            output = (
                 subprocess.check_output(
                     [
                         "nvidia-smi",
-                        "--query-gpu=gpu_name",
+                        "--query-gpu=gpu_name,compute_cap",
                         "--format=csv,noheader",
                     ]
                 )
                 .decode("utf-8")
                 .strip()
             )
-            name = name.replace(" ", "").lower()
-            _current_gpu = _parse_gpu_name(name)
+            fields = [item.strip() for item in output.split(",")]
+            name = fields[0]
+            capability = fields[1] if len(fields) > 1 else ""
+            _current_gpu = _parse_gpu_name(name, compute_capability=capability)
         return _current_gpu
 
 
-def _parse_gpu_name(nvidia_smi_name: str) -> GPUType:
+def _parse_gpu_name(nvidia_smi_name: str, *, compute_capability: str | None = None) -> GPUType | RuntimeGPU:
     """
     从 nvidia-smi 输出中解析 GPU 类型。
 
@@ -120,4 +146,30 @@ def _parse_gpu_name(nvidia_smi_name: str) -> GPUType:
     for gpu in avail_types:
         if gpu.lower() in nvidia_smi_name:
             return GPUType(gpu)
-    raise ValueError(f"Unknown GPU type: {nvidia_smi_name}")
+    configured = os.getenv("KERNELBLASTER_TARGET_ARCH", "").strip()
+    if configured:
+        target_arch = configured
+    elif compute_capability and re.fullmatch(r"[0-9]+\.[0-9]+", compute_capability):
+        target_arch = "sm_" + compute_capability.replace(".", "")
+    else:
+        raise ValueError(
+            "Unknown GPU type requires nvidia-smi compute capability or KERNELBLASTER_TARGET_ARCH"
+        )
+    if not re.fullmatch(r"sm_[0-9]{2,3}", target_arch):
+        raise ValueError("KERNELBLASTER_TARGET_ARCH must use sm_XX or sm_XXX notation")
+    return RuntimeGPU(nvidia_smi_name, target_arch)
+
+
+def resolve_gpu(value: str | None) -> GPUType | RuntimeGPU:
+    """Resolve a legacy label, an explicit runtime target, or ``auto``."""
+    if value is None or value.strip().lower() in {"", "auto"}:
+        return GPUType.current()
+    normalized = value.strip().lower().replace(" ", "")
+    try:
+        return GPUType(normalized)
+    except ValueError:
+        configured = os.getenv("KERNELBLASTER_TARGET_ARCH", "").strip()
+        if configured:
+            return _parse_gpu_name(value, compute_capability=None)
+        current = GPUType.current()
+        return RuntimeGPU(value, current.sm)

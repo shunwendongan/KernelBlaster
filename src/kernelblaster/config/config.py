@@ -22,7 +22,7 @@ from pathlib import Path
 from loguru import logger
 from urllib.parse import urlsplit, urlunsplit
 
-from .gpu_config import GPUType
+from .gpu_config import GPUType, RuntimeGPU
 from typing import Any
 
 load_dotenv()
@@ -174,7 +174,7 @@ class SystemConfig:
         SystemConfig.COMPILE_SERVER_URL = url
 
     @staticmethod
-    def set_gpu_server_url(gpu: GPUType, url: str):
+    def set_gpu_server_url(gpu: GPUType | RuntimeGPU, url: str):
         """
         设置 `set_gpu_server_url` 对应的领域操作，并返回调用方所需的标准化结果。
 
@@ -193,7 +193,7 @@ class SystemConfig:
             )
 
     @staticmethod
-    def get_gpu_server_url(gpu: GPUType) -> str:
+    def get_gpu_server_url(gpu: GPUType | RuntimeGPU) -> str:
         """
         获取 `get_gpu_server_url` 对应的领域操作，并返回调用方所需的标准化结果。
 
@@ -209,7 +209,7 @@ class SystemConfig:
         return SystemConfig.GPU_SERVER_URLS[gpu]
 
     @staticmethod
-    def get_all_gpu_server_urls() -> dict[GPUType, str]:
+    def get_all_gpu_server_urls() -> dict[GPUType | RuntimeGPU, str]:
         """
         获取 `get_all_gpu_server_urls` 对应的领域操作，并返回调用方所需的标准化结果。
 
@@ -300,7 +300,7 @@ class WorkflowConfig:
     run_cuda_bench: bool
     run_cuda_perf_bench: bool
     retry_failed: bool
-    gpu: GPUType
+    gpu: GPUType | RuntimeGPU
     # 强化学习优化参数
     rl_iterations: int = 10
     rl_rollout_steps: int = 5
@@ -371,5 +371,5 @@ class WorkflowConfig:
     def validate(self):
         """校验 `validate` 对应的领域操作，并返回调用方所需的标准化结果。"""
         assert isinstance(
-            self.gpu, GPUType
-        ), f"Please ensure gpu is a GPUType: got {type(self.gpu)}"
+            self.gpu, (GPUType, RuntimeGPU)
+        ), f"Please ensure gpu is a GPUType or RuntimeGPU: got {type(self.gpu)}"

@@ -156,7 +156,11 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=_default_output())
     parser.add_argument("--include-gpu", action="store_true")
     parser.add_argument("--include-docker", action="store_true")
-    parser.add_argument("--container-image", default="kernelblaster:validation-25.01")
+    parser.add_argument(
+        "--container-image",
+        default=os.getenv("KERNELBLASTER_EVIDENCE_CONTAINER_IMAGE"),
+        help="Optional resolved image reference to inspect; never assume a fixed CUDA image.",
+    )
     args = parser.parse_args()
     payload = collect_environment(
         include_gpu=args.include_gpu,

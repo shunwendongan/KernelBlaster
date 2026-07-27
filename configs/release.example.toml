@@ -1,0 +1,17 @@
+[portability]
+# All values are replaceable through CLI or KERNELBLASTER_PROFILE_* variables.
+mode = "local"
+gpu = "auto"
+# Set target_arch only when a target cannot report compute capability itself, e.g. "sm_90".
+# target_arch = "sm_90"
+task_id = "036"
+suite = "portfolio/suites/rmsnorm.json"
+rollouts = 2
+steps = 2
+max_requests = 32
+max_total_tokens = 250000
+max_completion_tokens = 64
+provider_timeout_seconds = 180
+agent_timeout_seconds = 7200
+top_k = 3
+control_url = "http://127.0.0.1:8000"

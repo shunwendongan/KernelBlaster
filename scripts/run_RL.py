@@ -28,7 +28,7 @@ SCRIPT_DIR = Path(__file__).parent
 ROOT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(ROOT_DIR))
 
-from src.kernelblaster.config import config, GPUType
+from src.kernelblaster.config import config, GPUType, RuntimeGPU, resolve_gpu
 from src.kernelblaster.llm import get_llm_provider
 from src.kernelblaster.observability import (
     RunRecorder,
@@ -63,11 +63,9 @@ TRUSTED_RMSNORM_ROLLOUTS = 2
 TRUSTED_RMSNORM_STEPS = 2
 
 
-def resolve_target_gpu(gpu: str | None) -> GPUType:
+def resolve_target_gpu(gpu: str | None) -> GPUType | RuntimeGPU:
     """Resolve the GPU whose server URL should be configured for this run."""
-    if gpu is None:
-        raise ValueError("--gpu or GPU_TYPE is required; target selection is explicit")
-    return GPUType(gpu)
+    return resolve_gpu(gpu)
 
 
 def _normalize_task_id(value: object) -> str:

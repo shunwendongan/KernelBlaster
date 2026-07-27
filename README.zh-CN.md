@@ -474,6 +474,8 @@ KernelBlaster/
 
 独立 AutoDL 模式将 Control、SQLite/CAS、GPU Supervisor、Profiler 和 Baseline 服务均放在单个实例中。硬件和工具链由运行时探测或 profile 提供；仓库不会声称固定的跨 GPU 性能排名。启动、bundle 导出/导入和显式 SSH target 边界见 [AutoDL 独立实例手册](docs/autodl-independent-instances.zh-CN.md)。
 
+发布证据、回滚边界与 release gate 见[发布操作手册](docs/release-operations.zh-CN.md)。
+
 ## 贡献者
 
 [Kris Shengjun Dong](https://people.eecs.berkeley.edu/~chrisdong/)、[Sahil Modi](https://www.linkedin.com/in/sahil-modi)、[Dima Nikiforov](https://www.linkedin.com/in/dima-n/)、[Sana Damani](https://sanadamani.com/)、Edward Lin、[Siva Kumar Sastry Hari](https://sivahari.github.io/)、[Christos Kozyrakis](https://web.stanford.edu/~kozyraki/)

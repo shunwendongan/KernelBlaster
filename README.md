@@ -555,6 +555,9 @@ claim a fixed cross-GPU performance ranking.  See the [AutoDL independent
 instance runbook](docs/autodl-independent-instances.md) for bootstrap,
 portable run export/import, and explicit SSH target boundaries.
 
+For evidence generation, rollback boundaries, and release gates, see the
+[release operations guide](docs/release-operations.md).
+
 ## Contributors
 
 [Kris Shengjun Dong](https://people.eecs.berkeley.edu/~chrisdong/), [Sahil Modi](https://www.linkedin.com/in/sahil-modi), [Dima Nikiforov](https://www.linkedin.com/in/dima-n/), [Sana Damani](https://sanadamani.com/), Edward Lin, [Siva Kumar Sastry Hari](https://sivahari.github.io/), [Christos Kozyrakis](https://web.stanford.edu/~kozyraki/)

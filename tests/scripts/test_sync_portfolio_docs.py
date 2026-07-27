@@ -18,7 +18,7 @@ SPEC.loader.exec_module(MODULE)
 
 
 def _copy_documentation_root(tmp_path: Path) -> Path:
-    for name in ("README.md", "README.zh-CN.md"):
+    for name in ("README.md", "README.zh-CN.md", "CONTRIBUTING.md"):
         shutil.copy2(ROOT / name, tmp_path / name)
     shutil.copytree(ROOT / "docs", tmp_path / "docs")
     shutil.copytree(ROOT / "artifacts", tmp_path / "artifacts")
@@ -50,7 +50,9 @@ def test_sync_is_idempotent(tmp_path):
     path = root / "README.md"
     path.write_text(
         path.read_text(encoding="utf-8").replace(
-            "This fork has completed", "STALE: This fork has completed", 1
+            "The checked-in Portfolio evidence records",
+            "STALE: The checked-in Portfolio evidence records",
+            1,
         ),
         encoding="utf-8",
     )

@@ -470,6 +470,10 @@ KernelBlaster/
 
 知识库位于 `KernelBlaster/data/kernelblaster/optimization_database.json`，既可用于指导通用性能工程 Agent，也可以作为模型训练的标注数据。后者属于上游知识库的潜在用途，不在本 Fork 当前的模型训练范围内。
 
+## 独立 AutoDL 实例
+
+独立 AutoDL 模式将 Control、SQLite/CAS、GPU Supervisor、Profiler 和 Baseline 服务均放在单个实例中。硬件和工具链由运行时探测或 profile 提供；仓库不会声称固定的跨 GPU 性能排名。启动、bundle 导出/导入和显式 SSH target 边界见 [AutoDL 独立实例手册](docs/autodl-independent-instances.zh-CN.md)。
+
 ## 贡献者
 
 [Kris Shengjun Dong](https://people.eecs.berkeley.edu/~chrisdong/)、[Sahil Modi](https://www.linkedin.com/in/sahil-modi)、[Dima Nikiforov](https://www.linkedin.com/in/dima-n/)、[Sana Damani](https://sanadamani.com/)、Edward Lin、[Siva Kumar Sastry Hari](https://sivahari.github.io/)、[Christos Kozyrakis](https://web.stanford.edu/~kozyraki/)

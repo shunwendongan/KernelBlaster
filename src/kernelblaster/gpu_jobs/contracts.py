@@ -161,6 +161,7 @@ class GpuDeviceCapability(BaseModel):
     target_arch: str
     total_memory_bytes: int = Field(ge=1)
     free_memory_bytes: int | None = Field(default=None, ge=0)
+    uuid: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class GpuRuntimeCapability(BaseModel):
@@ -169,6 +170,7 @@ class GpuRuntimeCapability(BaseModel):
     cuda_version: str
     driver_version: str
     image_digest: str | None = None
+    runtime_id: str | None = None
 
 
 class GpuCapabilities(BaseModel):

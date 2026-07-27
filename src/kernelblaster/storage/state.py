@@ -8,6 +8,7 @@ import platform
 
 from .cas import ContentAddressedStore
 from .repository import JobRepository
+from ..portability.identity import load_or_create_instance_identity
 
 
 _NETWORK_FILESYSTEMS = {"cifs", "smbfs", "nfs", "nfs4", "drvfs"}
@@ -81,6 +82,8 @@ class StateStore:
         )
         self.repository = JobRepository(self.sqlite_path)
         self.cas = ContentAddressedStore(self.cas_dir)
+        self.instance_identity = load_or_create_instance_identity(self.state_dir)
+        self.repository.register_instance(self.instance_identity.to_dict())
 
     def verify_artifact_index(self) -> None:
         """Verify that every indexed artifact still resolves to its CAS payload."""

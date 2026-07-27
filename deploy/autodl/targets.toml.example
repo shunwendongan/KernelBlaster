@@ -1,0 +1,4 @@
+[targets.example]
+ssh_alias = "autodl-example"
+workdir = "/workspace/KernelBlaster"
+profile = "configs/autodl.toml"

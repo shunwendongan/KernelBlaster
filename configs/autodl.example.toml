@@ -1,0 +1,16 @@
+# Public, portable deployment values.  Secrets remain in an external env file.
+[portability]
+state_dir = ""
+gpu = "auto"
+target_id = "local"
+minimum_free_vram_bytes = 2147483648
+provider_timeout_seconds = 180
+bundle_maximum_bytes = 4294967296
+bundle_maximum_members = 10000
+
+# Optional immutable image references for reproducible evidence.  Operators
+# may override these without changing source code; resolved digests are emitted
+# into capability and release evidence.
+control_image = ""
+gpu_image = ""
+profiler_image = ""

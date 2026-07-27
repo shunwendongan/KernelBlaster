@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "KernelBlaster aggregate portability report",
+  "type": "object",
+  "required": ["schema_version", "comparison_groups", "correctness_portability", "report_hash"],
+  "properties": {
+    "schema_version": {"const": "aggregate-report/v1"},
+    "comparison_groups": {"type": "array"},
+    "correctness_portability": {"type": "array"},
+    "report_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

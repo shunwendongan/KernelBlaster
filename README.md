@@ -545,6 +545,16 @@ This figure explains the memory-augmented part of MAIC-RL. Past rollouts from ea
 This figure shows the breadth of the optimization space covered by the framework. Different state groups call for different techniques, including vectorized memory access, tensor core utilization, work-per-thread tuning, shared-memory tiling, kernel fusion, occupancy tuning, and several smaller specialized transformations. That diversity is important because no single optimization strategy dominates across all CUDA kernels.
 
 Further, this Knowledge Base can be found in `KernelBlaster/data/kernelblaster/optimization_database.json` and serves as a guide for general performance engineering agents or can be used as labeled training data for model training.
+
+## Independent AutoDL instances
+
+Standalone AutoDL support keeps Control, SQLite/CAS, GPU Supervisor, Profiler,
+and Baseline services on one instance.  Hardware and toolkit values are
+detected at runtime or supplied through profiles; this repository does not
+claim a fixed cross-GPU performance ranking.  See the [AutoDL independent
+instance runbook](docs/autodl-independent-instances.md) for bootstrap,
+portable run export/import, and explicit SSH target boundaries.
+
 ## Contributors
 
 [Kris Shengjun Dong](https://people.eecs.berkeley.edu/~chrisdong/), [Sahil Modi](https://www.linkedin.com/in/sahil-modi), [Dima Nikiforov](https://www.linkedin.com/in/dima-n/), [Sana Damani](https://sanadamani.com/), Edward Lin, [Siva Kumar Sastry Hari](https://sivahari.github.io/), [Christos Kozyrakis](https://web.stanford.edu/~kozyraki/)

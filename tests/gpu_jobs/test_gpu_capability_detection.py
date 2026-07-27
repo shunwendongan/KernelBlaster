@@ -7,7 +7,7 @@ from src.kernelblaster.gpu_jobs.capabilities import detect_gpu_capabilities
 
 def _runner(command: list[str]) -> bytes:
     if command[0] == "nvidia-smi":
-        return b"Unlisted Future GPU, 24576, 16384, 600.12, 8.9\n"
+        return b"Unlisted Future GPU, GPU-future, 24576, 16384, 600.12, 8.9\n"
     if command[:2] == ["nvcc", "--version"]:
         return b"Cuda compilation tools, release 12.8, V12.8.61\n"
     raise AssertionError(command)
@@ -24,6 +24,7 @@ def test_capability_uses_detected_compute_capability_not_product_enum():
     assert capability.device.name == "Unlisted Future GPU"
     assert capability.device.target_arch == "sm_89"
     assert capability.device.free_memory_bytes == 16384 * 1024 * 1024
+    assert capability.device.uuid == "GPU-future"
     assert capability.runtime.cuda_version == "12.8"
 
 
@@ -34,7 +35,7 @@ def test_capability_uses_detected_compute_capability_not_product_enum():
 def test_protocol_is_stable_across_supported_hardware(compute_capability, target_arch):
     def runner(command: list[str]) -> bytes:
         if command[0] == "nvidia-smi":
-            return f"Any GPU, 1024, 768, test-driver, {compute_capability}\n".encode()
+            return f"Any GPU, GPU-test, 1024, 768, test-driver, {compute_capability}\n".encode()
         return b"Cuda compilation tools, release 12.8, V12.8.0\n"
 
     capability = detect_gpu_capabilities(runner=runner, environment={})

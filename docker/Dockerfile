@@ -6,6 +6,7 @@
 # 12.8 NGC baseline pinned by tag and digest with different privileges.
 ARG CONTROL_BASE_IMAGE=python:3.12.13-slim-bookworm@sha256:d50fb7611f86d04a3b0471b46d7557818d88983fc3136726336b2a4c657aa30b
 ARG GPU_BASE_IMAGE=nvcr.io/nvidia/pytorch:25.01-py3@sha256:0981807f1a51a156563e28b59dc2e7a9b5c1c7d85d1169d4965c5fd91fa38bcb
+ARG NCU_PREFLIGHT_GENCODE_FLAGS=""
 
 FROM ${CONTROL_BASE_IMAGE} AS control
 
@@ -62,17 +63,14 @@ CMD ["python", "scripts/start_gpu_worker.py", "--host", "0.0.0.0", "--port", "20
 
 FROM cuda-base AS profiler-worker
 
+ARG NCU_PREFLIGHT_GENCODE_FLAGS
+
 COPY docker/requirements.profiler.txt /tmp/requirements.profiler.txt
 COPY docker/ncu_preflight.cu /tmp/ncu_preflight.cu
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r /tmp/requirements.profiler.txt \
     && mkdir -p /opt/kernelblaster/bin \
-    && nvcc -O2 \
-         --generate-code=arch=compute_80,code=sm_80 \
-         --generate-code=arch=compute_86,code=sm_86 \
-         --generate-code=arch=compute_89,code=sm_89 \
-         --generate-code=arch=compute_90,code=sm_90 \
-         --generate-code=arch=compute_90,code=compute_90 \
+    && nvcc -O2 ${NCU_PREFLIGHT_GENCODE_FLAGS} \
          -o /opt/kernelblaster/bin/ncu-preflight /tmp/ncu_preflight.cu \
     && chmod 0555 /opt/kernelblaster/bin/ncu-preflight \
     && rm -f /tmp/ncu_preflight.cu

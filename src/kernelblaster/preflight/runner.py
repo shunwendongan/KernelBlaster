@@ -26,6 +26,7 @@ from .contracts import (
     PreflightCheckName,
     unavailable_check,
 )
+from ..portability.contracts import HardwareIdentity
 
 
 ProviderAuthProbe = Callable[[], Awaitable[dict[str, Any]]]
@@ -61,27 +62,22 @@ class PreflightResult:
 
 
 def capability_hardware_fingerprint(capabilities: dict[str, Any]) -> str:
+    """Return the portable comparison group, not a supervisor-local identity."""
     device = dict(capabilities.get("device") or {})
     runtime = dict(capabilities.get("runtime") or {})
-    stable = {
-        "supervisor_id": capabilities.get("supervisor_id"),
-        "device": {
-            key: device.get(key)
-            for key in (
-                "logical_id",
-                "name",
-                "compute_capability",
-                "target_arch",
-                "total_memory_bytes",
-            )
-        },
-        "runtime": {
-            key: runtime.get(key)
-            for key in ("cuda_version", "driver_version", "image_digest")
-        },
-    }
-    encoded = json.dumps(stable, sort_keys=True, separators=(",", ":"))
-    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    identity = HardwareIdentity(
+        logical_id=str(device.get("logical_id") or "unknown"),
+        name=str(device.get("name") or "unknown"),
+        compute_capability=str(device.get("compute_capability") or "unknown"),
+        target_arch=str(device.get("target_arch") or "unknown"),
+        total_memory_bytes=device.get("total_memory_bytes"),
+        driver_version=runtime.get("driver_version"),
+        cuda_version=runtime.get("cuda_version"),
+        image_digest=runtime.get("image_digest"),
+        gpu_uuid=device.get("uuid"),
+        runtime=runtime.get("runtime_id"),
+    )
+    return identity.comparison_group
 
 
 def _artifact_roles(payload: dict[str, Any]) -> dict[str, str]:

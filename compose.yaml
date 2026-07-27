@@ -5,7 +5,7 @@ name: kernelblaster
 
 services:
   control:
-    image: local/kernelblaster-control:pr04-${IMAGE_TAG:-dev}
+    image: ${KERNELBLASTER_CONTROL_IMAGE:-local/kernelblaster-control:pr04-${IMAGE_TAG:-dev}}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -47,7 +47,7 @@ services:
       start_period: 5s
 
   gpu-supervisor:
-    image: local/kernelblaster-gpu-supervisor:cuda12.8-${IMAGE_TAG:-dev}
+    image: ${KERNELBLASTER_GPU_SUPERVISOR_IMAGE:-local/kernelblaster-gpu-supervisor:cuda12.8-${IMAGE_TAG:-dev}}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -93,7 +93,7 @@ services:
       start_period: 15s
 
   profiler-worker:
-    image: local/kernelblaster-profiler-worker:cuda12.8-${IMAGE_TAG:-dev}
+    image: ${KERNELBLASTER_PROFILER_IMAGE:-local/kernelblaster-profiler-worker:cuda12.8-${IMAGE_TAG:-dev}}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -142,7 +142,7 @@ services:
       start_period: 15s
 
   baseline-worker:
-    image: local/kernelblaster-baseline-worker:cuda12.8-${IMAGE_TAG:-dev}
+    image: ${KERNELBLASTER_BASELINE_IMAGE:-local/kernelblaster-baseline-worker:cuda12.8-${IMAGE_TAG:-dev}}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -174,7 +174,7 @@ services:
   # Build-only target.  Inspect the resulting immutable image ID and provide it
   # as KERNELBLASTER_GPU_JOB_IMAGE before enabling generated GPU jobs.
   gpu-job-image:
-    image: local/kernelblaster-gpu-job:cuda12.8-${IMAGE_TAG:-dev}
+    image: ${KERNELBLASTER_GPU_JOB_BUILD_IMAGE:-local/kernelblaster-gpu-job:cuda12.8-${IMAGE_TAG:-dev}}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -182,7 +182,7 @@ services:
     profiles: [build]
 
   dev:
-    image: local/kernelblaster-dev:cuda12.8-${IMAGE_TAG:-dev}
+    image: ${KERNELBLASTER_DEV_IMAGE:-local/kernelblaster-dev:cuda12.8-${IMAGE_TAG:-dev}}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -211,7 +211,7 @@ services:
     command: bash
 
   smoke:
-    image: local/kernelblaster-control:pr04-${IMAGE_TAG:-dev}
+    image: ${KERNELBLASTER_CONTROL_IMAGE:-local/kernelblaster-control:pr04-${IMAGE_TAG:-dev}}
     build:
       context: .
       dockerfile: docker/Dockerfile

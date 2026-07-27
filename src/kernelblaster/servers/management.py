@@ -35,12 +35,6 @@ from typing import Optional
 
 
 def _worker_environment() -> dict[str, str]:
-    """
-    处理 `worker_environment` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     environment = sanitized_worker_environment(dict(os.environ))
     environment["KERNELBLASTER_WORKER_TOKEN"] = config.WORKER_TOKEN
     return environment
@@ -51,12 +45,8 @@ def test_server_connection(process, url, timeout: int = 5):
     测试与服务器的连接并返回它是否可用。
 
     参数:
-        process: 调用方提供的 `process` 参数。
         url: 目标服务或资源的 URL。
         timeout: 允许操作等待的最长秒数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
 
     poll_interval = 0.25
@@ -114,13 +104,7 @@ def initialize_compiler_server(
     初始化服务器并返回 URL。
 
     参数:
-        log_file: 调用方提供的 `log_file` 参数。
-        compile_server_url: 调用方提供的 `compile_server_url` 参数。
-        artifacts_dir: 调用方提供的 `artifacts_dir` 参数。
         port: 远端服务监听或连接的端口。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
 
     if compile_server_url is not None:
@@ -184,12 +168,8 @@ def initialize_gpu_server(
     初始化GPU服务器并返回URL。
 
     参数:
-        log_file: 调用方提供的 `log_file` 参数。
         gpu: 执行或分析任务使用的 GPU 配置。
         port: 远端服务监听或连接的端口。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
 
     if gpu is None:
@@ -233,18 +213,7 @@ def initialize_gpu_server(
 
 
 def find_free_port(start_port: int = 2001) -> int:
-    """
-    查找从 start_port 开始的可用端口。
-
-    参数:
-        start_port: 调用方提供的 `start_port` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """查找从 start_port 开始的可用端口。"""
     for port in range(start_port, start_port + 100):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -261,13 +230,6 @@ def start_standalone_gpu_server(port: int = None, log_file_path: str = None) -> 
 
     参数:
         port: 远端服务监听或连接的端口。
-        log_file_path: 调用方提供的 `log_file_path` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     
     if port is None:

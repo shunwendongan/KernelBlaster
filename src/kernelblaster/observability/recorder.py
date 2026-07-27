@@ -69,12 +69,6 @@ _URL_USERINFO_PATTERN = re.compile(r"(?i)(https?://)[^/@\s]+@")
 
 
 def utc_now() -> str:
-    """
-    处理 `utc_now` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
@@ -84,10 +78,6 @@ def redact_secrets(value: Any, key: str = "") -> Any:
 
     参数:
         value: 需要转换、保存或校验的值。
-        key: 调用方提供的 `key` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     normalized_key = key.lower()
     if any(part in normalized_key for part in _SENSITIVE_KEY_PARTS):
@@ -117,16 +107,6 @@ def _serialize_measurements(value: Any) -> Any:
 
 
 def prompt_metadata(messages: list[dict], include_content: bool = False) -> dict[str, Any]:
-    """
-    处理 `prompt_metadata` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        messages: 按对话顺序排列的 LLM 消息。
-        include_content: 调用方提供的 `include_content` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     canonical = json.dumps(
         messages,
         ensure_ascii=False,
@@ -147,15 +127,6 @@ def prompt_metadata(messages: list[dict], include_content: bool = False) -> dict
 
 
 def _git_commit(repo_root: Path) -> str | None:
-    """
-    处理 `git_commit` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-    参数:
-        repo_root: 调用方提供的 `repo_root` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     try:
         return subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -169,15 +140,7 @@ def _git_commit(repo_root: Path) -> str | None:
 
 
 def _source_tree_sha256(repo_root: Path) -> str | None:
-    """
-    哈希跟踪工作树内容，包括本地修改。
-
-    参数:
-        repo_root: 调用方提供的 `repo_root` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """哈希跟踪工作树内容，包括本地修改。"""
     try:
         completed = subprocess.run(
             ["git", "ls-files", "-z"],
@@ -204,13 +167,6 @@ def _source_tree_sha256(repo_root: Path) -> str | None:
 
 
 def _atomic_json_write(path: Path, payload: dict[str, Any]) -> None:
-    """
-    处理 `atomic_json_write` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-    参数:
-        path: 待读取、写入或校验的文件系统路径。
-        payload: 跨接口传递的序列化载荷。
-    """
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
@@ -237,19 +193,6 @@ class RunRecorder:
         repo_root: str | Path | None = None,
         state_store: StateStore | None = None,
     ) -> None:
-        """
-        初始化 RunRecorder 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            output_dir: 调用方提供的 `output_dir` 参数。
-            model: 生成候选时使用的模型标识。
-            provider_config: 调用方提供的 `provider_config` 参数。
-            suite: 调用方提供的 `suite` 参数。
-            gpu_target: 调用方提供的 `gpu_target` 参数。
-            run_id: 调用方提供的 `run_id` 参数。
-            dry_run: 调用方提供的 `dry_run` 参数。
-            repo_root: 调用方提供的 `repo_root` 参数。
-        """
         self.output_dir = Path(output_dir).expanduser().resolve()
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.manifest_path = self.output_dir / "run_manifest.json"
@@ -375,19 +318,6 @@ class RunRecorder:
         attempt: int | None = None,
         data: dict[str, Any] | None = None,
     ) -> None:
-        """
-        记录 `record_event` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-            event_type: 调用方提供的 `event_type` 参数。
-            status: 调用方提供的 `status` 参数。
-            task_id: 调用方分配的任务唯一标识。
-            rollout_id: 调用方提供的 `rollout_id` 参数。
-            stage: 调用方提供的 `stage` 参数。
-            candidate_id: 调用方提供的 `candidate_id` 参数。
-            attempt: 调用方提供的 `attempt` 参数。
-            data: 待处理的结构化数据。
-        """
         with self._lock:
             if self._closed:
                 return
@@ -412,12 +342,6 @@ class RunRecorder:
             _atomic_json_write(self.summary_path, self._summary)
 
     def close(self, status: str | None = None) -> None:
-        """
-        处理 `close` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-            status: 调用方提供的 `status` 参数。
-        """
         with self._lock:
             if self._closed:
                 return
@@ -507,14 +431,6 @@ class RunRecorder:
         status: str,
         data: dict[str, Any],
     ) -> None:
-        """
-        更新 `update_summary` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-        参数:
-            event_type: 调用方提供的 `event_type` 参数。
-            status: 调用方提供的 `status` 参数。
-            data: 待处理的结构化数据。
-        """
         llm = self._summary["llm"]
         if event_type == "llm_request_started":
             llm["requests_started"] += 1

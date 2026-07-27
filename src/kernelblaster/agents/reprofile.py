@@ -76,18 +76,6 @@ class ReProfileAgent:
         detailed_profiling: bool = True,
         profile_init: bool = False,
     ):
-        """
-        初始化 ReProfileAgent 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-        base_folder: 当前 Agent 使用的工作目录。
-        gpu: 执行或分析任务使用的 GPU 配置。
-        logger: 记录诊断信息和任务进度的日志器。
-        timeout: 允许操作等待的最长秒数。
-        cycles_only: 调用方提供的 `cycles_only` 参数。
-        detailed_profiling: 调用方提供的 `detailed_profiling` 参数。
-        profile_init: 调用方提供的 `profile_init` 参数。
-        """
         self.base_folder = Path(base_folder)
         self.gpu = gpu
         self.logger = logger
@@ -113,14 +101,6 @@ class ReProfileAgent:
         返回：
         (success_file_path, test_code_path) 元组列表。
         如果未找到，test_code_path 可能为 None。
-
-        参数:
-        pattern: 调用方提供的 `pattern` 参数。
-        base_directory: 调用方提供的 `base_directory` 参数。
-        problem_numbers: 调用方提供的 `problem_numbers` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         if pattern is None:
             pattern = "init.cu" if self.profile_init else "success_rl_optimization.cu"
@@ -182,12 +162,6 @@ class ReProfileAgent:
         test_code：<基础>/<问题>/driver.cpp
 
         还检查 state.json 中的 test_code_fp 字段。
-
-        参数:
-        success_file: 调用方提供的 `success_file` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         # 策略1：检查同一目录中是否有driver.cpp
         same_dir = success_file.parent
@@ -238,15 +212,7 @@ class ReProfileAgent:
         return None
     
     def _get_problem_name(self, success_file: Path) -> str:
-        """
-        从文件路径中提取问题名称。
-
-        参数:
-        success_file: 调用方提供的 `success_file` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """从文件路径中提取问题名称。"""
         # 路径结构：.../level2/025_Conv2d_Min_Tanh_Tanh/rl_ncu/success_rl_optimization.cu
         # 提取问题目录名
         parts = success_file.parts
@@ -257,15 +223,7 @@ class ReProfileAgent:
         return success_file.parent.parent.name if success_file.parent.parent.name != 'rl_ncu' else success_file.parent.parent.parent.name
     
     def _get_problem_number(self, success_file: Path) -> Optional[str]:
-        """
-        从文件路径中提取问题编号。
-
-        参数:
-        success_file: 调用方提供的 `success_file` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """从文件路径中提取问题编号。"""
         # 问题名称格式：025_Conv2d_Min_Tanh_Tanh -> 问题编号为“025”
         problem_name = self._get_problem_name(success_file)
         # 提取数字前缀（e.g.，“025_Conv2d_Min_Tanh_Tanh”中的“025”）
@@ -291,14 +249,6 @@ class ReProfileAgent:
 
         返回：
         带有分析数据的 ProfilingResult
-
-        参数:
-        success_file: 调用方提供的 `success_file` 参数。
-        test_code_fp: 调用方提供的 `test_code_fp` 参数。
-        output_dir: 调用方提供的 `output_dir` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         # 确定输出目录结构
         problem_name = self._get_problem_name(success_file)
@@ -440,15 +390,6 @@ class ReProfileAgent:
                 # 在此文件中并行化内核分析
                 async def profile_kernel_basic(kernel_name):
                     # 获取带有部分的文本输出（用于每个内核的周期提取）
-                    """
-                    处理 `profile_kernel_basic` 对应的领域操作，并返回调用方所需的标准化结果。
-
-                    参数:
-                        kernel_name: 调用方提供的 `kernel_name` 参数。
-
-                    返回:
-                        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-                    """
                     ncu_text_command = f"NVIDIA_TF32_OVERRIDE=0 ncu --section=SpeedOfLight --section=SpeedOfLight_RooflineChart -k {kernel_name}"
                     ncu_logs["basic"]["commands"].append({
                         "kernel": kernel_name,
@@ -529,15 +470,7 @@ class ReProfileAgent:
                 
                 # 在此文件中并行化内核分析
                 async def profile_kernel_full(kernel_name):
-                    """
-                    使用所有分析类型分析单个内核。
-
-                    参数:
-                        kernel_name: 调用方提供的 `kernel_name` 参数。
-
-                    返回:
-                        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-                    """
+                    """使用所有分析类型分析单个内核。"""
                     self.logger.info(f"Profiling kernel {kernel_name}")
                     
                     kernel_results = {
@@ -911,16 +844,6 @@ class ReProfileAgent:
 
         返回：
         每个文件的分析结果列表
-
-        参数:
-        base_directory: 调用方提供的 `base_directory` 参数。
-        output_base: 调用方提供的 `output_base` 参数。
-        max_workers: 调用方提供的 `max_workers` 参数。
-        skip_existing: 调用方提供的 `skip_existing` 参数。
-        problem_numbers: 调用方提供的 `problem_numbers` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         if base_directory is None:
             base_directory = self.base_folder
@@ -976,16 +899,6 @@ class ReProfileAgent:
             semaphore = asyncio.Semaphore(max_workers)
             
             async def profile_with_semaphore(success_file, test_code):
-                """
-                处理 `profile_with_semaphore` 对应的领域操作，并返回调用方所需的标准化结果。
-
-                参数:
-                    success_file: 调用方提供的 `success_file` 参数。
-                    test_code: 调用方提供的 `test_code` 参数。
-
-                返回:
-                    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-                """
                 async with semaphore:
                     return await self.profile_file(
                         success_file,
@@ -1030,15 +943,6 @@ class ReProfileAgent:
             
             # 按问题名称排序（数字前缀）
             def get_problem_number_for_sort(entry):
-                """
-                获取 `get_problem_number_for_sort` 对应的领域操作，并返回调用方所需的标准化结果。
-
-                参数:
-                    entry: 调用方提供的 `entry` 参数。
-
-                返回:
-                    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-                """
                 problem = entry["problem"]
                 match = re.match(r"^(\d+)_", problem)
                 if match:

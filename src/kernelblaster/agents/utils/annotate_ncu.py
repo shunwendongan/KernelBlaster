@@ -47,14 +47,6 @@ def annotate_source(
     对需要较长周期的代码行进行注释。
     包含选定指标和建议的分析报告已结束。
     结合多个内核的内联注释和分析报告。
-
-    参数:
-        cuda_path: 调用方提供的 `cuda_path` 参数。
-        source_dfs: 调用方提供的 `source_dfs` 参数。
-        details_dfs: 调用方提供的 `details_dfs` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     assert cuda_path.exists(), f"File not found: {cuda_path}"
     assert len(source_dfs) == len(
@@ -346,21 +338,10 @@ def parse_csv_from_log(
     从 NCU 日志中提取 csv 内容并将其返回。
 
     这会删除以下行：
-    ==PROF== 连接到进程 2223422 (/tmp/kernelagent/compile_env/build/main)
+    ==PROF== 连接到进程 2223422 (/tmp/kernelblaster/compile_env/build/main)
     通过了
     ==PROF== 与进程 2223422 断开连接
-    “文件路径”，“/tmp/kernelagent/compile_env/cuda_model.cuh”
-
-    参数:
-        log: 调用方提供的 `log` 参数。
-        marker_string: 调用方提供的 `marker_string` 参数。
-        header_replacement: 调用方提供的 `header_replacement` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
+    “文件路径”，“/tmp/kernelblaster/compile_env/cuda_model.cuh”
     """
     csv_start_index = log.find(marker_string)
     if csv_start_index == -1:
@@ -395,12 +376,6 @@ def format_ncu_details_as_csv(ncu_output: str) -> pd.DataFrame:
     """
     来自chatwithncu。
     删除 ncu 生成的详细信息 csv 内容的标头并返回清理后的字符串。
-
-    参数:
-        ncu_output: 调用方提供的 `ncu_output` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     marker_string = '"ID","Process ID","Process Name","Host Name"'
     return parse_csv_from_log(ncu_output, marker_string)
@@ -410,12 +385,6 @@ def format_ncu_source_as_csv(ncu_output: str) -> pd.DataFrame:
     """
     来自chatwithncu。
     删除 ncu 生成的源 csv 内容的标头并返回清理后的字符串。
-
-    参数:
-        ncu_output: 调用方提供的 `ncu_output` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     marker_string = '"Line No","Source","Address","Source"'
     header_replacement = '"Line No","CUDA","Address","SASS"'

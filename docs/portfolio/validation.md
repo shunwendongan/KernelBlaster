@@ -14,7 +14,7 @@ This document is the living validation record for the portfolio fork. Historical
 | RMSNorm edge correctness | PASSED | committed `edge_driver.cpp` and deep-case artifacts |
 | CUDA Events timing | schema-v2 full confirmation: 4 improved; 1 no improvement; 5 inconclusive | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
 | Same-GPU PyTorch comparison | schema-v2 full confirmation; 9/10 tasks have a stable method | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
-| Issue #10 capability/resource hardening | 4 formal improvements; 095 remains inconclusive because the upstream baseline spread is 24.37%, so the Issue stays open | `artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json` |
+| Issue #10 capability/resource hardening | 5 formal improvements; 095-v5 upstream/candidate spread is 3.48%/2.47%; the Issue may close while `production_ready` remains `false` | `artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json` |
 | Portfolio v2.1 evidence integrity | Exact SHA256 index published | `artifacts/portfolio-v2.1/SHA256SUMS.json` |
 | NCU hardware counters | BLOCKED — `ERR_NVGPUCTRPERM (non-root Docker/WSL; one no-network SYS_ADMIN retry also blocked; Windows native control passed)` | `artifacts/portfolio-v2.1/issue-8/rtx3080/ncu-preflight-summary.json` |
 | Cross-GPU comparison | BLOCKED — `requires authorized A100/L40S rental` | no aggregate cross-GPU performance claim published |

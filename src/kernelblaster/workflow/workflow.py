@@ -70,23 +70,12 @@ class WorkflowResult:
         return self.outcome.success
 
     def agents(self) -> Iterator[str]:
-        """
-        返回结果对象支持的所有 Agent 名称。
-        当前仅支持 RL 优化 Agent。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """枚举结果对象能够暴露的 Agent 产物槽；当前只有 RL CUDA。"""
         if hasattr(self, "rl_cuda_perf_filepath"):
             yield "rl_cuda_perf"
 
     def running_agents(self) -> Iterator[str]:
-        """
-        返回按当前实现应当运行的 Agent 名称。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """枚举当前 Graph 固定运行的 Agent；用于状态和 UI 汇总。"""
         # 如果启用，RL 优化始终运行
         yield "rl_cuda_perf"
 
@@ -94,22 +83,9 @@ class WorkflowResult:
     def generated_codes(
         self,
     ) -> dict[str, str]:
-        """
-        处理 `generated_codes` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """把可选 Path 转成稳定的 JSON 友好产物映射。"""
         def stringify(filepath: Path | None) -> str | None:
-            """
-            处理 `stringify` 对应的领域操作，并返回调用方所需的标准化结果。
-
-            参数:
-                filepath: 目标文件路径。
-
-            返回:
-                当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
+            """保留缺失产物为 ``None``，避免把失败误写为空路径。"""
             if filepath is None:
                 return None
             return str(filepath)
@@ -122,7 +98,7 @@ class WorkflowResult:
         folder: str,
     ):
         """
-        写入 `write_failures` 对应的领域操作，并返回调用方所需的标准化结果。
+        为非成功终态写入人类可读原因和机器可读完成标记。
 
         参数:
             folder: 保存当前任务中间状态和最终产物的目录。
@@ -135,7 +111,7 @@ class WorkflowResult:
 
     def remove_existing_files(self, folder: Path):
         """
-        删除 `remove_existing_files` 对应的领域操作，并返回调用方所需的标准化结果。
+        清理上次失败标记，并按 ``retry_failed`` 决定是否重建 Agent 目录。
 
         参数:
             folder: 保存当前任务中间状态和最终产物的目录。
@@ -165,16 +141,11 @@ async def run_workflow(
 
     参数:
         task_id: 调用方分配的任务唯一标识。
-        user_message: 调用方提供的 `user_message` 参数。
-        reference_code: 调用方提供的 `reference_code` 参数。
         folder: 保存当前任务中间状态和最终产物的目录。
         workflow_config: 本次优化任务使用的工作流配置。
         job_logger: 绑定当前任务上下文的日志器。
         timeout_seconds: 允许工作流运行的最长秒数。
         shared_database: 可由多个任务复用的优化数据库实例。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     folder.mkdir(exist_ok=True, parents=True)
     start = time.time()

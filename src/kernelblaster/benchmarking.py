@@ -19,34 +19,10 @@ BENCHMARK_MARKER = "KERNELBLASTER_BENCHMARK_JSON "
 
 
 def sha256_text(value: str) -> str:
-    """
-    处理 `sha256_text` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    value: 需要转换、保存或校验的值。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _matching_delimiter(text: str, start: int, opening: str, closing: str) -> int:
-    """
-    处理 `matching_delimiter` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-    参数:
-    text: 调用方提供的 `text` 参数。
-    start: 调用方提供的 `start` 参数。
-    opening: 调用方提供的 `opening` 参数。
-    closing: 调用方提供的 `closing` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     depth = 0
     for index in range(start, len(text)):
         char = text[index]
@@ -65,12 +41,6 @@ def find_launch_definition(source: str) -> tuple[str, tuple[int, int]]:
 
     参数:
     source: 待分析或转换的源码文本。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     matches: list[tuple[str, tuple[int, int]]] = []
     pattern = re.compile(
@@ -104,9 +74,6 @@ def normalize_cuda_source(source: str) -> tuple[str, list[str]]:
 
     参数:
     source: 待分析或转换的源码文本。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     replacements = [
         (
@@ -147,18 +114,6 @@ def normalize_cuda_source(source: str) -> tuple[str, list[str]]:
 
 
 def find_launch_declaration(driver: str) -> tuple[str, tuple[int, int]]:
-    """
-    查找 `find_launch_declaration` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    driver: 调用方提供的 `driver` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     matches = list(
         re.finditer(
             r"void\s+launch_gpu_implementation\s*\(.*?\)\s*;",
@@ -175,19 +130,6 @@ def find_launch_declaration(driver: str) -> tuple[str, tuple[int, int]]:
 
 
 def _balanced_call_end(text: str, opening_parenthesis: int) -> int:
-    """
-    处理 `balanced_call_end` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-    参数:
-    text: 调用方提供的 `text` 参数。
-    opening_parenthesis: 调用方提供的 `opening_parenthesis` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     depth = 0
     for index in range(opening_parenthesis, len(text)):
         char = text[index]
@@ -206,18 +148,6 @@ def _balanced_call_end(text: str, opening_parenthesis: int) -> int:
 
 
 def find_launch_call(driver: str) -> tuple[str, tuple[int, int]]:
-    """
-    查找 `find_launch_call` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    driver: 调用方提供的 `driver` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     _declaration, declaration_span = find_launch_declaration(driver)
     for match in re.finditer(r"\blaunch_gpu_implementation\s*\(", driver):
         if declaration_span[0] <= match.start() < declaration_span[1]:
@@ -229,16 +159,7 @@ def find_launch_call(driver: str) -> tuple[str, tuple[int, int]]:
 
 
 def split_compilation_units(driver: str, cuda_source: str) -> tuple[str, str, str]:
-    """
-    把 Driver 与候选 CUDA 源码拆分成独立编译单元，同时保留必要声明。
-
-    参数:
-    driver: 调用方提供的 `driver` 参数。
-    cuda_source: 调用方提供的 `cuda_source` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """把 Driver 与候选 CUDA 源码拆分成独立编译单元，同时保留必要声明。"""
     declaration, span = find_launch_declaration(driver)
     main = driver[: span[0]] + driver[span[1] :]
     main = '#include "cuda_model.cuh"\n' + main
@@ -258,22 +179,7 @@ def instrument_driver(
     repetitions: int,
     inner_loops: int,
 ) -> str:
-    """
-    向 CUDA Driver 注入稳定的事件计时代码，以收集候选延迟样本。
-
-    参数:
-    driver: 调用方提供的 `driver` 参数。
-    seed: 调用方提供的 `seed` 参数。
-    warmup: 调用方提供的 `warmup` 参数。
-    repetitions: 调用方提供的 `repetitions` 参数。
-    inner_loops: 调用方提供的 `inner_loops` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """向 CUDA Driver 注入稳定的事件计时代码，以收集候选延迟样本。"""
     call, span = find_launch_call(driver)
     if min(warmup, repetitions) < 1 or inner_loops < 0:
         raise ValueError("Warmup/repetitions must be positive and inner_loops non-negative.")
@@ -354,15 +260,7 @@ def instrument_driver(
 
 
 def instrument_profiler_driver(driver: str) -> str:
-    """
-    预热资源，然后将 Nsight Compute 限制为一次启动器调用。
-
-    参数:
-    driver: 调用方提供的 `driver` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """预热资源，然后将 Nsight Compute 限制为一次启动器调用。"""
     call, span = find_launch_call(driver)
     block = (
         "{\n"
@@ -383,19 +281,6 @@ def instrument_profiler_driver(driver: str) -> str:
 
 
 def percentile(values: Iterable[float], fraction: float) -> float:
-    """
-    处理 `percentile` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    values: 调用方提供的 `values` 参数。
-    fraction: 调用方提供的 `fraction` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     ordered = sorted(float(value) for value in values)
     if not ordered:
         raise ValueError("Cannot calculate a percentile of an empty sequence.")
@@ -411,18 +296,6 @@ def percentile(values: Iterable[float], fraction: float) -> float:
 
 
 def latency_summary(values: Iterable[float]) -> dict[str, float | int]:
-    """
-    处理 `latency_summary` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    values: 调用方提供的 `values` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     samples = [float(value) for value in values]
     if not samples:
         raise ValueError("At least one latency sample is required.")
@@ -442,18 +315,6 @@ def latency_summary(values: Iterable[float]) -> dict[str, float | int]:
 
 
 def session_spread_percent(values: Iterable[float]) -> float:
-    """
-    处理 `session_spread_percent` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    values: 调用方提供的 `values` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     medians = [float(value) for value in values]
     if not medians:
         raise ValueError("At least one session median is required.")
@@ -464,15 +325,7 @@ def session_spread_percent(values: Iterable[float]) -> float:
 
 
 def ncu_metric_names(csv_text: str) -> list[str]:
-    """
-    从 NCU 原始 CSV 导出中提取实际的指标名称列。
-
-    参数:
-    csv_text: 调用方提供的 `csv_text` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """从 NCU 原始 CSV 导出中提取实际的指标名称列。"""
     rows = list(csv.reader(io.StringIO(csv_text)))
     header_index: int | None = None
     metric_column: int | None = None
@@ -504,23 +357,7 @@ def comparison_validity(
     speedup: float,
     max_session_spread_percent: float,
 ) -> dict[str, Any]:
-    """
-    根据会话波动和分析模式判断一组性能比较是否可信。
-
-    参数:
-    baseline_source_sha256: 调用方提供的 `baseline_source_sha256` 参数。
-    candidate_source_sha256: 调用方提供的 `candidate_source_sha256` 参数。
-    baseline_session_medians: 调用方提供的 `baseline_session_medians` 参数。
-    candidate_session_medians: 调用方提供的 `candidate_session_medians` 参数。
-    speedup: 调用方提供的 `speedup` 参数。
-    max_session_spread_percent: 调用方提供的 `max_session_spread_percent` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """根据会话波动和分析模式判断一组性能比较是否可信。"""
     baseline_values = [float(value) for value in baseline_session_medians]
     candidate_values = [float(value) for value in candidate_session_medians]
     if len(baseline_values) != len(candidate_values) or not baseline_values:
@@ -548,14 +385,6 @@ def write_compilation_units(
     driver: str,
     cuda_source: str,
 ) -> None:
-    """
-    写入 `write_compilation_units` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    directory: 调用方提供的 `directory` 参数。
-    driver: 调用方提供的 `driver` 参数。
-    cuda_source: 调用方提供的 `cuda_source` 参数。
-    """
     directory.mkdir(parents=True, exist_ok=False)
     main, header, cuda = split_compilation_units(driver, cuda_source)
     (directory / "main.cpp").write_text(main, encoding="utf-8")

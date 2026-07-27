@@ -1,7 +1,7 @@
 """Fixed-command executor for allowlisted smoke bundles only.
 
-This is not the PR 05 untrusted-code sandbox.  It deliberately accepts no
-caller argv, paths, environment, profiler, mount, or container options.
+This trusted executor is separate from the generated-code sandbox. It accepts
+no caller argv, paths, environment, profiler, mount, or container options.
 """
 
 from __future__ import annotations

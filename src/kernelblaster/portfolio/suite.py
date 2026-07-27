@@ -25,7 +25,6 @@ from typing import Any
 
 @dataclass(frozen=True)
 class PortfolioTask:
-    """封装 `PortfolioTask` 对应的领域状态与操作。"""
     number: int
     task_id: str
     name: str
@@ -47,29 +46,10 @@ class PortfolioSuite:
 
     @property
     def problem_numbers(self) -> str:
-        """
-        处理 `problem_numbers` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         return ",".join(str(task.number) for task in self.tasks)
 
 
 def resolve_suite_path(value: str, repo_root: Path) -> Path:
-    """
-    解析 `resolve_suite_path` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        value: 需要转换、保存或校验的值。
-        repo_root: 调用方提供的 `repo_root` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     candidate = Path(value).expanduser()
     if candidate.is_file():
         return candidate.resolve()
@@ -84,19 +64,6 @@ def resolve_suite_path(value: str, repo_root: Path) -> Path:
 
 
 def load_suite(value: str, repo_root: Path) -> PortfolioSuite:
-    """
-    加载 `load_suite` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        value: 需要转换、保存或校验的值。
-        repo_root: 调用方提供的 `repo_root` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     source_path = resolve_suite_path(value, repo_root)
     raw = json.loads(source_path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):

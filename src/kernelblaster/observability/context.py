@@ -33,36 +33,15 @@ _event_context: ContextVar[dict[str, Any]] = ContextVar(
 
 
 def get_run_recorder() -> RunRecorder | None:
-    """
-    获取 `get_run_recorder` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     return _active_recorder.get()
 
 
 def set_run_recorder(recorder: RunRecorder | None) -> None:
-    """
-    设置 `set_run_recorder` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        recorder: 调用方提供的 `recorder` 参数。
-    """
     _active_recorder.set(recorder)
 
 
 @contextmanager
 def event_context(**values: Any) -> Iterator[None]:
-    """
-    处理 `event_context` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        values: 调用方提供的 `values` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     merged = {**_event_context.get(), **{k: v for k, v in values.items() if v is not None}}
     token = _event_context.set(merged)
     try:
@@ -72,13 +51,6 @@ def event_context(**values: Any) -> Iterator[None]:
 
 
 def record_event(event_type: str, **kwargs) -> None:
-    """
-    记录 `record_event` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        event_type: 调用方提供的 `event_type` 参数。
-        kwargs: 调用方提供的 `kwargs` 参数。
-    """
     recorder = get_run_recorder()
     if recorder is not None:
         context = _event_context.get()

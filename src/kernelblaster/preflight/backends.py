@@ -27,6 +27,12 @@ class RuntimeBackendBundle:
         logger: Any,
         work_dir: Path,
     ) -> Any:
+        """为经典可信路径创建 Events backend。
+
+        sandbox 候选不能携带或读取本地 ``driver_path``。它们必须由结构化
+        CandidateEvaluator 通过 Control/GPU Job 契约执行，因此这里明确拒绝
+        “安全后端失败后改用本地 Driver”的隐式回退。
+        """
         if self.execution_backend is ExecutionBackend.SANDBOX:
             raise RuntimeError(
                 "sandbox CandidateEvaluator is required; trusted-local fallback is disabled"

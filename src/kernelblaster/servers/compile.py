@@ -50,51 +50,21 @@ _ARTIFACTS_DIR = None
 
 
 def _allowed_source(path: str) -> Path:
-    """
-    处理 `allowed_source` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-    参数:
-        path: 待读取、写入或校验的文件系统路径。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     return allowed_source_path(path)
 
 
 def get_cmake_prefix_path() -> str:
-    """
-    获取CMAKE_PREFIX_PATH进行编译
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """获取CMAKE_PREFIX_PATH进行编译"""
     return f'"{cmake_prefix_path};{sysconfig.get_path("include")}"'
 
 
 def get_cuda_env_template_path() -> Path:
-    """
-    获取cuda_env模板目录的路径
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """获取cuda_env模板目录的路径"""
     return Path(__file__).parent / "cuda_env"
 
 
 def extract_arch_version(sm_version: str) -> str:
-    """
-    从 SM 版本字符串中提取架构版本
-
-    参数:
-        sm_version: 调用方提供的 `sm_version` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """从 SM 版本字符串中提取架构版本"""
     match = re.fullmatch(r"sm_(\d{2,3})", sm_version)
     if match is None:
         raise ValueError(f"Invalid sm version format: {sm_version}")
@@ -112,14 +82,6 @@ def write_compilation_files(
 
     返回：
     (main_fp_out、header_fp_out、cuda_fp_out) 路径的元组
-
-    参数:
-        work_dir: 调用方提供的 `work_dir` 参数。
-        main_file_path: 调用方提供的 `main_file_path` 参数。
-        cuda_file_path: 调用方提供的 `cuda_file_path` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     main_fp_out = work_dir / "main.cpp"
     header_fp_out = work_dir / "cuda_model.cuh"
@@ -141,17 +103,7 @@ def build_cmake_command(
     arch_version: str,
     build_type: str = "Release",
 ) -> list[str]:
-    """
-    构建cmake配置命令
-
-    参数:
-        sm_build_dir: 调用方提供的 `sm_build_dir` 参数。
-        arch_version: 调用方提供的 `arch_version` 参数。
-        build_type: 调用方提供的 `build_type` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """构建cmake配置命令"""
     return [
         "cmake",
         f"-DCMAKE_PREFIX_PATH={cmake_prefix_path};{sysconfig.get_path('include')}",
@@ -164,12 +116,6 @@ def build_cmake_command(
 # 在后台启动工作任务
 @asynccontextmanager
 async def lifespan(app):
-    """
-    处理 `lifespan` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        app: 调用方提供的 `app` 参数。
-    """
     logger.info(
         f"Started compilation server on {args.host}:{args.port} with {args.num_workers} workers"
     )
@@ -183,15 +129,6 @@ APP = FastAPI(lifespan=lifespan)
 
 
 def get_cuda_env_root(thread_id: int) -> Path:
-    """
-    获取 `get_cuda_env_root` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        thread_id: 调用方提供的 `thread_id` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     path = ENV_DIR / f"cuda_eval_{thread_id}"
     if not path.exists():
         setup_cuda_envs(path)
@@ -201,15 +138,6 @@ def get_cuda_env_root(thread_id: int) -> Path:
 
 def get_persistent_root(unique_name: str) -> Path:
     # 根据输出文件名创建唯一目录，避免其中的产物被后续编译覆盖。
-    """
-    获取 `get_persistent_root` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        unique_name: 调用方提供的 `unique_name` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     persistent_artifacts_dir = ENV_DIR / "persistent" / unique_name
     assert (
         not persistent_artifacts_dir.exists()
@@ -219,18 +147,11 @@ def get_persistent_root(unique_name: str) -> Path:
 
 
 def setup_cuda_envs(directory: Path):
-    """
-    处理 `setup_cuda_envs` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        directory: 调用方提供的 `directory` 参数。
-    """
     shutil.copytree(CUDA_ENV_PATH, directory)
     logger.info(f"Set up CUDA environment at {directory}")
 
 
 def free_cuda_envs():
-    """释放 `free_cuda_envs` 对应的领域操作，并返回调用方所需的标准化结果。"""
     if ENV_DIR.exists():
         shutil.rmtree(ENV_DIR)
     logger.info("Cleaned up CUDA environment")
@@ -238,15 +159,6 @@ def free_cuda_envs():
 
 def get_all_includes(main_file_text: str) -> list[str]:
     # 获取尖括号包围的包含内容
-    """
-    获取 `get_all_includes` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        main_file_text: 调用方提供的 `main_file_text` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     system_includes = re.findall(r"(#include\s+<[^>]+>)", main_file_text)
     # 获取用引号括起来的包含内容
     user_includes = re.findall(r'(#include\s+"[^"]+")', main_file_text)
@@ -256,19 +168,7 @@ def get_all_includes(main_file_text: str) -> list[str]:
 def split_files_for_compilation(
     main_file_path: str, cuda_file_path: str | None
 ) -> tuple[str, str, str]:
-    """
-    该方法解析驱动文件和cuda文件，并将其分成两个可编译单元。
-
-    参数:
-        main_file_path: 调用方提供的 `main_file_path` 参数。
-        cuda_file_path: 调用方提供的 `cuda_file_path` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        CompilationError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """该方法解析驱动文件和cuda文件，并将其分成两个可编译单元。"""
     main_file_text = Path(main_file_path).read_text()
     header_file_text = ""
     cuda_file_text = ""
@@ -307,7 +207,7 @@ def split_files_for_compilation(
 
 
 class CompilationRequest(BaseModel):
-    """描述服务执行一次操作所需的输入字段。"""
+    """旧版编译服务接收的 CUDA/C++ 单元和目标 SM。"""
     job_name: str
     main_file: str
     cuda_file: str
@@ -321,7 +221,7 @@ class CompilationRequest(BaseModel):
 
 
 class CompilationResult(BaseModel):
-    """保存一次操作的标准化结果及其诊断信息。"""
+    """旧版编译请求的产物路径、源码回显和错误状态。"""
     job_name: str
     main_file: str
     cuda_file: str
@@ -332,14 +232,8 @@ class CompilationResult(BaseModel):
 
 
 class CompilationError(Exception):
-    """表示该领域内可被调用方识别和处理的失败。"""
+    """编译队列或工具链无法完成请求时抛出。"""
     def __init__(self, message: str):
-        """
-        初始化 CompilationError 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            message: 调用方提供的 `message` 参数。
-        """
         self.message = message
         super().__init__(self.message)
 
@@ -350,14 +244,6 @@ def complete_compilation_future(
     result: bool | None = None,
     error: Exception | None = None,
 ) -> None:
-    """
-    完成 `complete_compilation_future` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        completion_future: 调用方提供的 `completion_future` 参数。
-        result: 上一步产生并等待进一步处理的结果。
-        error: 调用方提供的 `error` 参数。
-    """
     if completion_future.done():
         return
     if error is not None:
@@ -388,21 +274,7 @@ async def exec_compilation(
     - cuda_model.cu（从 <cuda_file> 复制，并在顶部附加#include“cuda_model.cuh”）
 
     参数:
-        job_name: 调用方提供的 `job_name` 参数。
-        main_file: 调用方提供的 `main_file` 参数。
-        cuda_file: 调用方提供的 `cuda_file` 参数。
-        sm_version: 调用方提供的 `sm_version` 参数。
-        worker_id: 调用方提供的 `worker_id` 参数。
-        output_path: 调用方提供的 `output_path` 参数。
-        persistent_artifacts: 调用方提供的 `persistent_artifacts` 参数。
-        debug: 调用方提供的 `debug` 参数。
         timeout: 允许操作等待的最长秒数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        CompilationError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     assert not debug, "Debug compilation is not supported"
 
@@ -468,13 +340,7 @@ async def exec_compilation(
 
 
 async def compilation_worker(worker_id: int, debug: bool = False):
-    """
-    处理编译队列中的文件
-
-    参数:
-        worker_id: 调用方提供的 `worker_id` 参数。
-        debug: 调用方提供的 `debug` 参数。
-    """
+    """处理编译队列中的文件"""
     while True:
         (
             job_name,
@@ -529,12 +395,7 @@ async def compilation_worker(worker_id: int, debug: bool = False):
 
 @APP.get("/health")
 async def health_check():
-    """
-    健康检查端点
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """健康检查端点"""
     return {"status": "healthy", "service": "compile-server"}
 
 
@@ -547,23 +408,6 @@ async def process_compilation_request(
     persistent_artifacts: int = 0,
     _authorized: None = Depends(require_worker_token),
 ):
-    """
-    处理 `process_compilation_request` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        job_name: 调用方提供的 `job_name` 参数。
-        main_file: 调用方提供的 `main_file` 参数。
-        cuda_file: 调用方提供的 `cuda_file` 参数。
-        sm_version: 调用方提供的 `sm_version` 参数。
-        persistent_artifacts: 调用方提供的 `persistent_artifacts` 参数。
-        _authorized: 调用方提供的 `_authorized` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        HTTPException: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     logger.info(f"/compile request received: job_name={job_name}, main_file={main_file}, cuda_file={cuda_file}, sm_version={sm_version}, backlog: {QUEUE.qsize()}")
     
     try:
@@ -669,13 +513,7 @@ async def process_compilation_request(
 
 
 async def start_workers(num_workers: int, debug: bool = False):
-    """
-    启动编译工作任务
-
-    参数:
-        num_workers: 调用方提供的 `num_workers` 参数。
-        debug: 调用方提供的 `debug` 参数。
-    """
+    """启动编译工作任务"""
     workers = [
         asyncio.create_task(compilation_worker(worker_id, debug))
         for worker_id in range(num_workers)
@@ -712,7 +550,6 @@ def run_compilation_server(host: str, port: int):
 
 def main():
     # 运行 REST API 编译服务器
-    """处理 `main` 对应的领域操作，并返回调用方所需的标准化结果。"""
     run_compilation_server(
         args.host,
         args.port,

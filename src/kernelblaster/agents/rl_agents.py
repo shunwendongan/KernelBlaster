@@ -58,12 +58,6 @@ class Trajectory:
     final_measurement: Measurement | None = None
     
     def add_step(self, step: TrajectoryStep):
-        """
-        处理 `add_step` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-            step: 调用方提供的 `step` 参数。
-        """
         self.steps.append(step)
         self.total_reward += step.reward
         if len(self.steps) == 1:
@@ -87,48 +81,24 @@ class ReplayBuffer:
     """存储政策学习的轨迹。"""
     
     def __init__(self, max_size: int = 1000):
-        """
-        初始化 ReplayBuffer 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            max_size: 调用方提供的 `max_size` 参数。
-        """
         self.max_size = max_size
         self.trajectories: List[Trajectory] = []
     
     def add_trajectory(self, trajectory: Trajectory):
-        """
-        将轨迹添加到缓冲区。
-
-        参数:
-            trajectory: 调用方提供的 `trajectory` 参数。
-        """
+        """将轨迹添加到缓冲区。"""
         self.trajectories.append(trajectory)
         if len(self.trajectories) > self.max_size:
             # 删除最旧的轨迹
             self.trajectories.pop(0)
     
     def get_recent_trajectories(self, n: int = None) -> List[Trajectory]:
-        """
-        获取最近的n条轨迹。
-
-        参数:
-            n: 调用方提供的 `n` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """获取最近的n条轨迹。"""
         if n is None:
             return self.trajectories
         return self.trajectories[-n:]
     
     def get_statistics(self) -> Dict[str, float]:
-        """
-        获取有关缓冲区中轨迹的统计数据。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """获取有关缓冲区中轨迹的统计数据。"""
         if not self.trajectories:
             return {}
         
@@ -159,12 +129,6 @@ class PolicyEvaluationAgent:
     """通过比较预测结果与实际结果来评估策略绩效的代理。"""
     
     def __init__(self, model: str = None):
-        """
-        初始化 PolicyEvaluationAgent 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            model: 生成候选时使用的模型标识。
-        """
         self.model = model or config.MODEL
         self.system_prompt = """You are a performance analysis expert specializing in CUDA optimization evaluation.
 
@@ -185,11 +149,7 @@ Focus on actionable insights that can improve future optimization predictions.""
         用自然语言评估政策绩效和回报分析。
 
         参数:
-            replay_buffer: 调用方提供的 `replay_buffer` 参数。
             database: 保存历史状态与优化经验的共享数据库。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         
         recent_trajectories = replay_buffer.get_recent_trajectories(10)  # 分析最近 10 条轨迹
@@ -247,12 +207,6 @@ class PerfGapAnalysisAgent:
     """分析性能差距并确定预测与现实不同的原因的代理。"""
     
     def __init__(self, model: str = None):
-        """
-        初始化 PerfGapAnalysisAgent 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            model: 生成候选时使用的模型标识。
-        """
         self.model = model or config.MODEL
         self.system_prompt = """You are a CUDA performance analysis expert specializing in understanding optimization failures and successes.
 
@@ -267,16 +221,7 @@ When analyzing performance gaps, consider:
 Provide specific, technical insights about why certain optimizations succeeded or failed."""
 
     async def analyze_performance_gaps(self, evaluation_result: str, recent_failures: List[TrajectoryStep]) -> str:
-        """
-        分析绩效差距并提供有关预测错误的见解。
-
-        参数:
-            evaluation_result: 调用方提供的 `evaluation_result` 参数。
-            recent_failures: 调用方提供的 `recent_failures` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """分析绩效差距并提供有关预测错误的见解。"""
         
         failure_analysis = []
         for step in recent_failures:
@@ -332,12 +277,6 @@ class ParameterUpdateAgent:
     """根据分析结果更新优化数据库的代理。"""
     
     def __init__(self, model: str = None):
-        """
-        初始化 ParameterUpdateAgent 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            model: 生成候选时使用的模型标识。
-        """
         self.model = model or config.MODEL
         self.system_prompt = """You are a creative database management expert for CUDA optimization strategies.
 
@@ -366,11 +305,7 @@ Output your recommendations as structured JSON updates that can be applied to th
         根据差距分析更新数据库参数。
 
         参数:
-            gap_analysis: 调用方提供的 `gap_analysis` 参数。
             database: 保存历史状态与优化经验的共享数据库。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         
         current_stats = database.get_database_stats()
@@ -509,7 +444,6 @@ Focus on innovative, data-driven updates that will improve future optimization p
 
         参数:
             database: 保存历史状态与优化经验的共享数据库。
-            updates: 调用方提供的 `updates` 参数。
         """
         
         # 应用复合优化预测（创建新的复合优化）

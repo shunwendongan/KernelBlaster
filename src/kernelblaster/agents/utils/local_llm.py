@@ -45,15 +45,7 @@ _model_cache: Dict[str, tuple] = {}  # model_name ->（分词器，模型）
 
 
 def is_local_model(model_name: str) -> bool:
-    """
-    检查模型名称是否表明它应该在本地运行。
-
-    参数:
-        model_name: 调用方提供的 `model_name` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """检查模型名称是否表明它应该在本地运行。"""
     if not model_name:
         return False
     local_model_patterns = [
@@ -96,15 +88,6 @@ def get_local_model(
     -------
     元组
     （分词器，模型）元组
-
-    参数:
-        model_name: 调用方提供的 `model_name` 参数。
-        use_4bit: 调用方提供的 `use_4bit` 参数。
-        device_map: 调用方提供的 `device_map` 参数。
-        trust_remote_code: 调用方提供的 `trust_remote_code` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     # 从参数或环境变量确定device_map
     if device_map is None:
@@ -175,9 +158,6 @@ def format_messages_for_qwen(messages: List[Dict]) -> str:
 
     参数:
         messages: 按对话顺序排列的 LLM 消息。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     # 提取系统消息（如果存在）
     system_message = None
@@ -233,15 +213,7 @@ async def generate_code_local(
 
     参数:
         messages: 按对话顺序排列的 LLM 消息。
-        n_tasks: 调用方提供的 `n_tasks` 参数。
         model: 生成候选时使用的模型标识。
-        max_tokens: 调用方提供的 `max_tokens` 参数。
-        temperature: 调用方提供的 `temperature` 参数。
-        top_p: 调用方提供的 `top_p` 参数。
-        use_4bit: 调用方提供的 `use_4bit` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     start_time = time.time()
     
@@ -415,15 +387,7 @@ async def generate_code_local_batch(
     响应对象列表，每个提示一个
 
     参数:
-        prompts: 调用方提供的 `prompts` 参数。
         model: 生成候选时使用的模型标识。
-        max_tokens: 调用方提供的 `max_tokens` 参数。
-        temperature: 调用方提供的 `temperature` 参数。
-        top_p: 调用方提供的 `top_p` 参数。
-        use_4bit: 调用方提供的 `use_4bit` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     start_time = time.time()
     

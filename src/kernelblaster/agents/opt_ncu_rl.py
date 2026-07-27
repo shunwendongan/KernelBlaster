@@ -63,15 +63,7 @@ import os
 
 
 def parse_ncu_metrics(ncu_log: str) -> Dict[str, float]:
-    """
-    从 NCU 日志中解析关键指标以进行状态确定。
-
-    参数:
-    ncu_log: 调用方提供的 `ncu_log` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """从 NCU 日志中解析关键指标以进行状态确定。"""
     metrics = {}
 
     
@@ -80,15 +72,7 @@ def parse_ncu_metrics(ncu_log: str) -> Dict[str, float]:
     # 因此，我们搜索*名称*并获取**该行上的最后一个数字标记**。
 
     def _build_pattern(keyword: str) -> str:
-        """
-        返回捕获匹配行上最后一个数字的正则表达式。
-
-        参数:
-        keyword: 调用方提供的 `keyword` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """返回捕获匹配行上最后一个数字的正则表达式。"""
         # .*？非贪婪直到最终数字（处理可变列/间距）
         return rf"{keyword}.*?([0-9]+(?:\.[0-9]+)?)"
 
@@ -126,20 +110,7 @@ def generate_strategy_guided_prompt(
     override_description: str | None = None,
     original_code: str | None = None,
 ) -> str:
-    """
-    生成指导 LLM 使用综合优化数据库的提示。
-
-    参数:
-    optimization_entry: 调用方提供的 `optimization_entry` 参数。
-    annotated_ncu: 调用方提供的 `annotated_ncu` 参数。
-    ncu_log: 调用方提供的 `ncu_log` 参数。
-    database_content: 调用方提供的 `database_content` 参数。
-    override_description: 调用方提供的 `override_description` 参数。
-    original_code: 调用方提供的 `original_code` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """生成指导 LLM 使用综合优化数据库的提示。"""
     
     technique_descriptions = {
         "1.1_coalesced_access": "Focus on ensuring memory accesses are coalesced. Rearrange thread-to-data mapping so consecutive threads access consecutive memory locations.",
@@ -341,7 +312,6 @@ APPROACH:
 
 @dataclass
 class RLNCUFeedback(Feedback):
-    """封装 `RLNCUFeedback` 对应的领域状态与操作。"""
     elapsed_cycles: Optional[int] = None
     measurement: Measurement | None = None
     ncu_log: Optional[str] = None
@@ -357,16 +327,7 @@ class RLNCUAgent(FeedbackAgent):
 
     @staticmethod
     def next_performance_state(current_state: str | None, new_state: str | None) -> str:
-        """
-        合并新旧性能状态；Profiler 未给出新分类时保留已知状态。
-
-        参数:
-        current_state: 调用方提供的 `current_state` 参数。
-        new_state: 调用方提供的 `new_state` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """合并新旧性能状态；Profiler 未给出新分类时保留已知状态。"""
         return new_state or current_state or "events_only/unknown"
 
     @property
@@ -399,19 +360,6 @@ class RLNCUAgent(FeedbackAgent):
         profiler_backend: Optional[ProfilerBackend] = None,
     ):
         # 初始化基础反馈代理
-        """
-        初始化 RLNCUAgent 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-        fb_config: 调用方提供的 `fb_config` 参数。
-        code_to_optimize_fp: 调用方提供的 `code_to_optimize_fp` 参数。
-        database_path: 调用方提供的 `database_path` 参数。
-        max_rollout_steps: 调用方提供的 `max_rollout_steps` 参数。
-        replay_buffer_size: 调用方提供的 `replay_buffer_size` 参数。
-        update_frequency: 调用方提供的 `update_frequency` 参数。
-        database: 保存历史状态与优化经验的共享数据库。
-        profiler_backend: 调用方提供的 `profiler_backend` 参数。
-        """
         super().__init__(fb_config)
         
         self.test_code_fp = fb_config.test_code_fp
@@ -457,18 +405,6 @@ class RLNCUAgent(FeedbackAgent):
         self.num_rl_iterations = 50  # 默认为 50 次 RL 迭代
 
     async def _profile_candidate(self, filepath: Path) -> Tuple[str, str, str, Measurement]:
-        """
-        处理 `profile_candidate` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-        参数:
-        filepath: 目标文件路径。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-        异常:
-        ProfilerUnavailable: 输入、外部调用或状态不满足执行要求时抛出。
-        """
         if self.profiler_backend is None:
             annotated, raw_output, stderr, cycles = await self.gather_perf_metrics(filepath)
             return (
@@ -509,13 +445,8 @@ class RLNCUAgent(FeedbackAgent):
         仅当存在硬件反证据时才导出 NCU 状态。
 
         参数:
-        ncu_log: 调用方提供的 `ncu_log` 参数。
         metrics: 性能分析或正确性检查产生的指标集合。
         code: 待处理的源码文本。
-        measurement: 调用方提供的 `measurement` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         if self.profiling_mode == ProfilingMode.EVENTS_ONLY.value or not ncu_log.strip():
             return "events_only/unknown"
@@ -611,9 +542,6 @@ class RLNCUAgent(FeedbackAgent):
         """
         重写基本运行方法以实现特定于 RL 的行为。
         **并行**运行多个 RL 迭代并返回最佳结果。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         import asyncio as _asyncio
         
@@ -636,15 +564,7 @@ class RLNCUAgent(FeedbackAgent):
             initial_state_shared = "events_only/unknown"
 
         async def _run_single_iteration(iteration_idx: int):
-            """
-            执行一次展开并返回其轨迹的助手。
-
-            参数:
-            iteration_idx: 调用方提供的 `iteration_idx` 参数。
-
-            返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
+            """执行一次展开并返回其轨迹的助手。"""
             self.agent_logger.info(
                 f"[Async] RL Iteration {iteration_idx + 1}/{self.num_rl_iterations}")
             try:
@@ -859,12 +779,6 @@ class RLNCUAgent(FeedbackAgent):
 
         参数:
         filepath: 目标文件路径。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-        异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
         """
         # 重用 opt_ncu_annot_fixed5.py 中的现有分析逻辑
         # 使用单次执行运行以避免非确定性内核导致虚假
@@ -1079,13 +993,6 @@ class RLNCUAgent(FeedbackAgent):
         从 NCU 日志中仅提取 GPU 光速吞吐量部分。
         返回带有内核名称的简化日志以及每个内核的摘要表。
         这显着减少了令牌的使用，同时保留了基本的性能指标。
-
-        参数:
-        ncu_output: 调用方提供的 `ncu_output` 参数。
-        kernel_names: 调用方提供的 `kernel_names` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         import re
         
@@ -1229,16 +1136,7 @@ class RLNCUAgent(FeedbackAgent):
         return "\n\n".join(sections)
 
     async def run_rollout(self, initial_code: str, initial_state: str) -> Trajectory:
-        """
-        运行一条优化 rollout 轨迹，并记录每一步候选、反馈与奖励。
-
-        参数:
-        initial_code: 调用方提供的 `initial_code` 参数。
-        initial_state: 调用方提供的 `initial_state` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """运行一条优化 rollout 轨迹，并记录每一步候选、反馈与奖励。"""
         import json as _json, random, uuid as _uuid
         from dataclasses import asdict
 
@@ -1304,15 +1202,6 @@ class RLNCUAgent(FeedbackAgent):
             optimization_entry = None
             if plan:
                 def _safe_rel(x):
-                    """
-                    处理 `safe_rel` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-                    参数:
-                        x: 调用方提供的 `x` 参数。
-
-                    返回:
-                        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-                    """
                     try:
                         r = float(x)
                     except (TypeError, ValueError):
@@ -1511,12 +1400,7 @@ class RLNCUAgent(FeedbackAgent):
         return trajectory
 
     async def _record_completed_trajectory(self, trajectory: Trajectory) -> None:
-        """
-        仅记录一次完整的轨迹并触发策略更新。
-
-        参数:
-        trajectory: 调用方提供的 `trajectory` 参数。
-        """
+        """仅记录一次完整的轨迹并触发策略更新。"""
 
         self.replay_buffer.add_trajectory(trajectory)
         async with self._trajectory_lock:
@@ -1538,15 +1422,6 @@ class RLNCUAgent(FeedbackAgent):
         self, technique_name: str
     ) -> Optional[OptimizationEntry | CompositeOptimization]:
         # 搜索个人技术
-        """
-        处理 `lookup_optim_entry_by_name` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-        参数:
-        technique_name: 调用方提供的 `technique_name` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         for state_data in self.database.optimization_strategies.values():
             for opt in state_data.get("optimizations", []):
                 if opt.technique == technique_name:
@@ -1573,26 +1448,11 @@ class RLNCUAgent(FeedbackAgent):
 
         参数:
         code: 待处理的源码文本。
-        optimization_entry: 调用方提供的 `optimization_entry` 参数。
-        step: 调用方提供的 `step` 参数。
-        trajectory_dir: 调用方提供的 `trajectory_dir` 参数。
-        strategy_description: 调用方提供的 `strategy_description` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         # --------------------------------------------------------------
         # 帮助保存提示/响应对以进行代理检查
         # --------------------------------------------------------------
         def _save_agentic_log(label: str, prompt_text: str, response_text: str):
-            """
-            保存 `save_agentic_log` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-            参数:
-            label: 调用方提供的 `label` 参数。
-            prompt_text: 调用方提供的 `prompt_text` 参数。
-            response_text: 调用方提供的 `response_text` 参数。
-            """
             if trajectory_dir is None:
                 return  # 如果未提供目录，则禁用日志记录
             log_fp = trajectory_dir / "agentic_steps_log.txt"
@@ -1843,14 +1703,6 @@ class RLNCUAgent(FeedbackAgent):
         """
         根据预测准确性和实际表现计算奖励。
         通过跳过精度奖励来安全地处理无/零 predicted_improvement。
-
-        参数:
-        predicted_improvement: 调用方提供的 `predicted_improvement` 参数。
-        actual_improvement: 调用方提供的 `actual_improvement` 参数。
-        is_faster: 调用方提供的 `is_faster` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         
         # 改进的基本奖励
@@ -1932,12 +1784,8 @@ class RLNCUAgent(FeedbackAgent):
 
         参数:
         response: 需要解析或规范化的服务响应。
-        attempt_id: 调用方提供的 `attempt_id` 参数。
         task_id: 调用方分配的任务唯一标识。
         logger: 记录诊断信息和任务进度的日志器。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         
         # 如果这是第一次调用则初始化
@@ -2073,12 +1921,6 @@ The optimization process is learning and adapting. Continue with further optimiz
         尝试根据发现的状态的特征为其添加默认优化。
 
         这是未找到优化时的后备机制。
-
-        参数:
-        current_state: 调用方提供的 `current_state` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         try:
             # 根据常见模式定义默认优化
@@ -2126,12 +1968,7 @@ The optimization process is learning and adapting. Continue with further optimiz
         return False
 
     def get_performance_summary(self) -> Dict[str, Any]:
-        """
-        获取全面的绩效总结。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """获取全面的绩效总结。"""
         return {
             'total_trajectories': self.total_trajectories,
             'iteration_count': self.iteration_count,

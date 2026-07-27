@@ -21,7 +21,6 @@ import subprocess
 
 # python <3.11中不包含StrEnum类，因此我们在这里定义它
 class StrEnum(str, Enum):
-    """封装 `StrEnum` 对应的领域状态与操作。"""
     pass
 
 
@@ -45,7 +44,6 @@ _SM_MAP = {
 
 
 class GPUType(StrEnum):
-    """封装 `GPUType` 对应的领域状态与操作。"""
     A100 = "a100"
     A6000 = "a6000"
     RTX3080 = "rtx3080"
@@ -61,12 +59,6 @@ class GPUType(StrEnum):
 
     @property
     def sm(self):
-        """
-        处理 `sm` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         assert self.value in _SM_MAP, f"Unknown GPU type: {self.value}"
         return _SM_MAP[self.value]
 
@@ -75,9 +67,6 @@ class GPUType(StrEnum):
         """
         返回当前的 GPU 类型。
         对此进行缓存以避免重复调用 nvidia-smi。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         global _current_gpu
         if _current_gpu is None:
@@ -98,18 +87,7 @@ class GPUType(StrEnum):
 
 
 def _parse_gpu_name(nvidia_smi_name: str) -> GPUType:
-    """
-    从 nvidia-smi 输出中解析 GPU 类型。
-
-    参数:
-    nvidia_smi_name: 调用方提供的 `nvidia_smi_name` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """从 nvidia-smi 输出中解析 GPU 类型。"""
     nvidia_smi_name = nvidia_smi_name.replace(" ", "").lower()
 
     # 按长度降序对 GPU 类型进行排序，以匹配最长的可能名称。

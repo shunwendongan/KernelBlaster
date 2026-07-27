@@ -39,22 +39,11 @@ class LLMResponse:
     response_models: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
-        """
-        处理 `__str__` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         return str(asdict(self))
 
     @property
     def response(self) -> str:
-        """
-        返回遗留单一响应调用者的第一代。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """返回遗留单一响应调用者的第一代。"""
         return self.generations[0] if self.generations else ""
 
 
@@ -74,20 +63,11 @@ class LLMProvider(ABC):
         参数:
             messages: 按对话顺序排列的 LLM 消息。
             model: 生成候选时使用的模型标识。
-            n: 调用方提供的 `n` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
 
     @abstractmethod
     def public_config(self) -> dict[str, Any]:
-        """
-        返回适用于清单和日志的非秘密配置。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """返回适用于清单和日志的非秘密配置。"""
 
 
 class LLMConfigurationError(RuntimeError):

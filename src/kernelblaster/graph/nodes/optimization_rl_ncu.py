@@ -25,29 +25,26 @@ from ...profiling import CudaEventsRunner, EventsProfilerBackend
 
 async def optimization_rl_ncu(state: GraphState, *, runtime=None):
     """
-    基于强化学习的 NCU 优化节点。
-    该节点采用标准工作流程生成的CUDA内核
-    并使用 RLNCUAgent 应用基于 RL 的优化。
+    解析一个 KernelBench-CUDA 任务并运行 RLNCUAgent 优化循环。
 
-    需要来自 data/kernelbench-cuda 的精选 CUDA 文件（driver.cpp 和 init.cu）。
-    如果这些文件不可用，则会正常跳过该问题。
+    名称中的 ``ncu`` 来自早期实现；当前排名信号可以是 CUDA Events。
+    NCU/NSYS 仅在可用时提供诊断，不能覆盖 correctness 或 timing 终态。
+    节点优先读取 ``data/kernelbench-cuda`` 中的 ``init.cu`` 与
+    ``driver.cpp``。``runtime is None`` 或显式 ``trusted_local`` 使用经典
+    Driver 执行；安全 sandbox runtime 在 ``master`` 上会 fail closed，等待结构化
+    CandidateEvaluator 接管生成候选，绝不会静默退回本地执行。
 
     参数:
         state: 工作流节点读取并按约定更新的共享状态。
 
     返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        仅更新 ``rl_ncu_cuda_fp`` 和序列化 ``run_outcome`` 的状态片段。
     """
     base_folder = Path(state["folder"])
     base_folder.mkdir(parents=True, exist_ok=True)
     
-    # 优先从 data/kernelbench-cuda 加载整理后的输入产物，而不是依赖
-    # 每次运行输出文件夹中预先存在的文件。
-    # 我们从已经结构化的 run 文件夹中派生 <level>/<problem_name>
-    # 就像.../level1/<problem_name>/。
-    # 在容器中，该文件位于：
-    # 容器内源码路径：/kernelblaster/src/kernelblaster/graph/nodes/optimization_rl_ncu.py
-    # 所以parents[4] == /kernelblaster (repo root)。
+    # 从输出目录的 <level>/<problem_name> 结构反推原始任务。源码文件位于
+    # <repo>/src/kernelblaster/graph/nodes/，因此 parents[4] 是仓库根目录。
     repo_root = Path(__file__).resolve().parents[4]
     curated_root = Path(state.get("kernelbench_cuda_root", repo_root / "data/kernelbench-cuda"))
     level = base_folder.parent.name
@@ -61,7 +58,7 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
     run_driver_cpp = base_folder / "driver.cpp"
     run_init_cu = base_folder / "init.cu"
     
-    # 处理缺失的 cuda_fp - 需要策划或运行文件夹 init.cu
+    # 显式 state 路径优先；否则使用仓库内任务，最后才读取恢复目录。
     cuda_fp = state.get("cuda_fp")
     if cuda_fp is None:
         if curated_init_cu.exists():
@@ -85,7 +82,7 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
 
     cuda_fp = Path(cuda_fp)
     
-    # 处理缺失的 test_code_fp - 需要策划或运行文件夹 driver.cpp
+    # Driver 同样按“显式输入 → 仓库任务 → 恢复目录”解析。
     test_code_fp = state.get("test_code_fp")
     if test_code_fp is None:
         if curated_driver_cpp.exists():
@@ -111,7 +108,7 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
     
     save_state_to_json(state, base_folder / "state.json")
 
-    # 创建 RL 代理配置
+    # FeedbackConfig 只描述本任务；实际执行后端在 profiler_backend 中注入。
     fb_config = FeedbackConfig(
         agent_name="rl_ncu",
         base_folder=base_folder,
@@ -124,7 +121,7 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
         num_pgen=4,  # 强化学习代理使用更少的并行编码器，因为它更具战略性
     )
     
-    # 从状态获取 RL 参数（从工作流配置传递）
+    # rollout 参数来自 WorkflowConfig，并随 state.json 一起保留以便审计。
     database_path = base_folder / "optimization_database.md"
     max_rollout_steps = state.get("rl_rollout_steps", 5)
     replay_buffer_size = state.get("rl_buffer_size", 100)
@@ -159,7 +156,7 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
         profiler_backend=events_backend,
     )
     
-    # 初始化并运行 RL 优化
+    # initialize 先建立 correctness-passing 基线；run 才能比较新候选。
     await agent_rl_ncu.initialize()
     
     # 通过多次迭代运行 RL 优化
@@ -180,7 +177,8 @@ async def optimization_rl_ncu(state: GraphState, *, runtime=None):
             f"RL optimization ended with {outcome.status.value}: {outcome.reason}"
         )
 
-    # 保存最佳结果
+    # 只有标准终态为 success 才复制最终 CUDA 文件。失败和无提升不能产生
+    # 看似可用的 final_rl_cuda_perf.cu。
     final_file = None
     if outcome.success:
         final_file = base_folder / "final_rl_cuda_perf.cu"

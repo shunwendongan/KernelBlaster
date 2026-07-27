@@ -16,15 +16,8 @@
 """定义优化反馈流程使用的领域异常。"""
 
 class FeedbackError(Exception):
-    """表示该领域内可被调用方识别和处理的失败。"""
+    """候选编译、正确性或计时反馈无法形成有效 Agent 结果。"""
     def __init__(self, feedback: str, logging_message: str = None):
-        """
-        初始化 FeedbackError 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            feedback: 调用方提供的 `feedback` 参数。
-            logging_message: 调用方提供的 `logging_message` 参数。
-        """
         self.feedback = feedback
         if logging_message is None:
             logging_message = self.feedback

@@ -23,18 +23,6 @@ FAILURE_CATEGORIES = {
 
 
 def geometric_mean(values: Iterable[float]) -> float | None:
-    """
-    处理 `geometric_mean` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    values: 调用方提供的 `values` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-    ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     numbers = [float(value) for value in values]
     if not numbers:
         return None
@@ -44,15 +32,6 @@ def geometric_mean(values: Iterable[float]) -> float | None:
 
 
 def classify_event(event: dict[str, Any]) -> str | None:
-    """
-    分类 `classify_event` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    event: 调用方提供的 `event` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     event_type = str(event.get("event_type", ""))
     if event_type in FAILURE_CATEGORIES:
         return FAILURE_CATEGORIES[event_type]
@@ -62,15 +41,6 @@ def classify_event(event: dict[str, Any]) -> str | None:
 
 
 def failure_counts(events: Iterable[dict[str, Any]]) -> Counter[str]:
-    """
-    处理 `failure_counts` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    events: 调用方提供的 `events` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     counts: Counter[str] = Counter()
     for event in events:
         category = classify_event(event)
@@ -82,15 +52,6 @@ def failure_counts(events: Iterable[dict[str, Any]]) -> Counter[str]:
 def choose_best_benchmarks(
     summaries: Iterable[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """
-    选择 `choose_best_benchmarks` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    summaries: 调用方提供的 `summaries` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     selected: dict[str, dict[str, Any]] = {}
     for summary in summaries:
         comparison = summary.get("comparison")
@@ -128,16 +89,6 @@ def deep_case_gate(
     *,
     minimum_speedup: float = 1.05,
 ) -> dict[str, Any]:
-    """
-    处理 `deep_case_gate` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    comparison: 调用方提供的 `comparison` 参数。
-    minimum_speedup: 调用方提供的 `minimum_speedup` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     speedup = float((comparison or {}).get("speedup", 0) or 0)
     checks = {
         "candidate_comparison": bool(
@@ -164,19 +115,6 @@ def build_task_rows(
     baseline_benchmarks: dict[str, dict[str, Any]] | None = None,
     baseline_attempts: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    构建 `build_task_rows` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    suite_tasks: 调用方提供的 `suite_tasks` 参数。
-    best_benchmarks: 调用方提供的 `best_benchmarks` 参数。
-    events: 调用方提供的 `events` 参数。
-    baseline_benchmarks: 调用方提供的 `baseline_benchmarks` 参数。
-    baseline_attempts: 调用方提供的 `baseline_attempts` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     baseline_benchmarks = baseline_benchmarks or {}
     baseline_attempts = baseline_attempts or {}
     categories_by_task: dict[str, Counter[str]] = {}
@@ -248,15 +186,6 @@ def build_task_rows(
 def choose_baseline_benchmarks(
     summaries: Iterable[dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
-    """
-    选择 `choose_baseline_benchmarks` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    summaries: 调用方提供的 `summaries` 参数。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     selected: dict[str, dict[str, Any]] = {}
     for summary in summaries:
         task_id = str(summary.get("task_id", ""))
@@ -279,13 +208,6 @@ def choose_baseline_benchmarks(
 
 
 def render_speedup_svg(rows: Iterable[dict[str, Any]], path: Path) -> None:
-    """
-    渲染 `render_speedup_svg` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-    rows: 调用方提供的 `rows` 参数。
-    path: 待读取、写入或校验的文件系统路径。
-    """
     data = list(rows)
     width = 900
     row_height = 34

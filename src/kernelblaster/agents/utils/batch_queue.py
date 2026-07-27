@@ -72,11 +72,6 @@ class LLMBatchQueue:
         单个批次中包含的最大请求数
         启用：布尔值，默认 True
         是否启用批处理（可以通过环境变量禁用）
-
-        参数:
-            window_ms: 调用方提供的 `window_ms` 参数。
-            max_batch_size: 调用方提供的 `max_batch_size` 参数。
-            enabled: 调用方提供的 `enabled` 参数。
         """
         self.window_ms = window_ms / 1000.0  # 转换为秒
         self.max_batch_size = max_batch_size
@@ -135,14 +130,6 @@ class LLMBatchQueue:
         参数:
             messages: 按对话顺序排列的 LLM 消息。
             model: 生成候选时使用的模型标识。
-            n_tasks: 调用方提供的 `n_tasks` 参数。
-            max_tokens: 调用方提供的 `max_tokens` 参数。
-            temperature: 调用方提供的 `temperature` 参数。
-            top_p: 调用方提供的 `top_p` 参数。
-            use_4bit: 调用方提供的 `use_4bit` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         # 如果批处理被禁用或不是本地模型，请立即处理
         if not self.enabled or not is_local_model(model):
@@ -302,12 +289,7 @@ _global_batch_queue: Optional[LLMBatchQueue] = None
 
 
 def get_batch_queue() -> LLMBatchQueue:
-    """
-    获取或创建全局批处理队列实例。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """获取或创建全局批处理队列实例。"""
     global _global_batch_queue
     
     if _global_batch_queue is None:

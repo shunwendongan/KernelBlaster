@@ -65,19 +65,6 @@ class Profiler(str, Enum):
 ALLOWED_PROFILERS = {profiler.value for profiler in Profiler}
 FORBIDDEN_ARGUMENT_TOKENS = {";", "|", "||", "&&", ">", ">>", "<", "2>", "2>&1"}
 async def read_upload_with_limit(upload: UploadFile, limit: int) -> bytes:
-    """
-    读取 `read_upload_with_limit` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        upload: 调用方提供的 `upload` 参数。
-        limit: 调用方提供的 `limit` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        HTTPException: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     chunks: list[bytes] = []
     size = 0
     while True:
@@ -92,18 +79,6 @@ async def read_upload_with_limit(upload: UploadFile, limit: int) -> bytes:
 
 
 def validated_environment(values: Optional[dict]) -> dict[str, str]:
-    """
-    处理 `validated_environment` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        values: 调用方提供的 `values` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     result: dict[str, str] = {}
     for raw_key, raw_value in (values or {}).items():
         key = str(raw_key)
@@ -121,20 +96,7 @@ def build_execution_argv(
     args: str = "",
     prefix_command: Optional[str | list[str]] = None,
 ) -> tuple[list[str], dict[str, str]]:
-    """
-    构建 argv 向量而不调用 shell。
-
-    参数:
-        binary_path: 调用方提供的 `binary_path` 参数。
-        args: 调用方提供的 `args` 参数。
-        prefix_command: 调用方提供的 `prefix_command` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """构建 argv 向量而不调用 shell。"""
 
     prefix = (
         [str(value) for value in prefix_command]
@@ -160,12 +122,7 @@ def build_execution_argv(
 
 
 def get_temp_dir():
-    """
-    获取或创建所有 GPU 操作的通用临时目录
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """获取或创建所有 GPU 操作的通用临时目录"""
     global WORKING_DIR
     if WORKING_DIR is None or not os.path.exists(WORKING_DIR):
         WORKING_DIR = tempfile.mkdtemp(prefix="kernelblaster_gpu_")
@@ -175,12 +132,6 @@ def get_temp_dir():
 # 在后台启动工作任务
 @asynccontextmanager
 async def lifespan(app):
-    """
-    处理 `lifespan` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        app: 调用方提供的 `app` 参数。
-    """
     global logger, env, GPU_IDS
 
     # 该服务器启动的子进程的基础环境。
@@ -229,13 +180,13 @@ APP = FastAPI(lifespan=lifespan)
 
 
 class GpuExecutionRequest(BaseModel):
-    """GPU二进制执行的请求模型"""
+    """旧版可信 GPU REST 服务的命令参数。"""
 
     args: Optional[str] = ""  # 二进制文件的命令行参数
 
 
 class GpuCommandResult(BaseModel):
-    """保存一次操作的标准化结果及其诊断信息。"""
+    """旧版 GPU 子进程的 stdout、stderr 和完成状态。"""
     stdout: str | list[str] = []
     stderr: str | list[str] = []
     success: bool = False
@@ -243,14 +194,8 @@ class GpuCommandResult(BaseModel):
 
 
 class GpuCommandError(Exception):
-    """表示该领域内可被调用方识别和处理的失败。"""
+    """旧版 GPU 命令无法执行或返回失败时抛出。"""
     def __init__(self, error_message: str):
-        """
-        初始化 GpuCommandError 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            error_message: 调用方提供的 `error_message` 参数。
-        """
         self.error_message = error_message
         super().__init__(self.error_message)
 
@@ -281,10 +226,6 @@ async def check_gpu_processes():
 
     过滤掉过时或不存在的 PID 以及进程名称所在的条目
     nvidia-smi 报告为“[未找到]”，以避免误报。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
-        e: 输入、外部调用或状态不满足执行要求时抛出。
     """
     try:
         stdout, _ = await exec_command(
@@ -339,16 +280,7 @@ async def exec_command(
     执行外壳命令
 
     参数:
-        cmd: 调用方提供的 `cmd` 参数。
         timeout: 允许操作等待的最长秒数。
-        env_vars: 调用方提供的 `env_vars` 参数。
-        n_runs: 调用方提供的 `n_runs` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        GpuCommandError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     # 准备环境
     process_env = env.copy() if env else os.environ.copy()
@@ -407,15 +339,7 @@ async def exec_binary(
     使用可选参数、环境变量和前缀命令执行二进制文件
 
     参数:
-        binary_path: 调用方提供的 `binary_path` 参数。
-        args: 调用方提供的 `args` 参数。
         timeout: 允许操作等待的最长秒数。
-        env_vars: 调用方提供的 `env_vars` 参数。
-        prefix_command: 调用方提供的 `prefix_command` 参数。
-        n_runs: 调用方提供的 `n_runs` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     argv, prefix_environment = build_execution_argv(
         binary_path,
@@ -428,16 +352,7 @@ async def exec_binary(
 
 
 def save_binary_to_temp(binary_data: bytes, filename: str = "gpu_executable") -> str:
-    """
-    将二进制数据保存到临时文件并使其可执行
-
-    参数:
-        binary_data: 调用方提供的 `binary_data` 参数。
-        filename: 调用方提供的 `filename` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """将二进制数据保存到临时文件并使其可执行"""
     # 使用公共临时目录
     temp_dir = get_temp_dir()
     # 重要提示：切勿写入仅从客户端提供的文件名派生的路径。
@@ -472,12 +387,7 @@ def save_binary_to_temp(binary_data: bytes, filename: str = "gpu_executable") ->
 
 
 def cleanup_temp_file(binary_path: str):
-    """
-    清理临时二进制文件
-
-    参数:
-        binary_path: 调用方提供的 `binary_path` 参数。
-    """
+    """清理临时二进制文件"""
     try:
         if os.path.exists(binary_path):
             os.remove(binary_path)
@@ -490,7 +400,6 @@ def complete_future(completion_future: asyncio.Future, result: GpuCommandResult)
     当 HTTP 客户端已经断开连接时，不要使工作线程崩溃。
 
     参数:
-        completion_future: 调用方提供的 `completion_future` 参数。
         result: 上一步产生并等待进一步处理的结果。
     """
     if not completion_future.done():
@@ -498,18 +407,7 @@ def complete_future(completion_future: asyncio.Future, result: GpuCommandResult)
 
 
 async def gpu_worker(worker_id: int) -> GpuCommandResult:
-    """
-    处理来自队列的 GPU 执行请求
-
-    参数:
-        worker_id: 调用方提供的 `worker_id` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """处理来自队列的 GPU 执行请求"""
     while True:
         queue_item = await QUEUE.get()
         completion_future = queue_item[-1]  # completion Future 始终位于队列项末尾。
@@ -605,12 +503,7 @@ async def gpu_worker(worker_id: int) -> GpuCommandResult:
 
 @APP.get("/health")
 async def health_check():
-    """
-    健康检查端点
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
+    """健康检查端点"""
     return {"status": "healthy", "service": "gpu-server"}
 
 
@@ -653,22 +546,7 @@ async def execute_gpu_binary(
     在GPU服务器上执行二进制文件
 
     参数:
-        binary: 调用方提供的 `binary` 参数。
-        args: 调用方提供的 `args` 参数。
-        env_vars: 调用方提供的 `env_vars` 参数。
-        prefix_command: 调用方提供的 `prefix_command` 参数。
-        profiler: 调用方提供的 `profiler` 参数。
-        profiler_args: 调用方提供的 `profiler_args` 参数。
-        n_runs: 调用方提供的 `n_runs` 参数。
         timeout: 允许操作等待的最长秒数。
-        _authorized: 调用方提供的 `_authorized` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        HTTPException: 输入、外部调用或状态不满足执行要求时抛出。
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
     """
 
     logger.info(
@@ -765,7 +643,6 @@ def run_server(host: str, port: int, log_filepath: str = None):
     参数:
         host: 远端服务监听或连接的主机名。
         port: 远端服务监听或连接的端口。
-        log_filepath: 调用方提供的 `log_filepath` 参数。
     """
     # 运行 FastAPI 服务器
     log_config = get_log_config(log_filepath=log_filepath)
@@ -775,15 +652,10 @@ def run_server(host: str, port: int, log_filepath: str = None):
 
 
 def main(args):
+    """Validate worker configuration and run the legacy GPU REST server."""
     validate_worker_environment()
     validate_worker_token()
     # 如果提供了日志路径，请确保日志目录存在
-    """
-    处理 `main` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        args: 调用方提供的 `args` 参数。
-    """
     if args.log_path:
         log_dir = args.log_path.parent
         if log_dir:

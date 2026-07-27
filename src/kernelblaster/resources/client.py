@@ -24,12 +24,6 @@ class TCPClient:
 
     @classmethod
     def get_session(cls):
-        """
-        获取 `get_session` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         if cls._session is None:
             connector = aiohttp.TCPConnector(limit=1024)
             cls._session = aiohttp.ClientSession(connector=connector)
@@ -37,7 +31,6 @@ class TCPClient:
 
     @classmethod
     async def close_session(cls):
-        """处理 `close_session` 对应的领域操作，并返回调用方所需的标准化结果。"""
         if cls._session:
             await cls._session.close()
             cls._session = None

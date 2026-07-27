@@ -44,12 +44,6 @@ def validate_token_boundaries() -> None:
 
 
 def worker_authorization_header() -> dict[str, str]:
-    """
-    处理 `worker_authorization_header` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     return {"Authorization": f"Bearer {validate_worker_token()}"}
 
 
@@ -77,15 +71,6 @@ def _require_token(
 
 
 async def require_worker_token(authorization: str | None = Header(default=None)) -> None:
-    """
-    处理 `require_worker_token` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        authorization: 调用方提供的 `authorization` 参数。
-
-    异常:
-        HTTPException: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     _require_token(
         authorization,
         token=validate_worker_token(),

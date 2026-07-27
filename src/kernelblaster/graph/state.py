@@ -66,7 +66,6 @@ def save_state_to_json(state: GraphState, output_path: str) -> None:
 
     参数:
         state: 工作流节点读取并按约定更新的共享状态。
-        output_path: 调用方提供的 `output_path` 参数。
     """
     # 创建状态字典的可序列化副本
     serializable_state: Dict[str, Any] = {}
@@ -111,13 +110,6 @@ def load_state_from_json(json_path: str, read_fp: bool = False) -> Dict[str, Any
     如果 JSON 包含 {"cuda_fp": "path/to/file.txt"}，
     结果将包括：
     {“cuda_fp”：“路径/到/file.txt”，“cuda”：“<文件内容>”}
-
-    参数:
-        json_path: 调用方提供的 `json_path` 参数。
-        read_fp: 调用方提供的 `read_fp` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     try:
         # 加载 JSON 文件
@@ -162,13 +154,6 @@ def compare_states(state1: Optional[GraphState], state2: Optional[GraphState]) -
 
     返回：
     如果状态相等则为 True，否则为 False
-
-    参数:
-        state1: 调用方提供的 `state1` 参数。
-        state2: 调用方提供的 `state2` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     # 处理无情况
     if state1 is None and state2 is None:

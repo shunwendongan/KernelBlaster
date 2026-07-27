@@ -20,13 +20,6 @@ import signal
 
 
 async def safe_kill_process(proc, logger=None):
-    """
-    处理 `safe_kill_process` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        proc: 调用方提供的 `proc` 参数。
-        logger: 记录诊断信息和任务进度的日志器。
-    """
     if proc.returncode is None:
         forbidden_groups = [
             os.getpgid(0),  # 当前 shell 的组

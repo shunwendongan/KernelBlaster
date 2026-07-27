@@ -25,14 +25,19 @@ from .state import GraphState
 
 def build_graph(runtime=None):
     """
-    构建 `build_graph` 对应的领域操作，并返回调用方所需的标准化结果。
+    构建当前单节点优化图。
+
+    ``runtime`` 只负责选择候选的执行后端，不改变 Graph 拓扑。默认值
+    ``None`` 使用经典本地 Events 路径；显式 runtime 由 ``run_RL.py``
+    在完成 backend/capability 检查后注入。
 
     返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
+        已编译的 LangGraph，输入和输出均遵循 ``GraphState``。
     """
     graph_builder = StateGraph(GraphState)
     
-    # 基线驱动的 RL 优化节点
+    # 当前 Graph 只有一个写入终态的节点。增加并行节点前必须先定义
+    # GraphState 字段的所有权和合并规则，避免候选路径互相覆盖。
     node = (
         optimization_rl_ncu
         if runtime is None
@@ -40,10 +45,10 @@ def build_graph(runtime=None):
     )
     graph_builder.add_node("Baseline RL Optimization", node)
 
-    # 工作流程路由
+    # 所有任务都进入同一条 correctness-first 优化路径。
     graph_builder.add_edge(START, "Baseline RL Optimization")
 
-    # 基线优化结束工作流程
+    # optimization_rl_ncu 必须返回 run_outcome；顶层 workflow 负责兜底。
     graph_builder.add_edge("Baseline RL Optimization", END)
 
     return graph_builder.compile()

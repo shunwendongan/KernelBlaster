@@ -41,16 +41,8 @@ async def find_kernel_names_ncu(
     通过在给定的可执行文件上运行 NCU 并将其与源代码进行比较来查找内核名称。
 
     参数:
-        executable: 调用方提供的 `executable` 参数。
-        source_path: 调用方提供的 `source_path` 参数。
         gpu: 执行或分析任务使用的 GPU 配置。
         timeout: 允许操作等待的最长秒数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
     """
 
     INVALID_KERNEL_NAME = "invalid_magic_kernel_name_here"
@@ -62,7 +54,7 @@ async def find_kernel_names_ncu(
 
     # 在可执行文件上运行 ncu
     # 应该在日志中打印可用内核的列表，如下所示：
-    # ==PROF== 连接到进程 2138337 (/tmp/kernelagent/compile_env/build/main)
+    # ==PROF== 连接到进程 2138337 (/tmp/kernelblaster/compile_env/build/main)
     # ==PROF== 与进程 2138337 断开连接
     # ==警告== 没有分析内核。
     # 可用内核：
@@ -108,15 +100,6 @@ def find_kernel_names(filename: Path) -> str:
 
     返回：
     内核名称。
-
-    参数:
-        filename: 调用方提供的 `filename` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     kernel_code = filename.read_text()
     # 内核也可以从 cuda 函数启动，所以
@@ -148,15 +131,6 @@ def find_kernel_name(filename: Path) -> str:
 
     返回：
     唯一的内核名称。
-
-    参数:
-        filename: 调用方提供的 `filename` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     kernel_names = find_kernel_names(filename)
     if len(kernel_names) > 1:
@@ -178,15 +152,6 @@ def get_elapsed_cycles_ncu_log(ncu_log: str) -> int:
 
     返回：
     已过去的周期。
-
-    参数:
-        ncu_log: 调用方提供的 `ncu_log` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     # 尝试多种模式来匹配不同的 NCU 输出格式
     patterns = [
@@ -221,12 +186,6 @@ def find_kernel_launch_header(code: str) -> str:
 
     参数:
         code: 待处理的源码文本。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     launch_headers = re.findall(
         r"(void launch_gpu_implementation\(.*?\);)", code, flags=re.DOTALL

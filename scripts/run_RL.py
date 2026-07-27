@@ -12,6 +12,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""KernelBlaster 的顶层 Agent 运行器。
+
+该脚本负责解析数据集和预算、选择执行后端、验证 capability report、创建
+RunRecorder，并把每个任务交给 ``run_workflow``。它不实现 CUDA 优化算法本身。
+
+执行后端必须显式理解：``sandbox`` 是安全默认且 fail closed；``trusted_local``
+只用于调用方已经配置外部 Compile/GPU 服务的可信研究环境。两者不能在失败时
+互相回退。
+"""
+
 import argparse
 import asyncio
 import os
@@ -41,7 +51,6 @@ from src.kernelblaster.preflight.backends import build_backend_bundle
 from src.kernelblaster.preflight.client import ControlPlaneClient
 from src.kernelblaster.preflight.contracts import CapabilityReport, ExecutionBackend
 from src.kernelblaster.preflight.runner import capability_hardware_fingerprint
-from src.kernelblaster.resources import *
 from src.kernelblaster.storage import StateStore, state_storage_requested
 from src.kernelblaster.workflow import run_workflow
 from src.kernelblaster.agents.database import LLMInterface, OptimizationDatabase
@@ -49,9 +58,6 @@ from src.kernelblaster.agents.database import LLMInterface, OptimizationDatabase
 from data import get_dataset
 from utils.arguments import *
 
-COMPILE_SERVER = None
-GPU_SERVER = None
-CLEANUP_IN_PROGRESS = False
 SIGNAL_COUNT = 0
 COMPREHENSIVE_ANALYSIS_CACHE = None
 RUN_RECORDER = None
@@ -214,12 +220,12 @@ def load_comprehensive_analysis_results():
 def find_matching_optimization_data(task_id, level_id, op_name):
     """
     Find matching optimization data based on task_id, level_id, and op_name.
-    
+
     Args:
         task_id: Task ID to match
-        level_id: Level ID to match  
+        level_id: Level ID to match
         op_name: Operation name to match
-        
+
     Returns:
         dict: Best matching entry or None if no match found
     """
@@ -261,13 +267,13 @@ def find_matching_optimization_data(task_id, level_id, op_name):
 def enhance_user_message_with_optimization_data(user_message, task_id, level_id, op_name):
     """
     Enhance the user message with optimization data from comprehensive analysis results.
-    
+
     Args:
         user_message: Original user message
         task_id: Task ID
         level_id: Level ID
         op_name: Operation name
-        
+
     Returns:
         str: Enhanced user message with optimization data
     """
@@ -342,52 +348,14 @@ Consider implementing similar optimization techniques in your solution, particul
     return enhanced_message
 
 
-def cleanup_servers():
-    """Clean up servers on exit."""
-    global COMPILE_SERVER, GPU_SERVER, CLEANUP_IN_PROGRESS
-    
-    if CLEANUP_IN_PROGRESS:
-        return
-    
-    CLEANUP_IN_PROGRESS = True
-    
-    try:
-        if COMPILE_SERVER is not None:
-            logger.info("Cleaning up compiler server...")
-            # Add timeout to prevent hanging
-            import threading
-            cleanup_thread = threading.Thread(target=COMPILE_SERVER.cleanup)
-            cleanup_thread.daemon = True
-            cleanup_thread.start()
-            cleanup_thread.join(timeout=5.0)  # 5 second timeout
-            if cleanup_thread.is_alive():
-                logger.warning("Compiler server cleanup timed out")
-        
-        if GPU_SERVER is not None:
-            logger.info("Cleaning up GPU server...")
-            # Add timeout to prevent hanging
-            cleanup_thread = threading.Thread(target=GPU_SERVER.cleanup)
-            cleanup_thread.daemon = True
-            cleanup_thread.start()
-            cleanup_thread.join(timeout=5.0)  # 5 second timeout
-            if cleanup_thread.is_alive():
-                logger.warning("GPU server cleanup timed out")
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
-    finally:
-        CLEANUP_IN_PROGRESS = False
-
-
 def signal_handler(signum, frame):
-    """Handle termination signals."""
+    """Exit predictably; this process no longer owns child service lifecycles."""
     global SIGNAL_COUNT
     SIGNAL_COUNT += 1
     
     if SIGNAL_COUNT == 1:
-        logger.info(f"Received signal {signum}, cleaning up...")
-        cleanup_servers()
-        logger.info("Cleanup complete, exiting...")
-        sys.exit(0)
+        logger.info(f"Received signal {signum}; exiting.")
+        sys.exit(128 + signum)
     elif SIGNAL_COUNT == 2:
         logger.warning("Received second signal, forcing exit...")
         sys.exit(1)
@@ -404,6 +372,7 @@ async def process_problem(
     timeout_minutes,
     runtime=None,
 ) -> tuple[dict[str, Path], RunStatus]:
+    """在并发门控内运行一个任务，并把所有终态收敛为产物映射和 RunStatus。"""
     problem_id = entry["id"]
     user_message = entry.get("user_message", "")
     reference_code = None
@@ -504,6 +473,7 @@ async def process_problem(
 
 
 async def async_main() -> int:
+    """解析一次运行、验证后端前置条件并调度所选数据集任务。"""
     parser = argparse.ArgumentParser()
     add_common_arguments(parser)
     parser.add_argument(
@@ -598,6 +568,8 @@ async def async_main() -> int:
         except (OSError, PermissionError, ValueError) as error:
             parser.error(str(error))
 
+    # 后端选择先于数据集执行。sandbox 必须绑定尚未过期且硬件匹配的
+    # capability-report/v1；trusted_local 不获得任何自动降级或服务启动。
     runtime = None
     requested_backend = ExecutionBackend(args.execution_backend)
     gpu_work_requested = bool(args.cuda or args.cuda_perf or args.benchmark)
@@ -707,11 +679,10 @@ async def async_main() -> int:
     )
     logger.info(f"Logging to {log_file}")
 
-    # Legacy workflows may use explicitly configured remote services during the
-    # transition, but Control must never spawn a local compiler or GPU server.
+    # 迁移期经典工作流可以使用调用方显式配置的远程服务，但 Control 绝不能
+    # 在自身进程中启动编译器或 GPU Server。
     if gpu_work_requested and requested_backend is ExecutionBackend.TRUSTED_LOCAL:
         try:
-            global COMPILE_SERVER, GPU_SERVER
             target_gpu = resolve_target_gpu(args.gpu)
             if not config.COMPILE_SERVER_URL:
                 raise RuntimeError(
@@ -726,8 +697,6 @@ async def async_main() -> int:
                     "Managed local GPU server startup is disabled. Use the Control gpu-job/v1 API "
                     "or explicitly configure a legacy GPU server URL."
                 )
-            COMPILE_SERVER = None
-            GPU_SERVER = None
             logger.info(
                 "Using explicitly configured legacy remote services; Control will not "
                 "create local compile or GPU server processes."
@@ -826,13 +795,12 @@ def main():
     try:
         exit_code = asyncio.run(async_main())
     except KeyboardInterrupt:
-        logger.error("KeyboardInterrupt detected, cleaning up...")
+        logger.error("KeyboardInterrupt detected.")
         exit_code = 130
     except Exception as e:
         logger.error(f"Unhandled exception: {e}")
         raise e
     finally:
-        cleanup_servers()
         if RUN_RECORDER is not None:
             RUN_RECORDER.close()
     return exit_code

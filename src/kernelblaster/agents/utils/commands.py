@@ -47,20 +47,8 @@ async def _run_gpu_binary(
     通过新的 GPU 二进制文件上传端点执行二进制文件。
 
     参数:
-        binary_path: 调用方提供的 `binary_path` 参数。
         url: 目标服务或资源的 URL。
         timeout: 允许操作等待的最长秒数。
-        job_name: 调用方提供的 `job_name` 参数。
-        env_vars: 调用方提供的 `env_vars` 参数。
-        prefix_command: 调用方提供的 `prefix_command` 参数。
-        n_runs: 调用方提供的 `n_runs` 参数。
-        attempt: 调用方提供的 `attempt` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        FeedbackError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     try:
         # 首先读取二进制文件以获取大小信息
@@ -215,20 +203,6 @@ async def run_gpu_executable(
     prefix_command: Optional[str] = None,
     n_runs: int = 1,
 ) -> tuple[list[str], list[str]]:
-    """
-    运行 `run_gpu_executable` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        executable_path: 调用方提供的 `executable_path` 参数。
-        gpu: 执行或分析任务使用的 GPU 配置。
-        timeout: 允许操作等待的最长秒数。
-        job_name: 调用方提供的 `job_name` 参数。
-        prefix_command: 调用方提供的 `prefix_command` 参数。
-        n_runs: 调用方提供的 `n_runs` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     url = config.get_gpu_server_url(gpu)
     started = time.monotonic()
     is_ncu = bool(prefix_command and "ncu" in prefix_command.lower())
@@ -279,24 +253,6 @@ async def _compile_cu(
     job_name: str,
     persistent_artifacts: bool,
 ):
-    """
-    编译 `compile_cu` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-    参数:
-        main_filepath: 调用方提供的 `main_filepath` 参数。
-        cuda_filepath: 调用方提供的 `cuda_filepath` 参数。
-        gpu: 执行或分析任务使用的 GPU 配置。
-        url: 目标服务或资源的 URL。
-        timeout: 允许操作等待的最长秒数。
-        job_name: 调用方提供的 `job_name` 参数。
-        persistent_artifacts: 调用方提供的 `persistent_artifacts` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        FeedbackError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     try:
         # 确保编译服务器的路径是绝对的
         main_filepath_abs = main_filepath.resolve()
@@ -371,15 +327,8 @@ async def compile_cu(
     编译后的二进制文件的路径
 
     参数:
-        main_filepath: 调用方提供的 `main_filepath` 参数。
-        cuda_filepath: 调用方提供的 `cuda_filepath` 参数。
         gpu: 执行或分析任务使用的 GPU 配置。
         timeout: 允许操作等待的最长秒数。
-        job_name: 调用方提供的 `job_name` 参数。
-        persistent_artifacts: 调用方提供的 `persistent_artifacts` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     return await _compile_cu(
         main_filepath,
@@ -426,19 +375,9 @@ async def compile_and_run_cu_file(
     - 内核执行是否成功
 
     参数:
-        main_filepath: 调用方提供的 `main_filepath` 参数。
-        cuda_filepath: 调用方提供的 `cuda_filepath` 参数。
         gpu: 执行或分析任务使用的 GPU 配置。
-        timer: 调用方提供的 `timer` 参数。
         logger: 记录诊断信息和任务进度的日志器。
-        persistent_artifacts: 调用方提供的 `persistent_artifacts` 参数。
         timeout: 允许操作等待的最长秒数。
-        num_runs: 调用方提供的 `num_runs` 参数。
-        passed_keyword: 调用方提供的 `passed_keyword` 参数。
-        prefix_command: 调用方提供的 `prefix_command` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
     """
     job_name = str(main_filepath) if cuda_filepath is None else str(cuda_filepath)
     timer.start("compilation")

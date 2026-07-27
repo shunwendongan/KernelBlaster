@@ -5,7 +5,7 @@ name: kernelblaster
 
 services:
   control:
-    image: local/kernelblaster-control:pr04-${IMAGE_TAG:-dev}
+    image: local/kernelblaster-control:python3.12-${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -71,7 +71,7 @@ services:
     group_add:
       - "${KERNELBLASTER_DOCKER_GID:-0}"
     cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
+    security_opt: ["no-new-privileges:true"]
     pids_limit: 256
     mem_limit: 16g
     networks: [worker-plane]
@@ -125,7 +125,7 @@ services:
     # and gpu-supervisor never receive SYS_ADMIN.
     cap_add: [SYS_ADMIN, SETUID, SETGID, SETPCAP]
     cap_drop: [ALL]
-    security_opt: [no-new-privileges:true]
+    security_opt: ["no-new-privileges:true"]
     pids_limit: 256
     mem_limit: 16g
     networks: [profiler-plane]
@@ -177,7 +177,7 @@ services:
     command: bash
 
   smoke:
-    image: local/kernelblaster-control:pr04-${IMAGE_TAG:-dev}
+    image: local/kernelblaster-control:python3.12-${IMAGE_TAG:-dev}
     build:
       context: .
       dockerfile: docker/Dockerfile

@@ -29,15 +29,6 @@ load_dotenv()
 
 
 def _public_url(value: str) -> str:
-    """
-    处理 `public_url` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-    参数:
-    value: 需要转换、保存或校验的值。
-
-    返回:
-    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     parsed = urlsplit(value)
     hostname = parsed.hostname or ""
     if parsed.port:
@@ -46,18 +37,11 @@ def _public_url(value: str) -> str:
 
 
 class ExperimentalFeatures:
-    """封装 `ExperimentalFeatures` 对应的领域状态与操作。"""
     OPT_RL_NCU = os.getenv("KERNELBLASTER_OPT_RL_NCU", "0") == "1"
 
     @staticmethod
     def dict() -> dict[str, bool | int]:
         # 返回实验特征及其值的字典
-        """
-        处理 `dict` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         return {
             k: v
             for k, v in ExperimentalFeatures.__dict__.items()
@@ -67,7 +51,7 @@ class ExperimentalFeatures:
 
 class SystemConfig:
     # 可插入的远程 LLM 提供商。秘密是故意只针对环境的。
-    """封装相关组件的配置项和默认策略。"""
+    """进程级 Provider、服务端点、安全 token 和运行默认值。"""
     LLM_PROVIDER = os.getenv(
         "KERNELBLASTER_LLM_PROVIDER", "openai_compatible"
     ).strip().lower()
@@ -158,12 +142,6 @@ class SystemConfig:
 
     @staticmethod
     def set_compile_server_url(url: str):
-        """
-        设置 `set_compile_server_url` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-        url: 目标服务或资源的 URL。
-        """
         assert (
             SystemConfig.COMPILE_SERVER_URL is None
         ), "COMPILE_SERVER_URL is already set"
@@ -171,13 +149,6 @@ class SystemConfig:
 
     @staticmethod
     def set_gpu_server_url(gpu: GPUType, url: str):
-        """
-        设置 `set_gpu_server_url` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-        gpu: 执行或分析任务使用的 GPU 配置。
-        url: 目标服务或资源的 URL。
-        """
         if (
             gpu not in SystemConfig.GPU_SERVER_URLS
             or SystemConfig.GPU_SERVER_URLS[gpu] is None
@@ -190,15 +161,6 @@ class SystemConfig:
 
     @staticmethod
     def get_gpu_server_url(gpu: GPUType) -> str:
-        """
-        获取 `get_gpu_server_url` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-        gpu: 执行或分析任务使用的 GPU 配置。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         assert (
             gpu in SystemConfig.GPU_SERVER_URLS
         ), f"GPU_SERVER_URL_{gpu.value.upper()} is not set"
@@ -206,12 +168,6 @@ class SystemConfig:
 
     @staticmethod
     def get_all_gpu_server_urls() -> dict[GPUType, str]:
-        """
-        获取 `get_all_gpu_server_urls` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         return {
             gpu: url
             for gpu, url in SystemConfig.GPU_SERVER_URLS.items()
@@ -220,15 +176,6 @@ class SystemConfig:
 
     @staticmethod
     def CUSTOM_LOGGER_FORMAT(record):
-        """
-        处理 `CUSTOM_LOGGER_FORMAT` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-        record: 调用方提供的 `record` 参数。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         attempt_id = record["extra"].get("attempt_id")
         if attempt_id is None:
             return (
@@ -249,12 +196,6 @@ class SystemConfig:
 
     @classmethod
     def print_config(cls, logger):
-        """
-        输出 `print_config` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-        logger: 记录诊断信息和任务进度的日志器。
-        """
         gpu_servers_strs = "\n".join(
             [
                 f"    - {gpu.value.upper()}: {url}"
@@ -289,7 +230,7 @@ config = SystemConfig()
 
 @dataclass
 class WorkflowConfig:
-    """封装相关组件的配置项和默认策略。"""
+    """一次优化任务的模型、GPU、Agent 开关和 rollout 参数。"""
     model: str
     run_cuda: bool
     run_cuda_perf: bool
@@ -309,12 +250,6 @@ class WorkflowConfig:
     def dict(self):
         # 不要使用 dataclasses.asdict()：它会先深度复制值
         # 被删除，并且共享数据库有意拥有 RLock。
-        """
-        处理 `dict` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         return {
             name: value
             for name, value in vars(self).items()
@@ -327,9 +262,6 @@ class WorkflowConfig:
 
         参数:
         folder: 保存当前任务中间状态和最终产物的目录。
-
-        返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
 
         if not folder.exists():
@@ -339,17 +271,6 @@ class WorkflowConfig:
 
         def should_skip(name: str, folder_key: str, enabled_field: str):
             # 这些文件由各 Agent 自行创建。
-            """
-            处理 `should_skip` 对应的领域操作，并返回调用方所需的标准化结果。
-
-            参数:
-            name: 目标对象或资源的名称。
-            folder_key: 调用方提供的 `folder_key` 参数。
-            enabled_field: 调用方提供的 `enabled_field` 参数。
-
-            返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
             agent_enabled = getattr(self, enabled_field)
             return (
                 not agent_enabled
@@ -365,7 +286,6 @@ class WorkflowConfig:
 
 
     def validate(self):
-        """校验 `validate` 对应的领域操作，并返回调用方所需的标准化结果。"""
         assert isinstance(
             self.gpu, GPUType
         ), f"Please ensure gpu is a GPUType: got {type(self.gpu)}"

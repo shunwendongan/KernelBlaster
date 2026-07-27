@@ -34,33 +34,12 @@ import threading
 from ..measurements import Measurement
 
 def get_elapsed_cycles_v2(text: str) -> int:
-    """
-    获取 `get_elapsed_cycles_v2` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        text: 调用方提供的 `text` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     groups = re.search(r"Elapsed Cycles: (\d+)", text)
     if groups is None:
         raise ValueError("No elapsed cycles found in text")
     return int(groups.group(1))
 
 def get_speedup_from_files(soln_file: Path) -> Tuple[int, int, float]:
-    """
-    获取 `get_speedup_from_files` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        soln_file: 调用方提供的 `soln_file` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     final_text = soln_file.read_text()
     if (soln_file.parent /"ncu/0_init_ncu_log.txt").exists():
         initial_text = (soln_file.parent /"ncu/0_init_ncu_log.txt").read_text()
@@ -75,29 +54,12 @@ class LLMInterface:
     """状态分析中使用的 LLM 查询接口。"""
     
     def __init__(self, model_name: str = None, logger = None):
-        """
-        初始化 LLMInterface 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            model_name: 调用方提供的 `model_name` 参数。
-            logger: 记录诊断信息和任务进度的日志器。
-        """
         from ..config import config
         self.model_name = model_name or config.MODEL
         self.logger = logger
     
     async def query(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.1) -> str:
-        """
-        向 LLM 发送查询并返回响应。
-
-        参数:
-            prompt: 调用方提供的 `prompt` 参数。
-            max_tokens: 调用方提供的 `max_tokens` 参数。
-            temperature: 调用方提供的 `temperature` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """向 LLM 发送查询并返回响应。"""
         try:
             from .utils import generate_code_retry
         except ImportError:
@@ -122,17 +84,7 @@ class LLMInterface:
             return f"Error: {str(e)}"
     
     def query_sync(self, prompt: str, max_tokens: int = 1000, temperature: float = 0.1) -> str:
-        """
-        LLM 查询的同步包装器。
-
-        参数:
-            prompt: 调用方提供的 `prompt` 参数。
-            max_tokens: 调用方提供的 `max_tokens` 参数。
-            temperature: 调用方提供的 `temperature` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """LLM 查询的同步包装器。"""
         import asyncio
         try:
             loop = asyncio.get_event_loop()
@@ -146,12 +98,7 @@ class LLMInterface:
             return self._mock_response()
     
     def _mock_response(self) -> str:
-        """
-        当 LLM 不可用时的后备模拟响应。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """当 LLM 不可用时的后备模拟响应。"""
         return """
         PRIMARY_BOTTLENECK: memory_bound
         SECONDARY_CHARACTERISTICS:
@@ -162,12 +109,7 @@ class LLMInterface:
         """
     
     def is_available(self) -> bool:
-        """
-        检查LLM服务是否可用。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """检查LLM服务是否可用。"""
         # 这应该是一个轻量级的可用性检查。我们刻意回避
         # 在这里进行网络调用；我们只检查配置的凭据。
         try:
@@ -211,7 +153,6 @@ class StateProfile:
 
 @dataclass
 class OptimizationEntry:
-    """封装 `OptimizationEntry` 对应的领域状态与操作。"""
     technique: str
     predicted_improvement: Optional[float] = None
     description: str = ""
@@ -246,12 +187,7 @@ class CompositeOptimization:
     usage_count: int = 0
     
     def get_composite_id(self) -> str:
-        """
-        为此复合优化生成唯一的 ID。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """为此复合优化生成唯一的 ID。"""
         techniques = [t for t in [self.technique1, self.technique2, self.technique3] if t]
         params_str = "_".join(f"{k}_{v}" for k, v in self.parameters_to_fine_tune.items())
         return f"composite_{'+'.join(techniques)}_{params_str}"
@@ -266,14 +202,6 @@ class GPUOptimizationDatabase:
         gpu_report_path: Path | None,
         llm_interface=None,
     ):
-        """
-        初始化 GPUOptimizationDatabase 实例，并保存后续流程所需的配置与依赖。
-
-        参数:
-            optimization_db_path: 调用方提供的 `optimization_db_path` 参数。
-            gpu_report_path: 调用方提供的 `gpu_report_path` 参数。
-            llm_interface: 调用方提供的 `llm_interface` 参数。
-        """
         import os
         self.optimization_db_path = optimization_db_path
         self.optimization_db_header_path = optimization_db_path.with_name(f"{optimization_db_path.stem}_header{optimization_db_path.suffix}") 
@@ -356,8 +284,6 @@ class GPUOptimizationDatabase:
         将带标签的提示/响应对附加到共享日志文件。
 
         参数:
-            label: 调用方提供的 `label` 参数。
-            prompt: 调用方提供的 `prompt` 参数。
             response: 需要解析或规范化的服务响应。
         """
         try:
@@ -377,13 +303,7 @@ class GPUOptimizationDatabase:
     # Helper：将结构更改持久保存到优化数据库
     # ------------------------------------------------------------------
     def _log_db_change(self, action: str, details: Any):
-        """
-        将*操作* 的记录与*详细信息* 一起写入更改日志。
-
-        参数:
-            action: 调用方提供的 `action` 参数。
-            details: 调用方提供的 `details` 参数。
-        """
+        """将*操作* 的记录与*详细信息* 一起写入更改日志。"""
         # 记录文件写入，包含文件路径
         # 写入记录器
         if hasattr(self.llm_interface, 'logger') and self.llm_interface.logger:
@@ -648,36 +568,13 @@ class GPUOptimizationDatabase:
             print(f"_regenerate_database_from_json: Failed to regenerate from JSON: {e}")
 
     def _build_states_markdown(self) -> str:
-        """
-        仅从内存结构构建 markdown 中的状态部分。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """仅从内存结构构建 markdown 中的状态部分。"""
         def _fmt_chars(chars: Any) -> str:
-            """
-            处理 `fmt_chars` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-            参数:
-                chars: 调用方提供的 `chars` 参数。
-
-            返回:
-                当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
             if isinstance(chars, list):
                 return ", ".join(str(c) for c in chars)
             return str(chars) if chars is not None else ""
 
         def _fmt_impr(val: Any) -> str:
-            """
-            处理 `fmt_impr` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-            参数:
-                val: 调用方提供的 `val` 参数。
-
-            返回:
-                当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
             if val is None:
                 return "0"
             try:
@@ -717,12 +614,7 @@ class GPUOptimizationDatabase:
         return ("\n\n".join(state_sections).rstrip() + "\n") if state_sections else ""
 
     def get_database_footer_text(self) -> str:
-        """
-        返回数据库的页脚文本。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """返回数据库的页脚文本。"""
         return self.optimization_db_footer_path.read_text(encoding="utf-8") if self.optimization_db_footer_path.exists() else ""
 
     def get_database_md_text(self, include_header_footer: bool = True) -> str:
@@ -731,12 +623,6 @@ class GPUOptimizationDatabase:
 
         当 include_header_footer 为 True 时，原始页眉和页脚文件
         包含在再生状态降价周围（如果存在）。
-
-        参数:
-            include_header_footer: 调用方提供的 `include_header_footer` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         states_md = self._build_states_markdown()
         if not include_header_footer:
@@ -895,13 +781,7 @@ class GPUOptimizationDatabase:
         分析 NCU 报告并提取定性性能特征。
 
         参数:
-            ncu_report: 调用方提供的 `ncu_report` 参数。
             metrics: 性能分析或正确性检查产生的指标集合。
-            code_implementation: 调用方提供的 `code_implementation` 参数。
-            elapsed_cycles: 调用方提供的 `elapsed_cycles` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         
         # 如果 ncu_report 为空但我们有循环，则构建一个最小报告
@@ -968,15 +848,7 @@ Focus on qualitative patterns and relationships rather than specific numbers. Lo
             return self._fallback_state_analysis(ncu_report, metrics)
     
     def _parse_state_analysis(self, llm_response: str) -> StateProfile:
-        """
-        将 LLM 状态分析响应解析为 StateProfile。
-
-        参数:
-            llm_response: 调用方提供的 `llm_response` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """将 LLM 状态分析响应解析为 StateProfile。"""
         lines = llm_response.split('\n')
         
         primary_bottleneck = "unknown_bound"
@@ -1025,12 +897,6 @@ Focus on qualitative patterns and relationships rather than specific numbers. Lo
         """
         LLM Agent 2：状态匹配器
         将当前状态与已知优化模式进行定性比较。
-
-        参数:
-            current_state: 调用方提供的 `current_state` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         
         # 准备已知状态进行比较
@@ -1100,15 +966,7 @@ If confidence < 0.6, respond with BEST_MATCH: NEW_STATE_NEEDED
             return self._fallback_state_matching(current_state)
     
     def _parse_matching_result(self, llm_response: str) -> str:
-        """
-        解析 LLM 匹配响应以提取最佳匹配。
-
-        参数:
-            llm_response: 调用方提供的 `llm_response` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """解析 LLM 匹配响应以提取最佳匹配。"""
         lines = llm_response.split('\n')
         
         for line in lines:
@@ -1127,13 +985,7 @@ If confidence < 0.6, respond with BEST_MATCH: NEW_STATE_NEEDED
         返回优化选择的匹配状态名称。
 
         参数:
-            ncu_report: 调用方提供的 `ncu_report` 参数。
             metrics: 性能分析或正确性检查产生的指标集合。
-            code_implementation: 调用方提供的 `code_implementation` 参数。
-            elapsed_cycles: 调用方提供的 `elapsed_cycles` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
 
         # 代理 1：定性分析当前状态
@@ -1254,12 +1106,6 @@ If confidence < 0.6, respond with BEST_MATCH: NEW_STATE_NEEDED
         将发现的状态映射到具有优化策略的现有状态。
 
         这可以防止发现的状态没有优化策略的问题。
-
-        参数:
-            current_state: 调用方提供的 `current_state` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         # 主要瓶颈映射到数据库状态名称
         bottleneck_to_state_mapping = {
@@ -1328,11 +1174,7 @@ If confidence < 0.6, respond with BEST_MATCH: NEW_STATE_NEEDED
         LLM 不可用时的后备分析。
 
         参数:
-            ncu_report: 调用方提供的 `ncu_report` 参数。
             metrics: 性能分析或正确性检查产生的指标集合。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         memory_throughput = metrics.get('memory_throughput', 0)
         compute_throughput = metrics.get('compute_throughput', 0)
@@ -1354,15 +1196,7 @@ If confidence < 0.6, respond with BEST_MATCH: NEW_STATE_NEEDED
         )
     
     def _fallback_state_matching(self, current_state: StateProfile) -> str:
-        """
-        LLM 不可用时的后备匹配。
-
-        参数:
-            current_state: 调用方提供的 `current_state` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """LLM 不可用时的后备匹配。"""
         # 基于主要瓶颈的简单匹配
         for state_name, state_data in self.optimization_strategies.items():
             if state_data.get("primary_bottleneck") == current_state.primary_bottleneck:
@@ -1389,23 +1223,9 @@ If confidence < 0.6, respond with BEST_MATCH: NEW_STATE_NEEDED
 
         参数:
             state: 工作流节点读取并按约定更新的共享状态。
-            current_state_profile: 调用方提供的 `current_state_profile` 参数。
-            include_composite: 调用方提供的 `include_composite` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
 
         def _collect_all_opts(include_composite_flag: bool):
-            """
-            收集 `collect_all_opts` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-            参数:
-                include_composite_flag: 调用方提供的 `include_composite_flag` 参数。
-
-            返回:
-                当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
             opts: List[OptimizationEntry | CompositeOptimization] = []
             for state_data in self.optimization_strategies.values():
                 opts.extend(state_data.get("optimizations", []))
@@ -1474,15 +1294,6 @@ AVAILABLE OPTIMISATIONS:
         # --------------- 回退确定性选择 ---------------
         if not chosen_name:
             def _score(o):
-                """
-                处理 `score` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-                参数:
-                    o: 调用方提供的 `o` 参数。
-
-                返回:
-                    当前操作产生的结果；具体类型由返回注解和调用约定确定。
-                """
                 pred_speedup = getattr(o, "predicted_speedup", None)
                 if pred_speedup in (None, 0.0):
                     pred_impr = (getattr(o, "predicted_improvement", 0.0) or 0.0)
@@ -1501,15 +1312,6 @@ AVAILABLE OPTIMISATIONS:
 
         # LLM 若返回未知名称，则退回确定性评分，保证调用方始终得到可用结果。
         def _score(o):
-            """
-            处理 `score` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-            参数:
-            o: 调用方提供的 `o` 参数。
-
-            返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
             pred_speedup = getattr(o, "predicted_speedup", None)
             if pred_speedup in (None, 0.0):
                 pred_impr = (getattr(o, "predicted_improvement", 0.0) or 0.0)
@@ -1545,14 +1347,6 @@ AVAILABLE OPTIMISATIONS:
         列表[字典[str, 任意]]
         长度为 *top_n* 的列表，其中每个元素都是一个字典，其中
         键“`technique``, ``relevance_score`` and ``reasoning`”。
-
-        参数:
-            state_analysis_response: 调用方提供的 `state_analysis_response` 参数。
-            code_implementation: 调用方提供的 `code_implementation` 参数。
-            top_n: 调用方提供的 `top_n` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
 
         # ------------------------- LLM提示-------------------------
@@ -1611,15 +1405,6 @@ CODE IMPLEMENTATION:
 
         # ------------------ 回退确定性路径 ------------------
         def _score(opt):
-            """
-            处理 `score` 所表示的内部步骤；该函数不属于稳定的公开接口。
-
-            参数:
-                opt: 调用方提供的 `opt` 参数。
-
-            返回:
-                当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
             pred_speedup = getattr(opt, "predicted_speedup", None)
             if pred_speedup in (None, 0.0):
                 pred_impr = (getattr(opt, "predicted_improvement", 0.0) or 0.0)
@@ -1652,16 +1437,7 @@ CODE IMPLEMENTATION:
     # Helper：解析LLM返回的优化计划JSON
     # ------------------------------------------------------------------
     def _parse_optimization_plan(self, llm_response: str, expected_n: int) -> List[Dict[str, Any]]:
-        """
-        尝试 JSON 解码 *llm_response* 并验证结构。
-
-        参数:
-            llm_response: 调用方提供的 `llm_response` 参数。
-            expected_n: 调用方提供的 `expected_n` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """尝试 JSON 解码 *llm_response* 并验证结构。"""
         import json as _json
 
         try:
@@ -1687,9 +1463,6 @@ CODE IMPLEMENTATION:
         格式：
         状态：<state_name>
         - <技术> (pred <x>% | conf <y>): <描述>
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
 
         lines: List[str] = []
@@ -1733,9 +1506,6 @@ CODE IMPLEMENTATION:
 
         参数:
             state: 工作流节点读取并按约定更新的共享状态。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         return self.optimization_strategies.get(state, {}).get("optimizations", [])
     
@@ -1745,9 +1515,6 @@ CODE IMPLEMENTATION:
 
         参数:
             state: 工作流节点读取并按约定更新的共享状态。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         return self.composite_optimizations.get(state, [])
     
@@ -1765,11 +1532,6 @@ CODE IMPLEMENTATION:
 
         参数:
             state: 工作流节点读取并按约定更新的共享状态。
-            exclude_used: 调用方提供的 `exclude_used` 参数。
-            include_composite: 调用方提供的 `include_composite` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
 
         # ----------------------------------------------------------
@@ -1845,15 +1607,6 @@ CODE IMPLEMENTATION:
             return None
 
         def score_optimization(opt) -> float:
-            """
-            处理 `score_optimization` 对应的领域操作，并返回调用方所需的标准化结果。
-
-            参数:
-                opt: 调用方提供的 `opt` 参数。
-
-            返回:
-                当前操作产生的结果；具体类型由返回注解和调用约定确定。
-            """
             pred_speedup = getattr(opt, "predicted_speedup", None)
             if pred_speedup in (None, 0.0):
                 pred_impr = (getattr(opt, "predicted_improvement", 0.0) or 0.0)
@@ -1900,15 +1653,7 @@ CODE IMPLEMENTATION:
         return chosen_opt
         
     def _categorize_technique(self, technique: str) -> str:
-        """
-        按类型对优化技术进行分类。
-
-        参数:
-            technique: 调用方提供的 `technique` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """按类型对优化技术进行分类。"""
         technique_lower = technique.lower()
         if any(term in technique_lower for term in ['memory', 'coalesced', 'cache', 'tiling']):
             return 'memory'
@@ -1928,12 +1673,6 @@ CODE IMPLEMENTATION:
 
         返回：
         具有默认策略的 OptimizationEntry 对象列表
-
-        参数:
-            bottleneck_type: 调用方提供的 `bottleneck_type` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         
         default_strategies = []
@@ -2074,12 +1813,7 @@ CODE IMPLEMENTATION:
         return default_strategies
     
     def _load_composite_optimizations(self, json_data: dict):
-        """
-        从 JSON 数据加载复合优化。
-
-        参数:
-            json_data: 调用方提供的 `json_data` 参数。
-        """
+        """从 JSON 数据加载复合优化。"""
         for adjustment in json_data.get("prediction_adjustments", []):
             state = adjustment["state"]
             if state not in self.composite_optimizations:
@@ -2103,18 +1837,6 @@ CODE IMPLEMENTATION:
                                     measurement: Measurement | None = None):
             # 记录更新尝试
             # 以实际结果更新优化条目
-            """
-            更新 `update_optimization_result` 对应的领域操作，并返回调用方所需的标准化结果。
-
-            参数:
-                state: 工作流节点读取并按约定更新的共享状态。
-                technique: 调用方提供的 `technique` 参数。
-                actual_improvement: 调用方提供的 `actual_improvement` 参数。
-                current_file_path: 调用方提供的 `current_file_path` 参数。
-
-            异常:
-                ValueError: 输入、外部调用或状态不满足执行要求时抛出。
-            """
             if hasattr(self.llm_interface, 'logger') and self.llm_interface.logger:
                 self.llm_interface.logger.info(f"Attempting to update optimization result for {technique} in state {state} with actual improvement {actual_improvement}")
             if state in self.optimization_strategies:
@@ -2286,8 +2008,6 @@ CODE IMPLEMENTATION:
 
         参数:
             state: 工作流节点读取并按约定更新的共享状态。
-            composite_id: 调用方提供的 `composite_id` 参数。
-            actual_improvement: 调用方提供的 `actual_improvement` 参数。
         """
         if state in self.composite_optimizations:
             for comp_opt in self.composite_optimizations[state]:
@@ -2318,12 +2038,7 @@ CODE IMPLEMENTATION:
                     break
 
     def add_composite_optimization(self, composite: CompositeOptimization):
-        """
-        向数据库添加复合优化。
-
-        参数:
-            composite: 调用方提供的 `composite` 参数。
-        """
+        """向数据库添加复合优化。"""
         state = composite.state
         if state not in self.composite_optimizations:
             self.composite_optimizations[state] = []
@@ -2368,8 +2083,6 @@ CODE IMPLEMENTATION:
 
         参数:
             state: 工作流节点读取并按约定更新的共享状态。
-            technique: 调用方提供的 `technique` 参数。
-            predicted_improvement: 调用方提供的 `predicted_improvement` 参数。
         """
         if state not in self.optimization_strategies:
             self.optimization_strategies[state] = {"optimizations": []}
@@ -2411,18 +2124,7 @@ CODE IMPLEMENTATION:
 
     def create_parameter_tuned_optimization(self, base_technique: str, parameters: Dict[str, Any], 
                                           predicted_improvement: float, reason: str = "") -> str:
-        """
-        创建参数调整的优化技术名称。
-
-        参数:
-            base_technique: 调用方提供的 `base_technique` 参数。
-            parameters: 调用方提供的 `parameters` 参数。
-            predicted_improvement: 调用方提供的 `predicted_improvement` 参数。
-            reason: 调用方提供的 `reason` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """创建参数调整的优化技术名称。"""
         # 创建包含参数的唯一技术名称
         param_str = "_".join(f"{k}_{v}" for k, v in parameters.items())
         tuned_technique = f"{base_technique}_tuned_{param_str}"
@@ -2459,10 +2161,6 @@ CODE IMPLEMENTATION:
 
         参数:
             metrics: 性能分析或正确性检查产生的指标集合。
-            performance_pattern: 调用方提供的 `performance_pattern` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
         """
         print("Warning: get_state_from_metrics is deprecated. Use get_state_from_ncu_report instead.")
         import asyncio
@@ -2473,12 +2171,7 @@ CODE IMPLEMENTATION:
             return self._fallback_state_matching(self._fallback_state_analysis(performance_pattern, metrics))
 
     def get_database_stats(self) -> dict:
-        """
-        获取有关优化数据库的统计信息。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
+        """获取有关优化数据库的统计信息。"""
         
         # 计算总优化次数
         total_optimizations = 0
@@ -2528,12 +2221,7 @@ OptimizationDatabase = GPUOptimizationDatabase
 
 
 def print_database_summary(db: GPUOptimizationDatabase):
-    """
-    打印优化数据库的人类可读摘要。
-
-    参数:
-        db: 调用方提供的 `db` 参数。
-    """
+    """打印优化数据库的人类可读摘要。"""
     import json as _json
 
     print("\n=== Optimisation Database Summary ===\n")
@@ -2562,12 +2250,7 @@ def print_database_summary(db: GPUOptimizationDatabase):
 
 
 def _main():
-    """
-    通过命令行进行快速手动测试的入口点。
-
-    异常:
-        FileNotFoundError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
+    """通过命令行进行快速手动测试的入口点。"""
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -2684,7 +2367,6 @@ def _main():
             import asyncio, json as _json
 
             async def _run_flow():
-                """运行 `run_flow` 所表示的内部步骤；该函数不属于稳定的公开接口。"""
                 print("\n>>> Running analyse_performance_state...")
                 profile = await db.analyze_performance_state(
                     ncu_report_text, metrics, code_impl_text

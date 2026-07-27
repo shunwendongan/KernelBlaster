@@ -19,15 +19,6 @@ import uvicorn.config
 
 
 def get_log_config(log_filepath: str = None):
-    """
-    获取 `get_log_config` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        log_filepath: 调用方提供的 `log_filepath` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     base_config = uvicorn.config.LOGGING_CONFIG.copy()
     log_format = "%(asctime)s | %(levelprefix)s | %(message)s"
     base_config["formatters"]["default"]["fmt"] = log_format

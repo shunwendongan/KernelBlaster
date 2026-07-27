@@ -161,6 +161,38 @@ def load_context(root: Path = ROOT_DIR) -> dict[str, Any]:
         raise DocumentationSyncError(
             "Schema-v2 full validation has unexpected terminal outcome counts."
         )
+    issue10 = _load_json(
+        resolved["issue10_correctness_v2_1"],
+        allowed_schema_versions=("2.0",),
+    )
+    formal_outcomes = issue10.get("formal_outcomes")
+    issue10_tasks = issue10.get("tasks")
+    if not isinstance(formal_outcomes, dict) or not isinstance(issue10_tasks, list):
+        raise DocumentationSyncError("Issue #10 evidence requires tasks and formal_outcomes.")
+    improved_ids = [str(value) for value in formal_outcomes.get("improved", [])]
+    task_095 = next(
+        (task for task in issue10_tasks if str(task.get("task_id")) == "095"),
+        None,
+    )
+    performance_095 = (
+        task_095.get("performance_confirmation") if isinstance(task_095, dict) else None
+    )
+    if (
+        len(improved_ids) != 5
+        or not isinstance(performance_095, dict)
+        or performance_095.get("outcome") != "improved"
+        or not bool(issue10.get("issue_close_allowed"))
+    ):
+        raise DocumentationSyncError(
+            "Issue #10 evidence must contain five improved tasks and a closable 095 result."
+        )
+    issue10_summary = {
+        "improved_tasks": len(improved_ids),
+        "baseline_spread": float(performance_095["baseline_session_spread_percent"]),
+        "candidate_spread": float(performance_095["candidate_session_spread_percent"]),
+        "issue_close_allowed": bool(issue10["issue_close_allowed"]),
+        "production_ready": bool(issue10.get("runtime_contract", {}).get("production_ready")),
+    }
     rows = comparison.get("results")
     if not isinstance(rows, list) or len(rows) != 10:
         raise DocumentationSyncError("Core 10 comparison must contain exactly ten results.")
@@ -223,6 +255,8 @@ def load_context(root: Path = ROOT_DIR) -> dict[str, Any]:
         "core10_v2": core10_v2,
         "core10_v2_results": core10_v2_results,
         "core10_v2_summary": core10_v2_summary,
+        "issue10": issue10,
+        "issue10_summary": issue10_summary,
         "rows": rows,
         "all10": all10,
         "new9": new9,
@@ -278,9 +312,9 @@ def _cross_gpu_status_label(value: str, *, chinese: bool) -> str:
     stage, detail = _validation_stage(value, field="cross_gpu")
     if stage == "not-run":
         return (
-            "未运行（Day 11–14 不在本阶段范围）"
+            "未运行（不在当前证据范围）"
             if chinese
-            else "NOT RUN (Day 11-14 out of scope)"
+            else "NOT RUN (outside the current evidence scope)"
         )
     if stage == "blocked":
         if chinese:
@@ -321,9 +355,9 @@ def _cross_gpu_gate_label(value: str, *, chinese: bool) -> str:
     stage, detail = _validation_stage(value, field="cross_gpu")
     if stage == "not-run":
         return (
-            "未运行 — 延后至 Day 11–14"
+            "未运行 — 延后到后续验证"
             if chinese
-            else "NOT RUN — deferred Day 11–14"
+            else "NOT RUN — deferred to follow-up validation"
         )
     if stage == "blocked":
         reason = f"`{detail}`" if detail else "未指定原因" if chinese else "unspecified reason"
@@ -363,9 +397,9 @@ def _architecture_cross_gpu_bullet(value: str, *, chinese: bool) -> str:
     stage, detail = _validation_stage(value, field="cross_gpu")
     if stage == "not-run":
         return (
-            "- 跨 GPU 对比：**未运行；延后至 Day 11–14**"
+            "- 跨 GPU 对比：**未运行；延后到后续验证**"
             if chinese
-            else "- Cross-GPU comparison: **not run; deferred Day 11–14**"
+            else "- Cross-GPU comparison: **not run; deferred to follow-up validation**"
         )
     if stage == "blocked":
         reason = f"`{detail}`" if detail else "未指定原因" if chinese else "an unspecified reason"
@@ -521,11 +555,11 @@ def _root_block(context: dict[str, Any], *, chinese: bool) -> str:
     n9, a10 = context["new9"], context["all10"]
     v2 = context["core10_v2_summary"]
     if chinese:
-        return f"""当前 Fork 已在 **{context['gpu_name']}（{context['sm']}）** 上完成 Day 1–10 基础设施、RMSNorm 深度案例、Core 10 手工候选和同卡 PyTorch 对比。环境为 WSL2、CUDA {context['cuda']}、驱动 {context['driver']}。
+        return f"""已提交的 Portfolio 证据记录了 **{context['gpu_name']}（{context['sm']}）** 上的 Day 1–10 基础设施、RMSNorm 深度案例、Core 10 手工候选和同卡 PyTorch 对比。记录环境为 WSL2、CUDA {context['cuda']}、驱动 {context['driver']}。
 
 | 验证项目 | 当前状态 |
 | --- | --- |
-| CPU 测试 | **{validation['current_cpu_pytest']}**（当前分支） |
+| CPU 测试 | **{validation['current_cpu_pytest']}**（`portfolio/status.json` 最近记录） |
 | CUDA 编译与官方正确性 | **{validation['official_correctness']}** |
 | CUDA Events 与同卡 PyTorch | **schema v2 完整验证：{v2['verified_improved_tasks']} 项提升、{v2['no_improvement_tasks']} 项无提升、{v2['inconclusive_tasks']} 项无法定论；9/10 题有稳定 PyTorch 方法** |
 | 外部 LLM 冒烟测试 | **{validation['live_api_smoke']}** |
@@ -540,11 +574,11 @@ def _root_block(context: dict[str, Any], *, chinese: bool) -> str:
 上述严格值作为不可变的历史 v1 证据保留。独立的 schema v2 完整手工确认验证了 10/10 正确性，正式确认 004/007/036/040，将 088 标为无提升，并把 019/023/026/047/095 保持为无法定论。当前口径下，严格 Core 10 相对上游的几何平均为 {_f(v2['all10_selected_portfolio_geomean_speedup'])}；仅在 {v2['pytorch_comparable_tasks']}/10 个存在正确且稳定 PyTorch 方法的可比任务上，严格结果相对最快稳定方法的几何平均为 {_f(v2['selected_vs_pytorch_best_geomean'])}。它仍不是 Agent 搜索结果。新口径还检查 p99/max 误差回归、NaN/Inf 和五次确定性。当前 Agent Pilot 与 Core 10 Agent 搜索均未运行。
 
 {_evidence_links(context, chinese=True)}"""
-    return f"""This fork has completed the Day 1–10 infrastructure, the RMSNorm deep case, manual Core 10 candidates, and a same-GPU PyTorch comparison on **{context['gpu_name']} ({context['sm']})**. The measured environment is WSL2, CUDA {context['cuda']}, and driver {context['driver']}.
+    return f"""The checked-in Portfolio evidence records the Day 1–10 infrastructure, RMSNorm deep case, manual Core 10 candidates, and a same-GPU PyTorch comparison on **{context['gpu_name']} ({context['sm']})**. The recorded environment is WSL2, CUDA {context['cuda']}, and driver {context['driver']}.
 
 | Validation item | Current status |
 | --- | --- |
-| CPU tests | **{validation['current_cpu_pytest']}** on the current branch |
+| CPU tests | **{validation['current_cpu_pytest']}** (latest record in `portfolio/status.json`) |
 | CUDA build and official correctness | **{validation['official_correctness']}** |
 | CUDA Events and same-GPU PyTorch | **schema v2 full: {v2['verified_improved_tasks']} improved, {v2['no_improvement_tasks']} no improvement, {v2['inconclusive_tasks']} inconclusive; 9/10 tasks have a stable PyTorch method** |
 | External LLM smoke | **{validation['live_api_smoke']}** |
@@ -592,6 +626,7 @@ def _validation_block(context: dict[str, Any], *, chinese: bool) -> str:
     validation = context["status"]["validation"]
     validation_en = _validation_labels(validation, chinese=False)
     validation_zh = _validation_labels(validation, chinese=True)
+    issue10 = context["issue10_summary"]
     v2_source = context["sources"]["core10_validation_v2"]
     live_api_evidence = context["sources"].get(
         "issue7_trusted_pilot_v2_1",
@@ -647,7 +682,7 @@ def _validation_block(context: dict[str, Any], *, chinese: bool) -> str:
 | RMSNorm 边界正确性 | 通过 | 已提交的 `edge_driver.cpp` 与深度案例 artifacts |
 | CUDA Events 计时 | schema v2 完整确认：4 项提升；1 项无提升；5 项无法定论 | `{v2_source}` |
 | 同卡 PyTorch 对比 | schema v2 完整确认；9/10 题有稳定方法 | `{v2_source}` |
-| Issue #10 能力与资源加固 | 4 项正式提升；095 因 upstream baseline spread 24.37% 仍无法定论，Issue 保持开启 | `{issue10_evidence}` |
+| Issue #10 能力与资源加固 | {issue10['improved_tasks']} 项正式提升；095-v5 的 upstream/candidate spread 为 {issue10['baseline_spread']:.2f}%/{issue10['candidate_spread']:.2f}%；Issue 可关闭，但 `production_ready` 仍为 `{str(issue10['production_ready']).lower()}` | `{issue10_evidence}` |
 | Portfolio v2.1 证据完整性 | 精确 SHA256 清单已发布 | `{v2_1_sha}` |
 | NCU 硬件计数器 | {ncu_gate} | {ncu_evidence} |
 | 跨 GPU 对比 | {cross_gpu_gate} | {cross_gpu_evidence} |
@@ -662,7 +697,7 @@ def _validation_block(context: dict[str, Any], *, chinese: bool) -> str:
 | RMSNorm edge correctness | PASSED | committed `edge_driver.cpp` and deep-case artifacts |
 | CUDA Events timing | schema-v2 full confirmation: 4 improved; 1 no improvement; 5 inconclusive | `{v2_source}` |
 | Same-GPU PyTorch comparison | schema-v2 full confirmation; 9/10 tasks have a stable method | `{v2_source}` |
-| Issue #10 capability/resource hardening | 4 formal improvements; 095 remains inconclusive because the upstream baseline spread is 24.37%, so the Issue stays open | `{issue10_evidence}` |
+| Issue #10 capability/resource hardening | {issue10['improved_tasks']} formal improvements; 095-v5 upstream/candidate spread is {issue10['baseline_spread']:.2f}%/{issue10['candidate_spread']:.2f}%; the Issue may close while `production_ready` remains `{str(issue10['production_ready']).lower()}` | `{issue10_evidence}` |
 | Portfolio v2.1 evidence integrity | Exact SHA256 index published | `{v2_1_sha}` |
 | NCU hardware counters | {ncu_gate} | {ncu_evidence} |
 | Cross-GPU comparison | {cross_gpu_gate} | {cross_gpu_evidence} |

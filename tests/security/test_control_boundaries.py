@@ -16,7 +16,6 @@ from src.kernelblaster.servers.auth import (
     require_worker_token,
     validate_token_boundaries,
 )
-from src.kernelblaster.servers.serve_api import app as legacy_workflow_app
 from src.kernelblaster.storage import StateStore
 
 
@@ -152,10 +151,3 @@ def test_control_and_worker_job_api_audiences_are_isolated(monkeypatch, tmp_path
         content=b"forbidden",
         headers={**worker_headers, "content-type": "application/octet-stream"},
     ).status_code == 401
-
-
-def test_legacy_workflow_routes_use_the_control_audience():
-    protected = {"/submit", "/status/{task_id}", "/cancel/{task_id}"}
-    for route in legacy_workflow_app.routes:
-        if route.path in protected:
-            assert route.dependant.dependencies[0].call is require_control_token

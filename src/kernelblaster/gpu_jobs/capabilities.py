@@ -39,7 +39,7 @@ def detect_gpu_capabilities(
     logical_id = environment.get("KERNELBLASTER_GPU_DEVICE", "0").strip()
     maximum = int(environment.get("KERNELBLASTER_GPU_MAX_CONCURRENCY", "1"))
     if maximum != 1:
-        raise ValueError("PR 04 supports exactly one concurrent GPU job")
+        raise ValueError("The GPU Supervisor supports exactly one concurrent GPU job")
     query = runner(
         [
             "nvidia-smi",

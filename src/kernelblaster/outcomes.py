@@ -81,12 +81,6 @@ class RunOutcome:
 
     @property
     def success(self) -> bool:
-        """
-        处理 `success` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         return bool(
             self.status is RunStatus.IMPROVED
             and self.artifact_path is not None
@@ -94,12 +88,6 @@ class RunOutcome:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        """
-        处理 `to_dict` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         payload = asdict(self)
         payload["status"] = self.status.value
         payload["execution_status"] = self.execution_status.value
@@ -117,15 +105,6 @@ class RunOutcome:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RunOutcome":
-        """
-        处理 `from_dict` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-            payload: 跨接口传递的序列化载荷。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         artifact = payload.get("artifact_path")
         measurement_payload = payload.get("measurement")
         measurement = (

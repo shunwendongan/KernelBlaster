@@ -33,12 +33,6 @@ def get_llm_provider(config: type[SystemConfig]) -> LLMProvider:
 
     参数:
         config: 控制当前组件行为的配置对象。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        LLMConfigurationError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     global _provider
     if _provider is not None:

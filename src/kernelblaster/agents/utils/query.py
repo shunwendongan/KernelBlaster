@@ -62,29 +62,16 @@ if os.getenv("PERFLAB_KEY") and openai is not None:
 
 
 class TrimError(Exception):
-    """表示该领域内可被调用方识别和处理的失败。"""
+    """消息无法在保留必要上下文的前提下压缩到限制内。"""
     pass
 
 
 class NoResponseError(Exception):
-    """表示该领域内可被调用方识别和处理的失败。"""
+    """Provider 未返回可解析的文本或 CUDA 代码。"""
     pass
 
 
 def trim_messages(messages, logger):
-    """
-    裁剪 `trim_messages` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        messages: 按对话顺序排列的 LLM 消息。
-        logger: 记录诊断信息和任务进度的日志器。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        TrimError: 输入、外部调用或状态不满足执行要求时抛出。
-    """
     total_characters = sum(
         len(message["content"]) if message["content"] is not None else 0
         for message in messages
@@ -119,15 +106,6 @@ def trim_messages(messages, logger):
 
 
 def to_dict_recursive(obj):
-    """
-    处理 `to_dict_recursive` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        obj: 调用方提供的 `obj` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     obj = dict(obj)
     for k, v in obj.items():
         obj[k] = to_dict_recursive(v) if hasattr(v, "__dict__") else v
@@ -139,16 +117,6 @@ def extract_code_from_response(response_text, tag="cpp") -> str | None:
     # 以避免在推理过程中拾取任何代码内容。
     # Deepseek-R1 在聊天模板本身中引入了 <think> 开始标签
     # 所以它在生成过程中不再返回。
-    """
-    提取 `extract_code_from_response` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        response_text: 调用方提供的 `response_text` 参数。
-        tag: 调用方提供的 `tag` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     cleaned_text = re.sub(r".*?</think>", "", response_text, flags=re.DOTALL)
     code_blocks = re.findall(f"```{tag}\n(.*?)```", cleaned_text, re.DOTALL)
     if not code_blocks:
@@ -157,16 +125,6 @@ def extract_code_from_response(response_text, tag="cpp") -> str | None:
 
 
 def process_messages(messages: List[dict], model: str) -> List[dict]:
-    """
-    处理 `process_messages` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        messages: 按对话顺序排列的 LLM 消息。
-        model: 生成候选时使用的模型标识。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     messages = deepcopy(messages)
     if re.search(r".*-nemotron-.*-thinking", model.lower()):
         # 通过使用特殊的系统提示启用nemotron模型的思维模式
@@ -194,18 +152,6 @@ def process_messages(messages: List[dict], model: str) -> List[dict]:
 
 
 async def generate_code_openai(client, messages, n_tasks, model: str) -> LLMResponse:
-    """
-    生成 `generate_code_openai` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        client: 调用方提供的 `client` 参数。
-        messages: 按对话顺序排列的 LLM 消息。
-        n_tasks: 调用方提供的 `n_tasks` 参数。
-        model: 生成候选时使用的模型标识。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     args = {
         "model": model,
         "messages": messages,
@@ -319,14 +265,7 @@ async def generate_code(messages, n_tasks=1, model=None) -> LLMResponse:
 
     参数:
         messages: 按对话顺序排列的 LLM 消息。
-        n_tasks: 调用方提供的 `n_tasks` 参数。
         model: 生成候选时使用的模型标识。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
     """
     # 检查这是否是本地模型
     global _local_llm_module
@@ -428,15 +367,6 @@ async def generate_code_retry(
         messages: 按对话顺序排列的 LLM 消息。
         model: 生成候选时使用的模型标识。
         logger: 记录诊断信息和任务进度的日志器。
-        n_tasks: 调用方提供的 `n_tasks` 参数。
-        max_retries: 调用方提供的 `max_retries` 参数。
-        kwargs: 调用方提供的 `kwargs` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-
-    异常:
-        RuntimeError: 输入、外部调用或状态不满足执行要求时抛出。
     """
 
     # ------------------------------------------------------------------
@@ -553,28 +483,7 @@ async def generate_code_retry(
 def convert_messages_to_string(
     messages: list[dict], response: str = None, usage: dict = None
 ):
-    """
-    转换 `convert_messages_to_string` 对应的领域操作，并返回调用方所需的标准化结果。
-
-    参数:
-        messages: 按对话顺序排列的 LLM 消息。
-        response: 需要解析或规范化的服务响应。
-        usage: 调用方提供的 `usage` 参数。
-
-    返回:
-        当前操作产生的结果；具体类型由返回注解和调用约定确定。
-    """
     def to_string(role, content):
-        """
-        处理 `to_string` 对应的领域操作，并返回调用方所需的标准化结果。
-
-        参数:
-            role: 调用方提供的 `role` 参数。
-            content: 调用方提供的 `content` 参数。
-
-        返回:
-            当前操作产生的结果；具体类型由返回注解和调用约定确定。
-        """
         r = "# " + "=" * 20 + role.upper() + "=" * 20 + "\n"
         r += content
         return r

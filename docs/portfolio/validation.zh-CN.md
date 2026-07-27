@@ -14,7 +14,7 @@
 | RMSNorm 边界正确性 | 通过 | 已提交的 `edge_driver.cpp` 与深度案例 artifacts |
 | CUDA Events 计时 | schema v2 完整确认：4 项提升；1 项无提升；5 项无法定论 | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
 | 同卡 PyTorch 对比 | schema v2 完整确认；9/10 题有稳定方法 | `artifacts/portfolio-v2.0/core10/core10_rtx3080_comparison.json` |
-| Issue #10 能力与资源加固 | 4 项正式提升；095 因 upstream baseline spread 24.37% 仍无法定论，Issue 保持开启 | `artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json` |
+| Issue #10 能力与资源加固 | 5 项正式提升；095-v5 的 upstream/candidate spread 为 3.48%/2.47%；Issue 可关闭，但 `production_ready` 仍为 `false` | `artifacts/portfolio-v2.1/issue-10/rtx3080/correctness-summary.json` |
 | Portfolio v2.1 证据完整性 | 精确 SHA256 清单已发布 | `artifacts/portfolio-v2.1/SHA256SUMS.json` |
 | NCU 硬件计数器 | 阻塞 — `ERR_NVGPUCTRPERM (non-root Docker/WSL; one no-network SYS_ADMIN retry also blocked; Windows native control passed)` | `artifacts/portfolio-v2.1/issue-8/rtx3080/ncu-preflight-summary.json` |
 | 跨 GPU 对比 | 阻塞 — `requires authorized A100/L40S rental` | 未发布跨卡聚合性能声明 |

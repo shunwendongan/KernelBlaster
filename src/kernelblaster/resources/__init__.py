@@ -13,16 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""导出编译与 GPU 资源客户端和受管服务包装器。"""
+"""导出经典远端 Compile/GPU REST 调用共用的 TCP 客户端。"""
 
 from .client import TCPClient
 
-__all__ = ["TCPClient", "CompileServer", "GPUServer"]
-
-
-def __getattr__(name: str):
-    if name in {"CompileServer", "GPUServer"}:
-        from .servers import CompileServer, GPUServer
-
-        return {"CompileServer": CompileServer, "GPUServer": GPUServer}[name]
-    raise AttributeError(name)
+__all__ = ["TCPClient"]
